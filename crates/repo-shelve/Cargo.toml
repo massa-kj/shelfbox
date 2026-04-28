@@ -1,0 +1,16 @@
+[package]
+name = "repo-shelve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shelve repo-local files outside Git, keeping them visible in your editor"
+
+[[bin]]
+name = "repo-shelve"
+path = "src/main.rs"
+
+[dependencies]
+repo-shelve-core = { path = "../repo-shelve-core" }
+clap.workspace = true
+anyhow.workspace = true
