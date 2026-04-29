@@ -1,0 +1,337 @@
+/// Integration tests for the ops layer.
+///
+/// Each test spins up a real Git repository in a temp directory and exercises
+/// the core operations end-to-end using real file I/O and (where required)
+/// real Git subprocesses.  No mocking is used; the tests verify the full
+/// interaction between context, manifest, link strategy and ignore backend.
+use std::process::Command as StdCommand;
+
+use tempfile::TempDir;
+
+use repo_shelve_core::{
+    context,
+    ignore::{GitInfoExclude, IgnoreBackend},
+    link::SymlinkStrategy,
+    ops,
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Creates a minimal Git repository in a temp directory and returns it.
+fn init_git_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path();
+
+    StdCommand::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    StdCommand::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+    StdCommand::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(path)
+        .output()
+        .unwrap();
+
+    dir
+}
+
+// ── add / restore ─────────────────────────────────────────────────────────────
+
+#[test]
+fn add_and_restore_file() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Create an untracked file to shelve.
+    let file_path = repo_dir.path().join("secret.txt");
+    std::fs::write(&file_path, "sensitive data").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    // --- add ---
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Original path should now be a symlink.
+    assert!(
+        file_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "expected a symlink at the repo path after add"
+    );
+    // Contents accessible through the symlink.
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "sensitive data"
+    );
+
+    // Store-side file must exist.
+    let store_path = ctx.repo_store.join("items/secret.txt");
+    assert!(store_path.exists(), "store-side file must exist");
+
+    // Manifest must reflect the addition.
+    assert_eq!(ctx.manifest.items.len(), 1);
+    assert_eq!(ctx.manifest.items[0].path, "secret.txt");
+
+    // --- list ---
+    let items = ops::list::list(&ctx);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].path, "secret.txt");
+
+    // --- status: everything should be healthy ---
+    let statuses = ops::status::status(&ctx, &link, &ignore).unwrap();
+    assert_eq!(statuses.len(), 1);
+    assert!(statuses[0].ok, "status should be ok after add");
+
+    // --- restore ---
+    ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap();
+
+    // Original path should now be a regular file again.
+    let restored_meta = file_path.symlink_metadata().unwrap();
+    assert!(
+        !restored_meta.file_type().is_symlink(),
+        "expected a regular file at the repo path after restore"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "sensitive data"
+    );
+
+    // Store-side file must be gone.
+    assert!(
+        !store_path.exists(),
+        "store-side file must be removed after restore"
+    );
+
+    // Manifest must be empty.
+    assert!(ctx.manifest.items.is_empty());
+}
+
+#[test]
+fn add_dry_run_makes_no_changes() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("config.toml");
+    std::fs::write(&file_path, "[settings]").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, true, &link, &ignore).unwrap();
+
+    // File must remain a regular file.
+    assert!(
+        !file_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "dry-run must not create a symlink"
+    );
+    // Manifest must be unchanged.
+    assert!(
+        ctx.manifest.items.is_empty(),
+        "dry-run must not modify the manifest"
+    );
+    // Store must have no items directory.
+    assert!(
+        !ctx.repo_store.join("items").exists(),
+        "dry-run must not create store items"
+    );
+}
+
+#[test]
+fn restore_dry_run_makes_no_changes() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("notes.md");
+    std::fs::write(&file_path, "# notes").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    // Actually shelve the file first.
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    assert_eq!(ctx.manifest.items.len(), 1);
+
+    // Dry-run restore.
+    ops::restore::restore(&mut ctx, &file_path, true, false, &link, &ignore).unwrap();
+
+    // Symlink must still be in place.
+    assert!(
+        file_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "dry-run restore must not remove the symlink"
+    );
+    // Manifest must still contain the item.
+    assert_eq!(ctx.manifest.items.len(), 1);
+}
+
+#[test]
+fn add_already_managed_returns_error() {
+    // Simulate an inconsistent state: the manifest records the item but the
+    // symlink was removed and the original file was copied back manually.
+    // In this state the path is a regular file, not a symlink, so the
+    // IsSymlink check passes, but the manifest check must fire.
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("data.txt");
+    std::fs::write(&file_path, "data").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    // Shelve the file normally.
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Simulate inconsistency: remove the symlink and put a regular file back,
+    // but leave the manifest entry in place.
+    let store_path = ctx.repo_store.join("items/data.txt");
+    std::fs::remove_file(&file_path).unwrap(); // remove symlink
+    std::fs::copy(&store_path, &file_path).unwrap(); // restore regular file
+
+    // A second add on the regular file must fail with AlreadyManaged because
+    // the manifest still contains the entry.
+    let err = ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            repo_shelve_core::error::AppError::AlreadyManaged { .. }
+        ),
+        "expected AlreadyManaged, got: {err}"
+    );
+}
+
+#[test]
+fn add_path_outside_repo_returns_error() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let outside_file = store_dir.path().join("outside.txt");
+    std::fs::write(&outside_file, "outside").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    let err = ops::add::add(&mut ctx, &outside_file, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            repo_shelve_core::error::AppError::PathOutsideRepo { .. }
+        ),
+        "expected PathOutsideRepo, got: {err}"
+    );
+}
+
+#[test]
+fn restore_not_managed_link_returns_error() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("plain.txt");
+    std::fs::write(&file_path, "plain").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    // Trying to restore a file that was never shelved must fail.
+    let err =
+        ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            repo_shelve_core::error::AppError::NotManagedLink { .. }
+        ),
+        "expected NotManagedLink, got: {err}"
+    );
+}
+
+// ── keep_ignore ---
+
+#[test]
+fn restore_keep_ignore_preserves_exclude_entry() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("env.sh");
+    std::fs::write(&file_path, "export SECRET=1").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    assert!(ignore.has_entry(repo_dir.path(), "env.sh").unwrap());
+
+    // Restore with keep_ignore=true.
+    ops::restore::restore(&mut ctx, &file_path, false, true, &link, &ignore).unwrap();
+
+    // Entry must still be present.
+    assert!(
+        ignore.has_entry(repo_dir.path(), "env.sh").unwrap(),
+        "keep_ignore=true must preserve the exclude entry"
+    );
+}
+
+// ── doctor ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn doctor_finds_orphan_store_item() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("orphan_test.txt");
+    std::fs::write(&file_path, "test").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    // Shelve the file, then manually inject an orphan file into the store.
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    let orphan_path = ctx.items_dir().join("orphan_injected.txt");
+    std::fs::write(&orphan_path, "orphan").unwrap();
+
+    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+
+    assert_eq!(report.items.len(), 1);
+    assert!(report.items[0].ok, "managed item must be reported as ok");
+    assert_eq!(report.orphan_store_items.len(), 1);
+    assert_eq!(report.orphan_store_items[0], "orphan_injected.txt");
+}
+
+#[test]
+fn doctor_empty_repo_is_clean() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+
+    assert!(report.items.is_empty());
+    assert!(report.orphan_store_items.is_empty());
+}
