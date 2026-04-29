@@ -5,7 +5,9 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{context::RepoContext, error::Result, ignore::IgnoreBackend, link::LinkStrategy};
+use crate::{
+    context::RepoContext, error::Result, ignore::IgnoreBackend, link::LinkStrategy, store::index,
+};
 
 use super::status::{self, ItemStatus};
 
@@ -19,6 +21,8 @@ pub struct DoctorReport {
     pub items: Vec<ItemStatus>,
     /// Store-side paths that exist on disk but are not referenced in the manifest.
     pub orphan_store_items: Vec<String>,
+    /// `true` when the repo root recorded in the index matches `ctx.repo_root`.
+    pub repo_root_matches_index: bool,
 }
 
 /// Runs all health checks and returns a [`DoctorReport`].
@@ -29,10 +33,25 @@ pub fn doctor(
 ) -> Result<DoctorReport> {
     let items = status::status(ctx, link, ignore)?;
     let orphan_store_items = collect_orphan_store_items(ctx);
+    let repo_root_matches_index = check_repo_root_in_index(ctx)?;
     Ok(DoctorReport {
         items,
         orphan_store_items,
+        repo_root_matches_index,
     })
+}
+
+/// Checks whether the repo root stored in the global index matches
+/// [`ctx.repo_root`].
+///
+/// A mismatch indicates that the repository was moved or cloned to a different
+/// path on this machine since it was first shelved.
+fn check_repo_root_in_index(ctx: &RepoContext) -> Result<bool> {
+    let idx = index::load(&ctx.config.store)?;
+    Ok(idx
+        .get(&ctx.repo_id)
+        .map(|e| e.root == ctx.repo_root)
+        .unwrap_or(false))
 }
 
 /// Walks the `items/` subtree of the repo store and collects any path that is

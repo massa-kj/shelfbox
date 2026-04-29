@@ -175,7 +175,11 @@ fn cmd_doctor(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<(
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print_doctor_report(&report.items, &report.orphan_store_items);
+        print_doctor_report(
+            &report.items,
+            &report.orphan_store_items,
+            report.repo_root_matches_index,
+        );
     }
     Ok(())
 }
@@ -211,7 +215,17 @@ fn print_status(statuses: &[ItemStatus]) {
     }
 }
 
-fn print_doctor_report(statuses: &[ItemStatus], orphans: &[String]) {
+fn print_doctor_report(statuses: &[ItemStatus], orphans: &[String], root_matches: bool) {
+    // Repo root integrity line.
+    if root_matches {
+        println!("{:<8} repo root matches index", "OK");
+    } else {
+        println!(
+            "{:<8} repo root mismatch: repository may have been moved",
+            "ERROR"
+        );
+    }
+
     print_status(statuses);
 
     if !orphans.is_empty() {

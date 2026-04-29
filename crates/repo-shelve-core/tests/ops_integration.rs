@@ -334,4 +334,143 @@ fn doctor_empty_repo_is_clean() {
 
     assert!(report.items.is_empty());
     assert!(report.orphan_store_items.is_empty());
+    assert!(
+        report.repo_root_matches_index,
+        "repo root should match index for a freshly built context"
+    );
+}
+
+// ── add validation edge cases ─────────────────────────────────────────────────
+
+#[test]
+fn add_tracked_file_returns_error() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Create, stage and commit a file so it is tracked by Git.
+    let file_path = repo_dir.path().join("tracked.txt");
+    std::fs::write(&file_path, "contents").unwrap();
+    StdCommand::new("git")
+        .args(["add", "tracked.txt"])
+        .current_dir(repo_dir.path())
+        .output()
+        .unwrap();
+    StdCommand::new("git")
+        .args(["commit", "-m", "add tracked file"])
+        .current_dir(repo_dir.path())
+        .output()
+        .unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    let err = ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(err, repo_shelve_core::error::AppError::PathIsTracked { .. }),
+        "expected PathIsTracked, got: {err}"
+    );
+}
+
+#[test]
+fn add_git_dir_path_returns_error() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Target a file inside .git/ (e.g. .git/config, which always exists).
+    let git_config = repo_dir.path().join(".git").join("config");
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    let err = ops::add::add(&mut ctx, &git_config, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            repo_shelve_core::error::AppError::PathInsideGitDir { .. }
+        ),
+        "expected PathInsideGitDir, got: {err}"
+    );
+}
+
+#[test]
+fn add_existing_symlink_returns_error() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Create a symlink that is not managed by repo-shelve.
+    let target = repo_dir.path().join("target_file.txt");
+    std::fs::write(&target, "target").unwrap();
+    let link_path = repo_dir.path().join("my_link");
+    std::os::unix::fs::symlink(&target, &link_path).unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    let err = ops::add::add(&mut ctx, &link_path, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(err, repo_shelve_core::error::AppError::PathIsSymlink { .. }),
+        "expected PathIsSymlink, got: {err}"
+    );
+}
+
+// ── doctor status checks ──────────────────────────────────────────────────────
+
+#[test]
+fn doctor_reports_error_for_dangling_symlink() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("secrets.txt");
+    std::fs::write(&file_path, "secret").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Remove the store-side file to create a dangling symlink.
+    let store_path = ctx.repo_store.join("items/secrets.txt");
+    std::fs::remove_file(&store_path).unwrap();
+
+    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+
+    assert_eq!(report.items.len(), 1);
+    let s = &report.items[0];
+    assert!(s.link_exists, "symlink node still present at repo side");
+    assert!(!s.store_exists, "store item was removed; should be false");
+    assert!(!s.ok, "item with missing store should not be ok");
+}
+
+#[test]
+fn doctor_reports_warn_for_missing_exclude_entry() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("private.txt");
+    std::fs::write(&file_path, "private").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Manually remove the exclude entry to simulate a WARN condition.
+    ignore
+        .remove_entries(repo_dir.path(), &["private.txt"])
+        .unwrap();
+
+    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+
+    assert_eq!(report.items.len(), 1);
+    let s = &report.items[0];
+    assert!(s.link_exists, "symlink must still exist");
+    assert!(s.link_valid, "symlink must still be valid");
+    assert!(s.store_exists, "store item must still exist");
+    assert!(!s.in_exclude, "exclude entry was removed; should be false");
+    assert!(!s.ok, "item missing from exclude should not be ok");
 }
