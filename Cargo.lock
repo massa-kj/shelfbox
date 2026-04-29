@@ -421,6 +421,7 @@ dependencies = [
  "anyhow",
  "clap",
  "repo-shelve-core",
+ "serde_json",
 ]
 
 [[package]]
