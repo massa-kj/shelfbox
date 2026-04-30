@@ -8,7 +8,7 @@ use std::process::Command as StdCommand;
 
 use tempfile::TempDir;
 
-use repo_shelve_core::{
+use shelfbox_core::{
     context,
     ignore::{GitInfoExclude, IgnoreBackend},
     link::SymlinkStrategy,
@@ -212,10 +212,7 @@ fn add_already_managed_returns_error() {
     // the manifest still contains the entry.
     let err = ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap_err();
     assert!(
-        matches!(
-            err,
-            repo_shelve_core::error::AppError::AlreadyManaged { .. }
-        ),
+        matches!(err, shelfbox_core::error::AppError::AlreadyManaged { .. }),
         "expected AlreadyManaged, got: {err}"
     );
 }
@@ -234,10 +231,7 @@ fn add_path_outside_repo_returns_error() {
 
     let err = ops::add::add(&mut ctx, &outside_file, false, &link, &ignore).unwrap_err();
     assert!(
-        matches!(
-            err,
-            repo_shelve_core::error::AppError::PathOutsideRepo { .. }
-        ),
+        matches!(err, shelfbox_core::error::AppError::PathOutsideRepo { .. }),
         "expected PathOutsideRepo, got: {err}"
     );
 }
@@ -258,10 +252,7 @@ fn restore_not_managed_link_returns_error() {
     let err =
         ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap_err();
     assert!(
-        matches!(
-            err,
-            repo_shelve_core::error::AppError::NotManagedLink { .. }
-        ),
+        matches!(err, shelfbox_core::error::AppError::NotManagedLink { .. }),
         "expected NotManagedLink, got: {err}"
     );
 }
@@ -367,7 +358,7 @@ fn add_tracked_file_returns_error() {
 
     let err = ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap_err();
     assert!(
-        matches!(err, repo_shelve_core::error::AppError::PathIsTracked { .. }),
+        matches!(err, shelfbox_core::error::AppError::PathIsTracked { .. }),
         "expected PathIsTracked, got: {err}"
     );
 }
@@ -386,10 +377,7 @@ fn add_git_dir_path_returns_error() {
 
     let err = ops::add::add(&mut ctx, &git_config, false, &link, &ignore).unwrap_err();
     assert!(
-        matches!(
-            err,
-            repo_shelve_core::error::AppError::PathInsideGitDir { .. }
-        ),
+        matches!(err, shelfbox_core::error::AppError::PathInsideGitDir { .. }),
         "expected PathInsideGitDir, got: {err}"
     );
 }
@@ -399,7 +387,7 @@ fn add_existing_symlink_returns_error() {
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
-    // Create a symlink that is not managed by repo-shelve.
+    // Create a symlink that is not managed by shelfbox.
     let target = repo_dir.path().join("target_file.txt");
     std::fs::write(&target, "target").unwrap();
     let link_path = repo_dir.path().join("my_link");
@@ -411,7 +399,7 @@ fn add_existing_symlink_returns_error() {
 
     let err = ops::add::add(&mut ctx, &link_path, false, &link, &ignore).unwrap_err();
     assert!(
-        matches!(err, repo_shelve_core::error::AppError::PathIsSymlink { .. }),
+        matches!(err, shelfbox_core::error::AppError::PathIsSymlink { .. }),
         "expected PathIsSymlink, got: {err}"
     );
 }

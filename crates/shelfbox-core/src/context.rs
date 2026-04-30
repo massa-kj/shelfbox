@@ -13,7 +13,7 @@ use crate::{
 
 // ── RepoContext ───────────────────────────────────────────────────────────────
 
-/// All context required to perform any repo-shelve operation.
+/// All context required to perform any shelfbox operation.
 ///
 /// Built once per CLI invocation (or API call) and passed by reference to
 /// every operation in `ops/`.  Keeping this struct immutable after

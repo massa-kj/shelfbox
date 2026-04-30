@@ -2,7 +2,7 @@
 
 ## Overview
 
-`repo-shelve` keeps files in your repository tree without letting Git see them.
+`shelfbox` keeps files in your repository tree without letting Git see them.
 It works by physically moving a file into an external **store** and replacing it
 with a symlink, then adding the path to `.git/info/exclude` so Git ignores both
 the symlink and any future file placed at that path.
@@ -15,7 +15,7 @@ appears to be in its original location.
 ## Installation
 
 ```sh
-cargo install --path crates/repo-shelve
+cargo install --path crates/shelfbox
 ```
 
 Requirements: Rust 1.75+, Git, Linux or macOS (symlinks required).
@@ -39,8 +39,8 @@ All subcommands accept one global flag:
 Shelves one or more files or directories.
 
 ```sh
-repo-shelve add .env
-repo-shelve add secrets/notes/local.md
+shelfbox add .env
+shelfbox add secrets/notes/local.md
 ```
 
 **What happens:**
@@ -64,7 +64,7 @@ repo-shelve add secrets/notes/local.md
 3. Must not be inside `.git/`.
 4. Must not be tracked by Git (`git ls-files --error-unmatch`).
 5. Must not already be a symlink.
-6. Must not already be managed by repo-shelve.
+6. Must not already be managed by shelfbox.
 7. The store destination must not already exist (no silent overwrites).
 
 **Rollback:** if symlink creation fails after the move, the file is moved back
@@ -75,13 +75,13 @@ automatically.
 Returns shelved files to their original locations.
 
 ```sh
-repo-shelve restore .env
-repo-shelve restore secrets/ notes/local.md
+shelfbox restore .env
+shelfbox restore secrets/ notes/local.md
 ```
 
 **What happens:**
 
-1. Validates that each path is a repo-shelve managed symlink.
+1. Validates that each path is a shelfbox managed symlink.
 2. Checks that the store-side item exists (guards against dangling links).
 3. Removes the symlink.
 4. Moves the file/directory back from the store to the repo.
@@ -103,8 +103,8 @@ automatically.
 Lists all files currently shelved in the current repository.
 
 ```sh
-repo-shelve list
-repo-shelve list --json
+shelfbox list
+shelfbox list --json
 ```
 
 **Output (plain):**
@@ -125,8 +125,8 @@ repo-shelve list --json
 Checks the health of every shelved item and reports problems.
 
 ```sh
-repo-shelve status
-repo-shelve status --json
+shelfbox status
+shelfbox status --json
 ```
 
 **Output (plain):**
@@ -163,8 +163,8 @@ Severity:
 Runs all status checks plus deeper integrity checks.
 
 ```sh
-repo-shelve doctor
-repo-shelve doctor --json
+shelfbox doctor
+shelfbox doctor --json
 ```
 
 **Additional checks beyond `status`:**
@@ -201,14 +201,14 @@ Optional TOML config file at:
 
 | Platform | Default path |
 |---|---|
-| Linux / macOS | `$XDG_CONFIG_HOME/repo-shelve/config.toml` → `~/.config/repo-shelve/config.toml` |
+| Linux / macOS | `$XDG_CONFIG_HOME/shelfbox/config.toml` → `~/.config/shelfbox/config.toml` |
 
 ```toml
 # config.toml
 
 # Absolute path to the store root directory.
-# Default: $XDG_DATA_HOME/repo-shelve (~/.local/share/repo-shelve on Linux)
-store = "/mnt/external/repo-shelve-store"
+# Default: $XDG_DATA_HOME/shelfbox (~/.local/share/shelfbox on Linux)
+store = "/mnt/external/shelfbox-store"
 ```
 
 If the config file does not exist, all defaults are used silently.
@@ -218,7 +218,7 @@ If the config file does not exist, all defaults are used silently.
 ## Store layout
 
 ```
-~/.local/share/repo-shelve/
+~/.local/share/shelfbox/
   index.json                        # maps ULID → repo metadata (root path, etc.)
   repos/
     01JTAR…/                        # one directory per repository (ULID)
@@ -241,7 +241,7 @@ Only `index.json` contains environment-specific absolute paths.
 
 ```sh
 echo "DATABASE_URL=postgres://…" > .env
-repo-shelve add .env
+shelfbox add .env
 # .env is now a symlink; your app still reads it normally
 git status  # .env does not appear — it's in .git/info/exclude
 ```
@@ -250,19 +250,19 @@ git status  # .env does not appear — it's in .git/info/exclude
 
 ```sh
 # Move existing store
-mv ~/.local/share/repo-shelve /mnt/dropbox/repo-shelve
+mv ~/.local/share/shelfbox /mnt/dropbox/shelfbox
 
-# Tell repo-shelve where it is
-echo 'store = "/mnt/dropbox/repo-shelve"' > ~/.config/repo-shelve/config.toml
+# Tell shelfbox where it is
+echo 'store = "/mnt/dropbox/shelfbox"' > ~/.config/shelfbox/config.toml
 
 # Or use the flag per-invocation
-repo-shelve --store /mnt/dropbox/repo-shelve list
+shelfbox --store /mnt/dropbox/shelfbox list
 ```
 
 ### Diagnosing problems after moving a repository
 
 ```sh
-repo-shelve doctor
+shelfbox doctor
 # ERROR    repo root mismatch: repository may have been moved
 ```
 

@@ -40,7 +40,7 @@ pub fn restore(
             })?;
     let rel_str = rel_path.to_string_lossy().into_owned();
 
-    // Must be a repo-shelve managed symlink.
+    // Must be a shelfbox managed symlink.
     if !link.is_managed_link(abs_path, &ctx.config.store) {
         return Err(AppError::NotManagedLink {
             path: abs_path.to_path_buf(),

@@ -21,7 +21,7 @@ pub trait LinkStrategy {
     /// Only the link itself is removed; the target is not touched.
     fn remove(&self, link_path: &Path) -> Result<()>;
 
-    /// Returns `true` if `link_path` is a link managed by repo-shelve.
+    /// Returns `true` if `link_path` is a link managed by shelfbox.
     ///
     /// "Managed" means: it is a link of the expected kind whose target
     /// falls inside `store_root`.
@@ -73,7 +73,7 @@ impl LinkStrategy for SymlinkStrategy {
             return false;
         }
 
-        // 2. The resolved target must live inside the repo-shelve store.
+        // 2. The resolved target must live inside the shelfbox store.
         let target = match std::fs::read_link(link_path) {
             Ok(t) => t,
             Err(_) => return false,

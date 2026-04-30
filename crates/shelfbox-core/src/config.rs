@@ -8,10 +8,10 @@ use crate::error::{AppError, Result};
 
 /// Returns the default store root directory following XDG / platform conventions.
 ///
-/// - Linux/macOS: `$XDG_DATA_HOME/repo-shelve` → fallback `~/.local/share/repo-shelve`
-/// - Windows:     `%LOCALAPPDATA%\repo-shelve`
+/// - Linux/macOS: `$XDG_DATA_HOME/shelfbox` → fallback `~/.local/share/shelfbox`
+/// - Windows:     `%LOCALAPPDATA%\shelfbox`
 fn default_store_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("repo-shelve"))
+    dirs::data_local_dir().map(|d| d.join("shelfbox"))
 }
 
 // ── Raw TOML representation ───────────────────────────────────────────────────
@@ -75,11 +75,11 @@ impl Config {
 
 /// Returns the platform-default path for the `config.toml` file.
 ///
-/// - Linux/macOS: `$XDG_CONFIG_HOME/repo-shelve/config.toml`
-///   → fallback `~/.config/repo-shelve/config.toml`
-/// - Windows:     `%APPDATA%\repo-shelve\config.toml`
+/// - Linux/macOS: `$XDG_CONFIG_HOME/shelfbox/config.toml`
+///   → fallback `~/.config/shelfbox/config.toml`
+/// - Windows:     `%APPDATA%\shelfbox\config.toml`
 pub fn config_file_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("repo-shelve").join("config.toml"))
+    dirs::config_dir().map(|d| d.join("shelfbox").join("config.toml"))
 }
 
 fn read_config_file() -> Result<RawConfig> {
@@ -126,6 +126,6 @@ mod tests {
         let raw = RawConfig { store: None };
         // Platform default must exist on the CI runner (Linux/macOS).
         let cfg = Config::resolve(raw, None).unwrap();
-        assert!(cfg.store.to_string_lossy().contains("repo-shelve"));
+        assert!(cfg.store.to_string_lossy().contains("shelfbox"));
     }
 }

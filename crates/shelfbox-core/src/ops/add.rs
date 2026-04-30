@@ -62,7 +62,7 @@ pub fn add(
         });
     }
 
-    // Must not already be managed by repo-shelve.
+    // Must not already be managed by shelfbox.
     if ctx.manifest.contains(&rel_str) {
         return Err(AppError::AlreadyManaged {
             path: abs_path.to_path_buf(),

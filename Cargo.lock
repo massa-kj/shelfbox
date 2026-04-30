@@ -415,29 +415,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "repo-shelve"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "repo-shelve-core",
- "serde_json",
-]
-
-[[package]]
-name = "repo-shelve-core"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "toml",
- "ulid",
-]
-
-[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -512,6 +489,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "shelfbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "shelfbox-core",
+]
+
+[[package]]
+name = "shelfbox-core"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+ "ulid",
 ]
 
 [[package]]

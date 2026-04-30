@@ -22,7 +22,7 @@ pub struct RepoEntry {
     pub git_dir: PathBuf,
 
     /// ISO-8601 timestamp of the last time this repo was accessed via
-    /// repo-shelve.
+    /// shelfbox.
     pub last_seen_at: String,
 }
 
@@ -73,7 +73,7 @@ impl Index {
 
 /// Returns the path to the global index file.
 ///
-/// `store_root` is the top-level store directory (e.g. `~/.local/share/repo-shelve`).
+/// `store_root` is the top-level store directory (e.g. `~/.local/share/shelfbox`).
 pub fn index_path(store_root: &Path) -> PathBuf {
     store_root.join("index.json")
 }

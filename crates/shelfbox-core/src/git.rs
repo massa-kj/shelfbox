@@ -65,7 +65,7 @@ pub fn find_repo_root(cwd: &Path) -> Result<PathBuf> {
 ///
 /// Runs `git ls-files --error-unmatch -- <path>`.
 /// A non-zero exit code means the file is not tracked (which is the normal
-/// case for files that repo-shelve manages).
+/// case for files that shelfbox manages).
 ///
 /// `path` must be absolute or relative to `repo_root`.
 pub fn is_tracked(repo_root: &Path, path: &Path) -> Result<bool> {

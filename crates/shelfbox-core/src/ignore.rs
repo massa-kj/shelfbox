@@ -25,10 +25,10 @@ pub trait IgnoreBackend {
 
 // ── GitInfoExclude ────────────────────────────────────────────────────────────
 
-const BLOCK_BEGIN: &str = "# BEGIN repo-shelve";
-const BLOCK_END: &str = "# END repo-shelve";
+const BLOCK_BEGIN: &str = "# BEGIN shelfbox";
+const BLOCK_END: &str = "# END shelfbox";
 
-/// [`IgnoreBackend`] that manages a `# BEGIN repo-shelve … # END repo-shelve`
+/// [`IgnoreBackend`] that manages a `# BEGIN shelfbox … # END shelfbox`
 /// block inside `.git/info/exclude`.
 ///
 /// The entire block is replaced atomically on every write, so the
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn parse_extracts_block_entries() {
-        let contents = "*.log\n# BEGIN repo-shelve\n/notes.md\n/prompts/\n# END repo-shelve\n";
+        let contents = "*.log\n# BEGIN shelfbox\n/notes.md\n/prompts/\n# END shelfbox\n";
         let (before, managed, after) = GitInfoExclude::parse(contents);
         assert_eq!(before, "*.log\n");
         assert_eq!(managed, vec!["/notes.md", "/prompts/"]);

@@ -8,7 +8,7 @@ pub mod ops;
 pub mod store;
 
 // Re-export the most commonly used items so downstream crates only need
-// `use repo_shelve_core::prelude::*` for the essentials.
+// `use shelfbox_core::prelude::*` for the essentials.
 pub mod prelude {
     pub use crate::error::{AppError, Result};
 }

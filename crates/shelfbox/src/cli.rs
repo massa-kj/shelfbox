@@ -2,7 +2,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use repo_shelve_core::{
+use shelfbox_core::{
     context,
     ignore::GitInfoExclude,
     link::SymlinkStrategy,
@@ -13,7 +13,7 @@ use repo_shelve_core::{
 
 /// Shelve repo-local files outside Git, keeping them visible in your editor.
 #[derive(Debug, Parser)]
-#[command(name = "repo-shelve", version, about)]
+#[command(name = "shelfbox", version, about)]
 pub struct Cli {
     /// Override the store directory (takes precedence over config).
     #[arg(long, global = true, value_name = "PATH")]

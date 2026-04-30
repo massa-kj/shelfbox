@@ -1,10 +1,10 @@
 [package]
-name = "repo-shelve-core"
+name = "shelfbox-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core library for repo-shelve: shelve repo-local files outside Git"
+description = "Core library for shelfbox: shelve repo-local files outside Git"
 
 [dependencies]
 serde.workspace = true

@@ -2,14 +2,14 @@
 
 ## High-level overview
 
-`repo-shelve` is a Cargo workspace:
+`shelfbox` is a Cargo workspace:
 
 ```
-repo-shelve/
+shelfbox/
 ├── Cargo.toml                  # workspace root
 └── crates/
-    ├── repo-shelve-core/       # library crate — all business logic
-    └── repo-shelve/            # binary crate — CLI only
+    ├── shelfbox-core/       # library crate — all business logic
+    └── shelfbox/            # binary crate — CLI only
 ```
 
 The separation enforces a clean boundary: the library has no knowledge of
@@ -20,7 +20,7 @@ disk structures or OS calls.
 
 ## Crate layout
 
-### `repo-shelve-core` (library)
+### `shelfbox-core` (library)
 
 ```
 src/
@@ -44,7 +44,7 @@ src/
     doctor.rs     # doctor() — full integrity report
 ```
 
-### `repo-shelve` (binary)
+### `shelfbox` (binary)
 
 ```
 src/
@@ -92,7 +92,7 @@ Stored at `<store>/repos/<ULID>/manifest.json`.
   "items": [
     {
       "path": ".env",
-      "store_path": "/home/user/.local/share/repo-shelve/repos/01JTAR…/items/.env",
+      "store_path": "/home/user/.local/share/shelfbox/repos/01JTAR…/items/.env",
       "kind": "File",
       "link": { "link_type": "Symlink" },
       "git": { "was_tracked": false },
@@ -109,7 +109,7 @@ store-side item without re-deriving it.
 ### Store directory tree
 
 ```
-~/.local/share/repo-shelve/
+~/.local/share/shelfbox/
   index.json
   repos/
     <ULID>/
@@ -127,7 +127,7 @@ contents human-readable and easy to inspect manually.
 
 ## Request lifecycle
 
-### `repo-shelve add notes.md`
+### `shelfbox add notes.md`
 
 ```
 CLI parse (clap)
@@ -147,7 +147,7 @@ CLI parse (clap)
             └─ index::save(store_root, index)
 ```
 
-### `repo-shelve doctor`
+### `shelfbox doctor`
 
 ```
 cli::cmd_doctor()

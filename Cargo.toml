@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/repo-shelve-core",
-    "crates/repo-shelve",
+    "crates/shelfbox-core",
+    "crates/shelfbox",
 ]
 resolver = "2"
 
@@ -9,7 +9,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/massa-kj/repo-shelve"
+repository = "https://github.com/massa-kj/shelfbox"
 
 # Shared dependency versions to keep the workspace in sync.
 [workspace.dependencies]

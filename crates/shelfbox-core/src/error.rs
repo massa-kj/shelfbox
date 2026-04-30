@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-/// Top-level error type for repo-shelve-core.
+/// Top-level error type for shelfbox-core.
 ///
 /// Variants are kept fine-grained so callers (CLI, GUI, tests) can match
 /// on specific conditions without parsing error strings.
@@ -34,8 +34,8 @@ pub enum AppError {
     #[error("'{path}' is already a symlink; shelving symlinks is not supported in this version")]
     PathIsSymlink { path: PathBuf },
 
-    /// The supplied path is already managed by repo-shelve.
-    #[error("'{path}' is already managed by repo-shelve")]
+    /// The supplied path is already managed by shelfbox.
+    #[error("'{path}' is already managed by shelfbox")]
     AlreadyManaged { path: PathBuf },
 
     // ── Store conflicts ────────────────────────────────────────────────────
@@ -44,8 +44,8 @@ pub enum AppError {
     StoreConflict { store_path: PathBuf },
 
     // ── restore validation ─────────────────────────────────────────────────
-    /// The path at the repo side is not a repo-shelve managed symlink.
-    #[error("'{path}' is not a repo-shelve managed symlink")]
+    /// The path at the repo side is not a shelfbox managed symlink.
+    #[error("'{path}' is not a shelfbox managed symlink")]
     NotManagedLink { path: PathBuf },
 
     /// The store-side item is missing (dangling link).
@@ -122,5 +122,5 @@ impl AppError {
     }
 }
 
-/// Alias used throughout `repo-shelve-core` to keep signatures concise.
+/// Alias used throughout `shelfbox-core` to keep signatures concise.
 pub type Result<T, E = AppError> = std::result::Result<T, E>;
