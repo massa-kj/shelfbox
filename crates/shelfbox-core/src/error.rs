@@ -43,6 +43,12 @@ pub enum AppError {
     #[error("store conflict: '{store_path}' already exists")]
     StoreConflict { store_path: PathBuf },
 
+    // ── repair validation ──────────────────────────────────────────────────
+    /// A regular (non-symlink) file exists at the repo path; overwriting it
+    /// would cause data loss, so `repair` refuses to proceed.
+    #[error("'{path}' is a regular file; refusing to overwrite (use 'shelfbox restore' first)")]
+    PathIsRegularFile { path: PathBuf },
+
     // ── restore validation ─────────────────────────────────────────────────
     /// The path at the repo side is not a shelfbox managed symlink.
     #[error("'{path}' is not a shelfbox managed symlink")]

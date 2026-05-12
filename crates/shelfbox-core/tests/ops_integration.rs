@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use shelfbox_core::{
     context,
     ignore::{GitInfoExclude, IgnoreBackend},
-    link::SymlinkStrategy,
+    link::{LinkStrategy, SymlinkStrategy},
     ops,
 };
 
@@ -461,4 +461,192 @@ fn doctor_reports_warn_for_missing_exclude_entry() {
     assert!(s.store_exists, "store item must still exist");
     assert!(!s.in_exclude, "exclude entry was removed; should be false");
     assert!(!s.ok, "item missing from exclude should not be ok");
+}
+
+// ── repair ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn repair_recreates_missing_symlink() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("secret.env");
+    std::fs::write(&file_path, "TOKEN=abc").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    assert!(file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    // Simulate the symlink being removed (e.g. by `rm`).
+    std::fs::remove_file(&file_path).unwrap();
+    assert!(!file_path.exists(), "symlink must be gone before repair");
+
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
+
+    // Symlink must be back and readable.
+    assert!(file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "TOKEN=abc");
+}
+
+#[test]
+fn repair_relinks_invalid_symlink() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("cfg.toml");
+    std::fs::write(&file_path, "[db]").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Replace managed symlink with one pointing elsewhere (hand-modified).
+    std::fs::remove_file(&file_path).unwrap();
+    std::os::unix::fs::symlink("/tmp/nonexistent", &file_path).unwrap();
+    assert!(
+        !link.is_managed_link(&file_path, &ctx.config.store),
+        "symlink must be invalid before repair"
+    );
+
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
+
+    assert!(link.is_managed_link(&file_path, &ctx.config.store));
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "[db]");
+}
+
+#[test]
+fn repair_already_healthy_returns_no_op() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("healthy.txt");
+    std::fs::write(&file_path, "ok").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    assert_eq!(outcome, ops::repair::RepairOutcome::AlreadyHealthy);
+}
+
+#[test]
+fn repair_returns_store_missing_when_store_item_gone() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("secrets.txt");
+    std::fs::write(&file_path, "secret").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Delete the store-side copy to simulate data loss.
+    let store_item = ctx.repo_store.join("items/secrets.txt");
+    std::fs::remove_file(&store_item).unwrap();
+
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    assert_eq!(outcome, ops::repair::RepairOutcome::StoreMissing);
+
+    // The (now dangling) symlink must be left untouched.
+    assert!(
+        file_path.symlink_metadata().is_ok(),
+        "repair must not remove the dangling symlink"
+    );
+}
+
+#[test]
+fn repair_returns_not_managed_for_unknown_path() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let unmanaged = repo_dir.path().join("unmanaged.txt");
+    std::fs::write(&unmanaged, "not shelved").unwrap();
+
+    let ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+
+    let outcome = ops::repair::repair(&ctx, &unmanaged, &link, false).unwrap();
+    assert_eq!(outcome, ops::repair::RepairOutcome::NotManaged);
+}
+
+#[test]
+fn repair_refuses_to_overwrite_regular_file() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("data.txt");
+    std::fs::write(&file_path, "original").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Remove the symlink and put a regular file back in its place.
+    std::fs::remove_file(&file_path).unwrap();
+    std::fs::write(&file_path, "user placed file").unwrap();
+    assert!(
+        !file_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "must be a regular file before the safety check"
+    );
+
+    let result = ops::repair::repair(&ctx, &file_path, &link, false);
+    assert!(
+        result.is_err(),
+        "repair must return an error to prevent data loss"
+    );
+
+    // The user's file must be intact.
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "user placed file"
+    );
+}
+
+#[test]
+fn repair_dry_run_makes_no_changes() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("dryrun.txt");
+    std::fs::write(&file_path, "contents").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    std::fs::remove_file(&file_path).unwrap();
+
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, true).unwrap();
+    assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
+
+    // Symlink must NOT have been recreated in dry-run mode.
+    assert!(!file_path.exists(), "dry-run must not recreate the symlink");
 }

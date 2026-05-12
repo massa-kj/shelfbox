@@ -71,6 +71,17 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Recreate a missing or broken symlink for one or more shelved files.
+    Repair {
+        /// Files to repair (relative to repo root).
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────────
@@ -90,6 +101,7 @@ pub fn run() -> Result<()> {
         Command::List { json } => cmd_list(&cwd, store_override, json),
         Command::Status { json } => cmd_status(&cwd, store_override, json),
         Command::Doctor { json } => cmd_doctor(&cwd, store_override, json),
+        Command::Repair { paths, dry_run } => cmd_repair(&cwd, store_override, &paths, dry_run),
     }
 }
 
@@ -180,6 +192,43 @@ fn cmd_doctor(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<(
             &report.orphan_store_items,
             report.repo_root_matches_index,
         );
+    }
+    Ok(())
+}
+
+fn cmd_repair(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    paths: &[PathBuf],
+    dry_run: bool,
+) -> Result<()> {
+    let ctx = context::build(cwd, store_override).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+
+    for path in paths {
+        let abs = resolve_path(cwd, path);
+        match ops::repair::repair(&ctx, &abs, &link, dry_run)
+            .with_context(|| format!("repair '{}' failed", path.display()))?
+        {
+            ops::repair::RepairOutcome::LinkRecreated => {
+                if !dry_run {
+                    println!("repaired: {}", path.display());
+                }
+            }
+            ops::repair::RepairOutcome::AlreadyHealthy => {
+                println!("ok (no repair needed): {}", path.display());
+            }
+            ops::repair::RepairOutcome::StoreMissing => {
+                eprintln!(
+                    "error: store item missing for '{}' — data may be lost. \
+                     Restore manually and re-add.",
+                    path.display()
+                );
+            }
+            ops::repair::RepairOutcome::NotManaged => {
+                eprintln!("error: '{}' is not managed by shelfbox", path.display());
+            }
+        }
     }
     Ok(())
 }
