@@ -13,6 +13,7 @@ use shelfbox_core::{
     ignore::{GitInfoExclude, IgnoreBackend},
     link::{LinkStrategy, SymlinkStrategy},
     ops,
+    ops::doctor::FixResult,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -649,4 +650,225 @@ fn repair_dry_run_makes_no_changes() {
 
     // Symlink must NOT have been recreated in dry-run mode.
     assert!(!file_path.exists(), "dry-run must not recreate the symlink");
+}
+
+// ── doctor --fix ──────────────────────────────────────────────────────────────
+
+#[test]
+fn doctor_fix_repairs_missing_exclude_entry() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("fix_exclude.env");
+    std::fs::write(&file_path, "SECRET=1").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Manually remove the exclude entry to simulate the broken state.
+    let exclude_path = repo_dir.path().join(".git/info/exclude");
+    let content = std::fs::read_to_string(&exclude_path).unwrap();
+    let stripped = content
+        .lines()
+        .filter(|l| !l.contains("fix_exclude.env"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&exclude_path, stripped).unwrap();
+    assert!(
+        !ignore
+            .has_entry(repo_dir.path(), "fix_exclude.env")
+            .unwrap(),
+        "exclude entry must be absent before fix"
+    );
+
+    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+
+    // At least one Fixed action must be present.
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::Fixed(_))),
+        "expected a Fixed action for exclude repair"
+    );
+
+    // The exclude entry must be restored.
+    assert!(
+        ignore
+            .has_entry(repo_dir.path(), "fix_exclude.env")
+            .unwrap(),
+        "exclude entry must be present after fix"
+    );
+}
+
+#[test]
+fn doctor_fix_repairs_missing_symlink() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("fix_link.txt");
+    std::fs::write(&file_path, "data").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Remove the symlink to simulate the broken state.
+    std::fs::remove_file(&file_path).unwrap();
+
+    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::Fixed(_))),
+        "expected a Fixed action for symlink recreation"
+    );
+    assert!(
+        file_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "symlink must be restored after fix"
+    );
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "data");
+}
+
+#[test]
+fn doctor_fix_records_cannot_fix_for_store_missing() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("lost.txt");
+    std::fs::write(&file_path, "lost data").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Delete the store-side copy to simulate data loss.
+    std::fs::remove_file(ctx.repo_store.join("items/lost.txt")).unwrap();
+
+    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::CannotFix(_))),
+        "expected CannotFix for store_missing"
+    );
+    assert!(
+        !report.data_loss_warnings.is_empty(),
+        "data_loss_warnings must be populated"
+    );
+}
+
+#[test]
+fn doctor_fix_needs_confirmation_for_orphans_without_yes() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    // Inject an orphan directly into the items directory.
+    let orphan_path = ctx.items_dir().join("orphan_p2.txt");
+    std::fs::create_dir_all(ctx.items_dir()).unwrap();
+    std::fs::write(&orphan_path, "orphan").unwrap();
+
+    // yes=false → NeedsConfirmation, file must remain.
+    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::NeedsConfirmation(_))),
+        "expected NeedsConfirmation for orphan without --yes"
+    );
+    assert!(
+        orphan_path.exists(),
+        "orphan must not be deleted without --yes"
+    );
+}
+
+#[test]
+fn doctor_fix_deletes_orphans_with_yes() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    let orphan_path = ctx.items_dir().join("orphan_yes.txt");
+    std::fs::create_dir_all(ctx.items_dir()).unwrap();
+    std::fs::write(&orphan_path, "orphan").unwrap();
+
+    // yes=true → orphan must be deleted.
+    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, true, false).unwrap();
+
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::Fixed(_))),
+        "expected Fixed for orphan deletion"
+    );
+    assert!(!orphan_path.exists(), "orphan must be deleted with --yes");
+}
+
+#[test]
+fn doctor_fix_dry_run_makes_no_changes() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("dryrun_fix.txt");
+    std::fs::write(&file_path, "contents").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Remove both the symlink and the exclude entry to create a dirty state.
+    std::fs::remove_file(&file_path).unwrap();
+    let exclude_path = repo_dir.path().join(".git/info/exclude");
+    let content = std::fs::read_to_string(&exclude_path).unwrap();
+    let stripped = content
+        .lines()
+        .filter(|l| !l.contains("dryrun_fix.txt"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&exclude_path, stripped).unwrap();
+
+    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, true).unwrap();
+
+    // dry-run must report what it would do.
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::Fixed(_))),
+        "dry-run should still report planned Fixed actions"
+    );
+
+    // Filesystem must be unchanged.
+    assert!(!file_path.exists(), "dry-run must not recreate the symlink");
+    assert!(
+        !ignore.has_entry(repo_dir.path(), "dryrun_fix.txt").unwrap(),
+        "dry-run must not restore the exclude entry"
+    );
 }

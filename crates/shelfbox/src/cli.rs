@@ -67,6 +67,15 @@ pub enum Command {
 
     /// Check for broken links, missing store items, and other inconsistencies.
     Doctor {
+        /// Apply safe automatic fixes for detected issues.
+        #[arg(long)]
+        fix: bool,
+
+        /// When used with --fix, also perform potentially destructive actions
+        /// such as deleting orphan store items without prompting.
+        #[arg(long, requires = "fix")]
+        yes: bool,
+
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -100,7 +109,7 @@ pub fn run() -> Result<()> {
         } => cmd_restore(&cwd, store_override, &paths, dry_run, keep_ignore),
         Command::List { json } => cmd_list(&cwd, store_override, json),
         Command::Status { json } => cmd_status(&cwd, store_override, json),
-        Command::Doctor { json } => cmd_doctor(&cwd, store_override, json),
+        Command::Doctor { fix, yes, json } => cmd_doctor(&cwd, store_override, fix, yes, json),
         Command::Repair { paths, dry_run } => cmd_repair(&cwd, store_override, &paths, dry_run),
     }
 }
@@ -178,20 +187,35 @@ fn cmd_status(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<(
     Ok(())
 }
 
-fn cmd_doctor(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()> {
+fn cmd_doctor(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    fix: bool,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
     let ctx = context::build(cwd, store_override).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    let report = ops::doctor::doctor(&ctx, &link, &ignore)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+    if fix {
+        let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, yes, false)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_fix_report(&report);
+        }
     } else {
-        print_doctor_report(
-            &report.items,
-            &report.orphan_store_items,
-            report.repo_root_matches_index,
-        );
+        let report = ops::doctor::doctor(&ctx, &link, &ignore)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_doctor_report(
+                &report.items,
+                &report.orphan_store_items,
+                report.repo_root_matches_index,
+            );
+        }
     }
     Ok(())
 }
@@ -284,6 +308,36 @@ fn print_doctor_report(statuses: &[ItemStatus], orphans: &[String], root_matches
         println!("--- orphan store items (not in manifest) ---");
         for orphan in orphans {
             println!("  WARN     orphan: {orphan}");
+        }
+    }
+}
+
+fn print_fix_report(report: &ops::doctor::DoctorFixReport) {
+    use ops::doctor::FixResult;
+
+    if report.actions.is_empty() {
+        println!("{:<12} everything is healthy", "OK");
+        return;
+    }
+
+    for action in &report.actions {
+        match action {
+            FixResult::Fixed(msg) => println!("{:<12} {msg}", "FIXED"),
+            FixResult::Skipped(msg) => println!("{:<12} {msg}", "OK"),
+            FixResult::Failed(msg) => println!("{:<12} {msg}", "ERROR"),
+            FixResult::NeedsConfirmation(msg) => println!("{:<12} {msg}", "CONFIRM"),
+            FixResult::CannotFix(msg) => println!("{:<12} {msg}", "WARN"),
+        }
+    }
+
+    if !report.data_loss_warnings.is_empty() {
+        println!();
+        println!("--- data loss warnings ---");
+        for w in &report.data_loss_warnings {
+            println!("  {w}");
+            println!(
+                "  Restore manually: rm <symlink> && cp <backup> <path> && shelfbox add <path>"
+            );
         }
     }
 }

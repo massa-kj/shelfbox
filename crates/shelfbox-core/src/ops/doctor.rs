@@ -6,15 +6,21 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    context::RepoContext, error::Result, ignore::IgnoreBackend, link::LinkStrategy, store::index,
+    context::{self, RepoContext},
+    error::Result,
+    ignore::IgnoreBackend,
+    link::LinkStrategy,
+    store::index,
 };
 
-use super::status::{self, ItemStatus};
+use super::{
+    repair::{self, RepairOutcome},
+    status::{self, ItemStatus},
+};
 
 /// Comprehensive health report produced by the `doctor` command.
 ///
-/// This is a read-only operation.  A `--fix` mode is deferred to a later
-/// milestone.
+/// This is a read-only operation.  Use [`doctor_fix`] for the repair mode.
 #[derive(Debug, Serialize)]
 pub struct DoctorReport {
     /// Per-item health status (covers every item in the manifest).
@@ -107,6 +113,226 @@ fn walk_for_orphans(
                 orphans.push(rel.to_string_lossy().into_owned());
             }
             // Report orphan directories at their root; do not recurse into them.
+        }
+    }
+}
+
+// ── doctor --fix ──────────────────────────────────────────────────────────────
+
+/// The outcome of a single fix action within [`doctor_fix`].
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", content = "detail")]
+pub enum FixResult {
+    /// The issue was successfully resolved.
+    Fixed(String),
+    /// No fix was needed; the item was already healthy.
+    Skipped(String),
+    /// An error occurred while attempting the fix.  Other actions continued.
+    Failed(String),
+    /// The action is potentially destructive and requires `--yes` to proceed.
+    NeedsConfirmation(String),
+    /// The issue cannot be auto-repaired (e.g. store item missing / data loss).
+    CannotFix(String),
+}
+
+/// Report produced by [`doctor_fix`].
+#[derive(Debug, Serialize)]
+pub struct DoctorFixReport {
+    /// Ordered log of every fix action attempted.
+    pub actions: Vec<FixResult>,
+    /// Items whose store-side file is missing; surfaced separately for easy
+    /// inspection without iterating `actions`.
+    pub data_loss_warnings: Vec<String>,
+}
+
+/// Diagnoses all known issues and applies safe automatic fixes.
+///
+/// **Safety levels:**
+/// - Safe (no data loss possible): performed automatically.
+/// - Potentially destructive (orphan deletion): requires `yes = true`.
+/// - Cannot fix (store item missing): recorded in `data_loss_warnings`.
+///
+/// Actions are applied in order, and failures are recorded but do not
+/// abort remaining steps (best-effort).  The function is idempotent.
+///
+/// `dry_run = true` records what *would* happen without touching the
+/// filesystem, index, or ignore backend.
+pub fn doctor_fix(
+    ctx: &RepoContext,
+    link: &dyn LinkStrategy,
+    ignore: &dyn IgnoreBackend,
+    yes: bool,
+    dry_run: bool,
+) -> Result<DoctorFixReport> {
+    let mut actions: Vec<FixResult> = Vec::new();
+    let mut data_loss_warnings: Vec<String> = Vec::new();
+
+    // Order matters: root fix first so subsequent ops see consistent paths.
+    fix_root_mismatch(ctx, &mut actions, dry_run)?;
+    fix_exclude_entries(ctx, ignore, &mut actions, dry_run)?;
+    fix_symlinks(ctx, link, &mut actions, &mut data_loss_warnings, dry_run);
+    handle_orphans(ctx, yes, &mut actions, dry_run);
+
+    Ok(DoctorFixReport {
+        actions,
+        data_loss_warnings,
+    })
+}
+
+/// Fixes an index root mismatch by updating the recorded root to the current
+/// repository path.
+fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: bool) -> Result<()> {
+    let idx = index::load(&ctx.config.store)?;
+    let already_correct = idx
+        .get(&ctx.repo_id)
+        .map(|e| e.root == ctx.repo_root)
+        .unwrap_or(false);
+
+    if already_correct {
+        return Ok(());
+    }
+
+    if dry_run {
+        actions.push(FixResult::Fixed(format!(
+            "[dry-run] would update index root to {}",
+            ctx.repo_root.display()
+        )));
+        return Ok(());
+    }
+
+    // Reload with a mut binding so we can upsert.
+    let mut idx = idx;
+    let existing = idx.get(&ctx.repo_id).cloned();
+    let git_dir = existing
+        .as_ref()
+        .map(|e| e.git_dir.clone())
+        .unwrap_or_else(|| ctx.repo_root.join(".git"));
+
+    idx.upsert(
+        &ctx.repo_id,
+        index::RepoEntry {
+            root: ctx.repo_root.clone(),
+            git_dir,
+            last_seen_at: context::now_iso8601(),
+        },
+    );
+    index::save(&ctx.config.store, &idx)?;
+
+    actions.push(FixResult::Fixed(format!(
+        "updated index root to {}",
+        ctx.repo_root.display()
+    )));
+    Ok(())
+}
+
+/// Ensures every manifested path appears in the ignore backend.
+fn fix_exclude_entries(
+    ctx: &RepoContext,
+    ignore: &dyn IgnoreBackend,
+    actions: &mut Vec<FixResult>,
+    dry_run: bool,
+) -> Result<()> {
+    let mut missing: Vec<&str> = Vec::new();
+    for item in &ctx.manifest.items {
+        if !ignore.has_entry(&ctx.repo_root, &item.path)? {
+            missing.push(&item.path);
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    if dry_run {
+        actions.push(FixResult::Fixed(format!(
+            "[dry-run] would add {} path(s) to .git/info/exclude: {}",
+            missing.len(),
+            missing.join(", ")
+        )));
+        return Ok(());
+    }
+
+    ignore.add_entries(&ctx.repo_root, &missing)?;
+    actions.push(FixResult::Fixed(format!(
+        "added {} path(s) to .git/info/exclude: {}",
+        missing.len(),
+        missing.join(", ")
+    )));
+    Ok(())
+}
+
+/// Iterates all manifest items and calls [`repair::repair`] for each.
+/// Failures are recorded as [`FixResult::Failed`] rather than propagated.
+fn fix_symlinks(
+    ctx: &RepoContext,
+    link: &dyn LinkStrategy,
+    actions: &mut Vec<FixResult>,
+    data_loss_warnings: &mut Vec<String>,
+    dry_run: bool,
+) {
+    for item in &ctx.manifest.items {
+        let abs_path = ctx.repo_root.join(&item.path);
+        match repair::repair(ctx, &abs_path, link, dry_run) {
+            Ok(RepairOutcome::AlreadyHealthy) => {
+                // Healthy items are not listed to keep output concise.
+            }
+            Ok(RepairOutcome::LinkRecreated) => {
+                actions.push(FixResult::Fixed(format!(
+                    "recreated symlink for '{}'",
+                    item.path
+                )));
+            }
+            Ok(RepairOutcome::StoreMissing) => {
+                let msg = format!(
+                    "'{}': store item missing — data may be lost. Restore manually and re-add.",
+                    item.path
+                );
+                data_loss_warnings.push(msg.clone());
+                actions.push(FixResult::CannotFix(msg));
+            }
+            Ok(RepairOutcome::NotManaged) => {
+                // Should not happen (we are iterating the manifest), ignore.
+            }
+            Err(e) => {
+                actions.push(FixResult::Failed(format!("'{}': {e}", item.path)));
+            }
+        }
+    }
+}
+
+/// Handles orphan store items: confirms deletion with `yes`, or records a
+/// [`FixResult::NeedsConfirmation`] when `yes` is false.
+fn handle_orphans(ctx: &RepoContext, yes: bool, actions: &mut Vec<FixResult>, dry_run: bool) {
+    for orphan in collect_orphan_store_items(ctx) {
+        if !yes {
+            actions.push(FixResult::NeedsConfirmation(format!(
+                "orphan store item '{orphan}': run with --yes to delete"
+            )));
+            continue;
+        }
+
+        let full_path = ctx.items_dir().join(&orphan);
+
+        if dry_run {
+            actions.push(FixResult::Fixed(format!(
+                "[dry-run] would delete orphan store item '{orphan}'"
+            )));
+            continue;
+        }
+
+        let result = if full_path.is_dir() {
+            std::fs::remove_dir_all(&full_path)
+        } else {
+            std::fs::remove_file(&full_path)
+        };
+
+        match result {
+            Ok(()) => actions.push(FixResult::Fixed(format!(
+                "deleted orphan store item '{orphan}'"
+            ))),
+            Err(e) => actions.push(FixResult::Failed(format!(
+                "failed to delete orphan '{orphan}': {e}"
+            ))),
         }
     }
 }
