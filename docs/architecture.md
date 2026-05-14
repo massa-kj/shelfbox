@@ -41,7 +41,8 @@ src/
     restore.rs    # restore() — unshelve a path
     list.rs       # list() — read manifest items
     status.rs     # status() — per-item health check
-    doctor.rs     # doctor() — full integrity report
+    doctor.rs     # doctor() / doctor_fix() — integrity report and repair
+    repair.rs     # repair() — single-file symlink repair
 ```
 
 ### `shelfbox` (binary)
@@ -92,7 +93,7 @@ Stored at `<store>/repos/<ULID>/manifest.json`.
   "items": [
     {
       "path": ".env",
-      "store_path": "/home/user/.local/share/shelfbox/repos/01JTAR…/items/.env",
+      "store_path": "items/.env",
       "kind": "File",
       "link": { "link_type": "Symlink" },
       "git": { "was_tracked": false },
@@ -103,8 +104,10 @@ Stored at `<store>/repos/<ULID>/manifest.json`.
 }
 ```
 
-`store_path` is an absolute path and is used during restore to locate the
-store-side item without re-deriving it.
+`store_path` is a **path relative to `repo_store`** (e.g. `"items/.env"`) and is
+joined with the absolute `repo_store` at runtime to locate the store-side item.
+Using a relative path keeps `manifest.json` portable: it can be copied to
+another machine or a different store root without modification.
 
 ### Store directory tree
 
@@ -157,6 +160,35 @@ cli::cmd_doctor()
   |    ├─ collect_orphan_store_items()                // walk items/ dir
   |    └─ check_repo_root_in_index()                  // load index, compare root
   └─ print_doctor_report(statuses, orphans, root_matches)
+       └─ (navigation hint printed below each non-OK line)
+```
+
+### `shelfbox doctor --fix`
+
+```
+cli::cmd_doctor() [fix=true]
+  ├─ context::build(…)
+  ├─ ops::doctor::doctor_fix(ctx, link, ignore, yes, dry_run)
+  |    ├─ fix_root_mismatch()                        // update index root
+  |    ├─ rebuild_manifest_from_store()              // absorb orphans into manifest
+  |    ├─ fix_exclude_entries()                      // re-add missing exclude entries
+  |    ├─ fix_symlinks()                             // repair() for each broken link
+  |    └─ handle_orphans()                           // delete or confirm remaining orphans
+  └─ print_fix_report(report)                        // FIXED / WARN / ERROR per action
+```
+
+### `shelfbox repair`
+
+```
+cli::cmd_repair()
+  ├─ context::build(…)
+  └─ ops::repair::repair(ctx, abs_path, link, dry_run)
+       ├─ manifest.get(rel_path)                     // NotManaged if absent
+       ├─ store_path.exists()                        // StoreMissing if absent
+       ├─ link.is_managed_link()                     // AlreadyHealthy if OK
+       ├─ [safety] regular file check                // Err(PathIsRegularFile) if present
+       ├─ remove existing symlink (if any)
+       └─ link.create(store_path, abs_path)          // LinkRecreated
 ```
 
 ---
@@ -169,5 +201,9 @@ cli::cmd_doctor()
 | **ULID for repo IDs** | Monotonically sortable, URL-safe, collision-resistant, and human-readable without a database. |
 | **Atomic index writes** | `index.json` is written to a `.tmp` file and then renamed. `rename(2)` is atomic on POSIX; partial writes cannot corrupt the index. |
 | **`thiserror` in lib / `anyhow` in bin** | Library errors should be typed and stable for callers; binary errors only need to be printable. Mixing them would pollute the library API. |
-| **Paths in manifest are absolute** | Avoids re-deriving store paths on restore. `store_path` is canonical at write time. |
+| **`store_path` in manifest is repo-store-relative** | Using a relative path (e.g. `"items/.env"`) instead of an absolute one keeps `manifest.json` portable across machines and store relocations. The full path is reconstructed at runtime as `ctx.repo_store.join(&item.store_path)`. |
 | **Exclude entries are sorted** | Deterministic ordering makes diffs human-readable and prevents spurious changes to `.git/info/exclude`. |
+| **`store_path` layout is deterministic** | `items/<repo-relative-path>` makes manifest reconstruction from store trivially reversible without any guesswork. |
+| **`doctor_fix` is ordered and best-effort** | Root fix runs first so path comparisons are correct; each step continues even if a previous one fails, recording `FixResult::Failed` entries rather than aborting. |
+| **Navigation hints are CLI-only** | `shelfbox-core` returns structured `DoctorReport` / `DoctorFixReport` data; formatting, hints, and TTY detection live entirely in the binary crate. |
+| **`repair` refuses to overwrite regular files** | If a non-symlink file exists at the target path, `repair` returns `Err(PathIsRegularFile)` rather than silently overwriting user data. |

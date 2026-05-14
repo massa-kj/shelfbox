@@ -164,6 +164,8 @@ Runs all status checks plus deeper integrity checks.
 
 ```sh
 shelfbox doctor
+shelfbox doctor --fix
+shelfbox doctor --fix --yes
 shelfbox doctor --json
 ```
 
@@ -176,22 +178,96 @@ shelfbox doctor --json
   in the global index matches the actual current path. A mismatch means the
   repository was moved or re-cloned.
 
-**Output (plain):**
+**Output (plain — read-only mode):**
+
+Each problem line is followed by an actionable navigation hint.
 
 ```
 OK       repo root matches index
 OK       .env
 WARN     notes/scratch.md  (not in exclude)
+  → Run: shelfbox doctor --fix
+ERROR    secrets/db.env  (symlink missing)
+  → Run: shelfbox repair secrets/db.env
+ERROR    dead.txt  (store item missing)
+  → Data loss: cannot auto-repair. Restore manually and re-add.
 
 --- orphan store items (not in manifest) ---
   WARN     orphan: stale_file.txt
+  → Run: shelfbox doctor --fix
 ```
+
+**`--fix` mode:**
+
+Applies safe automatic repairs in order:
+
+| Problem | Action |
+|---|---|
+| Index root mismatch | Updates recorded root to current path |
+| Orphan store items (no manifest entry) | Reconstructs manifest entry from store path |
+| Missing `.git/info/exclude` entries | Re-adds paths from manifest |
+| Missing or broken symlinks | Recreates symlink (via `repair` logic) |
+| Store item missing | Records `WARN` — cannot auto-fix; data may be lost |
+
+All operations are idempotent.  `--fix` is safe to run repeatedly.
+
+```
+FIXED        rebuilt manifest: added 1 item(s): old_secret.txt
+FIXED        added exclude entry: notes/scratch.md
+FIXED        repaired symlink: secrets/db.env
+WARN         cannot fix: store item missing for dead.txt
+```
+
+Using `--yes` allows the fix to perform potentially destructive actions (not
+currently used; reserved for future orphan-deletion behaviour).
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--json` | Emit JSON (`DoctorReport`). |
+| `--fix` | Apply automatic repairs instead of just reporting. |
+| `--yes` | Skip confirmation prompts when used with `--fix`. Requires `--fix`. |
+| `--json` | Emit JSON (`DoctorReport` in read-only mode, `DoctorFixReport` in fix mode). |
+
+### `repair <PATH>...`
+
+Recreates a missing or broken symlink for one or more shelved files.
+
+```sh
+shelfbox repair .env
+shelfbox repair secrets/api_key.txt .env.local
+```
+
+Use `repair` when `doctor` or `status` shows `symlink missing` or
+`symlink invalid` for a file whose store-side copy still exists.  It does not
+touch the manifest, exclude entries, or the store itself — it only fixes the
+symlink.
+
+**What happens:**
+
+1. Looks up the item in the manifest (returns an error if not managed).
+2. Verifies the store-side copy exists (reports `StoreMissing` if not).
+3. If the symlink already points to the correct target, reports `AlreadyHealthy`.
+4. Safety guard: if a regular file (not a symlink) exists at the path, refuses
+   to proceed to prevent data loss.  Remove or rename the file first.
+5. Removes the existing (broken) symlink if present.
+6. Creates a new symlink pointing to the store.
+
+**Outcomes reported:**
+
+| Outcome | Meaning |
+|---|---|
+| `repaired` | Symlink was recreated successfully. |
+| `ok (no repair needed)` | Symlink was already healthy. |
+| `error: store item missing` | Store copy is gone — data may be lost. |
+| `error: not managed` | Path is not recorded in the manifest. |
+| Error (exit 1) | A regular file exists at the path; refusing to overwrite. |
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print what would happen without making any changes. |
 
 ---
 
@@ -264,7 +340,32 @@ shelfbox --store /mnt/dropbox/shelfbox list
 ```sh
 shelfbox doctor
 # ERROR    repo root mismatch: repository may have been moved
+#   → Run: shelfbox doctor --fix
+
+shelfbox doctor --fix
+# FIXED        updated repo root in index
 ```
 
-The mismatch is cosmetic — shelved files still work through the symlinks — but
-it indicates that the index entry is stale.
+### Recovering from a broken or missing symlink
+
+```sh
+shelfbox doctor
+# ERROR    .env  (symlink missing)
+#   → Run: shelfbox repair .env
+
+shelfbox repair .env
+# repaired: .env
+```
+
+### Recovering from a lost manifest
+
+If `manifest.json` is accidentally deleted, `doctor --fix` rebuilds it from
+the store's `items/` directory.  The store path layout is deterministic
+(`items/<repo-relative-path>`), so all items are recovered exactly.  Only
+metadata that cannot be derived from the filesystem (`created_at`,
+`updated_at`) is reset to the time of recovery.
+
+```sh
+shelfbox doctor --fix
+# FIXED        rebuilt manifest: added 3 item(s): .env, secrets/db.txt, notes/local.md
+```
