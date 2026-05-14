@@ -300,9 +300,30 @@ fn print_doctor_report(statuses: &[ItemStatus], orphans: &[String], root_matches
             "{:<8} repo root mismatch: repository may have been moved",
             "ERROR"
         );
+        println!("  → Run: shelfbox doctor --fix");
     }
 
-    print_status(statuses);
+    // Print each item with a navigation hint for non-OK states.
+    if statuses.is_empty() {
+        println!("(no shelved items)");
+    } else {
+        for s in statuses {
+            let (label, issues) = classify_status(s);
+            if issues.is_empty() {
+                println!("{:<8} {}", label, s.path);
+            } else {
+                println!("{:<8} {}  ({})", label, s.path, issues.join(", "));
+                // Show the most actionable next step for this item.
+                if !s.store_exists {
+                    println!("  → Data loss: cannot auto-repair. Restore manually and re-add.");
+                } else if !s.link_exists || !s.link_valid {
+                    println!("  → Run: shelfbox repair {}", s.path);
+                } else {
+                    println!("  → Run: shelfbox doctor --fix");
+                }
+            }
+        }
+    }
 
     if !orphans.is_empty() {
         if !statuses.is_empty() {
@@ -312,6 +333,7 @@ fn print_doctor_report(statuses: &[ItemStatus], orphans: &[String], root_matches
         for orphan in orphans {
             println!("  WARN     orphan: {orphan}");
         }
+        println!("  → Run: shelfbox doctor --fix");
     }
 }
 
