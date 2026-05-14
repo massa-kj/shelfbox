@@ -10,7 +10,7 @@ use crate::{
     error::Result,
     ignore::IgnoreBackend,
     link::LinkStrategy,
-    store::index,
+    store::{index, manifest},
 };
 
 use super::{
@@ -158,7 +158,7 @@ pub struct DoctorFixReport {
 /// `dry_run = true` records what *would* happen without touching the
 /// filesystem, index, or ignore backend.
 pub fn doctor_fix(
-    ctx: &RepoContext,
+    ctx: &mut RepoContext,
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
     yes: bool,
@@ -167,8 +167,14 @@ pub fn doctor_fix(
     let mut actions: Vec<FixResult> = Vec::new();
     let mut data_loss_warnings: Vec<String> = Vec::new();
 
-    // Order matters: root fix first so subsequent ops see consistent paths.
+    // Order matters:
+    // 1. Fix root first so subsequent ops see consistent paths.
+    // 2. Rebuild manifest so symlink/exclude fixes operate on a complete manifest.
+    // 3. Add missing exclude entries (uses updated manifest).
+    // 4. Recreate symlinks (uses updated manifest).
+    // 5. Handle any remaining orphans.
     fix_root_mismatch(ctx, &mut actions, dry_run)?;
+    rebuild_manifest_from_store(ctx, &mut actions, dry_run)?;
     fix_exclude_entries(ctx, ignore, &mut actions, dry_run)?;
     fix_symlinks(ctx, link, &mut actions, &mut data_loss_warnings, dry_run);
     handle_orphans(ctx, yes, &mut actions, dry_run);
@@ -179,8 +185,74 @@ pub fn doctor_fix(
     })
 }
 
-/// Fixes an index root mismatch by updating the recorded root to the current
-/// repository path.
+/// Scans the `items/` directory for files not recorded in the manifest and
+/// adds them as new manifest entries.
+///
+/// This recovers from manifest loss or partial inconsistency.  The
+/// `store_path` layout (`items/{repo_relative_path}`) makes the reverse
+/// mapping deterministic — no guessing required.
+///
+/// Metadata that cannot be recovered (`created_at`, `updated_at`) is set to
+/// the current time.  `git.was_tracked` is conservatively set to `false`.
+///
+/// Already-managed items are skipped (`manifest.contains()` check) so the
+/// function is safe to call even when the manifest is partially intact.
+fn rebuild_manifest_from_store(
+    ctx: &mut RepoContext,
+    actions: &mut Vec<FixResult>,
+    dry_run: bool,
+) -> Result<()> {
+    // Compute which store items are not yet in the manifest.
+    let to_add: Vec<String> = collect_orphan_store_items(ctx)
+        .into_iter()
+        .filter(|o| !ctx.manifest.contains(o))
+        .collect();
+
+    if to_add.is_empty() {
+        return Ok(());
+    }
+
+    if dry_run {
+        actions.push(FixResult::Fixed(format!(
+            "[dry-run] would rebuild manifest with {} item(s): {}",
+            to_add.len(),
+            to_add.join(", ")
+        )));
+        return Ok(());
+    }
+
+    let now = context::now_iso8601();
+    for orphan in &to_add {
+        let abs_store_path = ctx.items_dir().join(orphan);
+        let kind = if abs_store_path.is_dir() {
+            manifest::ItemKind::Directory
+        } else {
+            manifest::ItemKind::File
+        };
+
+        ctx.manifest.add(manifest::Item {
+            path: orphan.clone(),
+            store_path: format!("items/{orphan}"),
+            kind,
+            link: manifest::LinkInfo {
+                link_type: manifest::LinkType::Symlink,
+            },
+            git: manifest::GitInfo { was_tracked: false },
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        });
+    }
+
+    manifest::save(&ctx.repo_store, &ctx.manifest)?;
+    actions.push(FixResult::Fixed(format!(
+        "rebuilt manifest: added {} item(s): {}",
+        to_add.len(),
+        to_add.join(", ")
+    )));
+    Ok(())
+}
+
+/// Fixes an index root mismatch by updating the recorded root to the current/// repository path.
 fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: bool) -> Result<()> {
     let idx = index::load(&ctx.config.store)?;
     let already_correct = idx

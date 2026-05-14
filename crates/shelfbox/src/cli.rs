@@ -194,18 +194,21 @@ fn cmd_doctor(
     yes: bool,
     json: bool,
 ) -> Result<()> {
-    let ctx = context::build(cwd, store_override).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
     if fix {
-        let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, yes, false)?;
+        let mut ctx =
+            context::build(cwd, store_override).context("failed to initialise repo context")?;
+        let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, yes, false)?;
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
             print_fix_report(&report);
         }
     } else {
+        let ctx =
+            context::build(cwd, store_override).context("failed to initialise repo context")?;
         let report = ops::doctor::doctor(&ctx, &link, &ignore)?;
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);

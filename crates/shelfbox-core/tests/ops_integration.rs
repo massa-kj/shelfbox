@@ -684,7 +684,7 @@ fn doctor_fix_repairs_missing_exclude_entry() {
         "exclude entry must be absent before fix"
     );
 
-    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     // At least one Fixed action must be present.
     assert!(
@@ -721,7 +721,7 @@ fn doctor_fix_repairs_missing_symlink() {
     // Remove the symlink to simulate the broken state.
     std::fs::remove_file(&file_path).unwrap();
 
-    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     assert!(
         report
@@ -758,7 +758,7 @@ fn doctor_fix_records_cannot_fix_for_store_missing() {
     // Delete the store-side copy to simulate data loss.
     std::fs::remove_file(ctx.repo_store.join("items/lost.txt")).unwrap();
 
-    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     assert!(
         report
@@ -774,11 +774,14 @@ fn doctor_fix_records_cannot_fix_for_store_missing() {
 }
 
 #[test]
-fn doctor_fix_needs_confirmation_for_orphans_without_yes() {
+fn doctor_fix_adds_orphan_to_manifest_instead_of_deleting() {
+    // After Phase 3, orphan store items are assumed to be legitimate shelfbox
+    // items whose manifest entry was lost.  doctor --fix adds them to the
+    // manifest rather than queuing them for deletion.
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
-    let ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
@@ -787,28 +790,36 @@ fn doctor_fix_needs_confirmation_for_orphans_without_yes() {
     std::fs::create_dir_all(ctx.items_dir()).unwrap();
     std::fs::write(&orphan_path, "orphan").unwrap();
 
-    // yes=false → NeedsConfirmation, file must remain.
-    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, false).unwrap();
+    // Phase 3 rebuilds manifest, so the orphan becomes a managed item.
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     assert!(
         report
             .actions
             .iter()
-            .any(|a| matches!(a, FixResult::NeedsConfirmation(_))),
-        "expected NeedsConfirmation for orphan without --yes"
+            .any(|a| matches!(a, FixResult::Fixed(_))),
+        "expected Fixed action for manifest rebuild of orphan"
     );
+    // The orphan is now in the manifest.
+    assert!(
+        ctx.manifest.contains("orphan_p2.txt"),
+        "orphan must be added to manifest"
+    );
+    // The store-side file must still exist.
     assert!(
         orphan_path.exists(),
-        "orphan must not be deleted without --yes"
+        "store file must remain after manifest rebuild"
     );
 }
 
 #[test]
-fn doctor_fix_deletes_orphans_with_yes() {
+fn doctor_fix_rebuilds_and_symlinks_orphan_with_yes() {
+    // With --yes, the orphan is also rebuilt into the manifest and a symlink
+    // is created.  This test verifies that --yes does not break the rebuild path.
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
-    let ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
@@ -816,17 +827,27 @@ fn doctor_fix_deletes_orphans_with_yes() {
     std::fs::create_dir_all(ctx.items_dir()).unwrap();
     std::fs::write(&orphan_path, "orphan").unwrap();
 
-    // yes=true → orphan must be deleted.
-    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, true, false).unwrap();
+    // yes=true: rebuild happens (same as without yes), symlink is created.
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     assert!(
         report
             .actions
             .iter()
             .any(|a| matches!(a, FixResult::Fixed(_))),
-        "expected Fixed for orphan deletion"
+        "expected Fixed for orphan rebuild"
     );
-    assert!(!orphan_path.exists(), "orphan must be deleted with --yes");
+    // Store file must still exist (not deleted).
+    assert!(orphan_path.exists(), "store file must survive rebuild");
+    // Symlink must be created at the repo path.
+    let repo_link = repo_dir.path().join("orphan_yes.txt");
+    assert!(
+        repo_link
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false),
+        "symlink must be created for the rebuilt manifest entry"
+    );
 }
 
 #[test]
@@ -854,7 +875,7 @@ fn doctor_fix_dry_run_makes_no_changes() {
         .join("\n");
     std::fs::write(&exclude_path, stripped).unwrap();
 
-    let report = ops::doctor::doctor_fix(&ctx, &link, &ignore, false, true).unwrap();
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, true).unwrap();
 
     // dry-run must report what it would do.
     assert!(
@@ -870,5 +891,194 @@ fn doctor_fix_dry_run_makes_no_changes() {
     assert!(
         !ignore.has_entry(repo_dir.path(), "dryrun_fix.txt").unwrap(),
         "dry-run must not restore the exclude entry"
+    );
+}
+
+// ── doctor --fix: manifest rebuild (Phase 3) ──────────────────────────────────
+
+#[test]
+fn doctor_fix_rebuilds_manifest_when_missing() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Add two files so the store has content.
+    for name in &["rebuild_a.txt", "rebuild_b.txt"] {
+        let file_path = repo_dir.path().join(name);
+        std::fs::write(&file_path, name).unwrap();
+        let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+        let link = SymlinkStrategy;
+        let ignore = GitInfoExclude;
+        ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    }
+
+    // Delete the manifest to simulate complete manifest loss.
+    let ctx_check = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let manifest_path = ctx_check.repo_store.join("manifest.json");
+    std::fs::remove_file(&manifest_path).unwrap();
+
+    // Rebuild via doctor --fix.
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert_eq!(
+        ctx.manifest.items.len(),
+        0,
+        "manifest must be empty after deletion"
+    );
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+
+    // A Fixed action must be present for the rebuild.
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::Fixed(_))),
+        "expected Fixed action for manifest rebuild"
+    );
+
+    // Both items must now be in the manifest.
+    assert_eq!(
+        ctx.manifest.items.len(),
+        2,
+        "manifest must contain both items after rebuild"
+    );
+    assert!(ctx.manifest.contains("rebuild_a.txt"));
+    assert!(ctx.manifest.contains("rebuild_b.txt"));
+
+    // The manifest file must be persisted.
+    assert!(
+        manifest_path.exists(),
+        "manifest file must exist after rebuild"
+    );
+}
+
+#[test]
+fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("status_after_rebuild.txt");
+    std::fs::write(&file_path, "contents").unwrap();
+
+    {
+        let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+        let link = SymlinkStrategy;
+        let ignore = GitInfoExclude;
+        ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    }
+
+    // Delete the manifest and the symlink (simulate full chaos).
+    let ctx_check = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    std::fs::remove_file(ctx_check.repo_store.join("manifest.json")).unwrap();
+    std::fs::remove_file(&file_path).unwrap();
+
+    // doctor --fix should rebuild the manifest and recreate the symlink.
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+
+    // Status must be healthy.
+    let statuses = ops::status::status(&ctx, &link, &ignore).unwrap();
+    assert_eq!(statuses.len(), 1);
+    // link and store should be ok; exclude was also added by fix.
+    assert!(
+        statuses[0].link_valid,
+        "symlink must be valid after rebuild+fix"
+    );
+    assert!(statuses[0].store_exists, "store item must exist");
+}
+
+#[test]
+fn doctor_fix_rebuilds_only_missing_items_when_partial() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Add two files normally.
+    for name in &["partial_a.txt", "partial_b.txt"] {
+        let file_path = repo_dir.path().join(name);
+        std::fs::write(&file_path, name).unwrap();
+        let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+        let link = SymlinkStrategy;
+        let ignore = GitInfoExclude;
+        ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    }
+
+    // Remove only partial_b from the manifest by rewriting it with just partial_a.
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ctx.manifest.remove("partial_b.txt");
+    shelfbox_core::store::manifest::save(&ctx.repo_store, &ctx.manifest).unwrap();
+
+    // doctor --fix should add only partial_b (partial_a is already there).
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert_eq!(
+        ctx.manifest.items.len(),
+        1,
+        "only partial_a should be in manifest before fix"
+    );
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+
+    assert_eq!(
+        ctx.manifest.items.len(),
+        2,
+        "both items must be present after fix"
+    );
+    assert!(
+        ctx.manifest.contains("partial_a.txt"),
+        "partial_a must still be present"
+    );
+    assert!(
+        ctx.manifest.contains("partial_b.txt"),
+        "partial_b must have been re-added"
+    );
+}
+
+#[test]
+fn doctor_fix_rebuild_dry_run_does_not_persist() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("rebuild_dry.txt");
+    std::fs::write(&file_path, "data").unwrap();
+
+    {
+        let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+        let link = SymlinkStrategy;
+        let ignore = GitInfoExclude;
+        ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    }
+
+    // Delete manifest to force rebuild path.
+    let ctx_check = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    std::fs::remove_file(ctx_check.repo_store.join("manifest.json")).unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    // dry_run = true
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, true).unwrap();
+
+    // Report must still mention the planned action.
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::Fixed(_))),
+        "dry-run should report the planned rebuild"
+    );
+
+    // In-memory manifest should NOT be modified in dry-run.
+    assert_eq!(
+        ctx.manifest.items.len(),
+        0,
+        "dry-run must not modify the in-memory manifest"
+    );
+
+    // Manifest file must still be absent.
+    assert!(
+        !ctx_check.repo_store.join("manifest.json").exists(),
+        "dry-run must not write the manifest file"
     );
 }
