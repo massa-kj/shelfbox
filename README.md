@@ -22,6 +22,21 @@ Reverses the process: removes the symlink, moves the file back, and cleans the e
 
 ## Installation
 
+### Pre-built binary (recommended)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | sh
+```
+
+Installs to `~/.local/bin` by default. To specify a version or directory:
+
+```sh
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | sh
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | sh
+```
+
+### From source
+
 ```sh
 cargo install --path crates/shelfbox
 ```
