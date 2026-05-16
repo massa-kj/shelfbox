@@ -83,6 +83,15 @@ impl GitInfoExclude {
                 .map(str::to_string)
                 .collect();
             let after_start = end_idx + BLOCK_END.len();
+            // Skip the newline that terminates the BLOCK_END line itself so
+            // that `after` represents only content truly beyond the block.
+            // Without this, render() prepends block's own trailing '\n' and
+            // the leftover '\n' in `after`, adding a blank line on every write.
+            let after_start = if contents.as_bytes().get(after_start) == Some(&b'\n') {
+                after_start + 1
+            } else {
+                after_start
+            };
             let after = contents[after_start..].to_string();
             (before, managed, after)
         } else {
@@ -219,7 +228,9 @@ mod tests {
         let (before, managed, after) = GitInfoExclude::parse(contents);
         assert_eq!(before, "*.log\n");
         assert_eq!(managed, vec!["/notes.md", "/prompts/"]);
-        assert_eq!(after, "\n");
+        // after is empty: the '\n' that terminates "# END shelfbox" belongs to
+        // the block line itself and is not carried into `after`.
+        assert_eq!(after, "");
     }
 
     #[test]
@@ -361,5 +372,25 @@ mod tests {
 
         backend().add_entries(dir.path(), &["/notes.md"]).unwrap();
         assert!(backend().has_entry(dir.path(), "/notes.md").unwrap());
+    }
+
+    // ── regression ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn repeated_add_entries_does_not_accumulate_trailing_newlines() {
+        let dir = TempDir::new().unwrap();
+        setup_git_dir(dir.path());
+
+        // Simulate multiple write cycles (add / repair / doctor --fix).
+        backend().add_entries(dir.path(), &[".env"]).unwrap();
+        backend().add_entries(dir.path(), &[".env"]).unwrap();
+        backend().add_entries(dir.path(), &[".env"]).unwrap();
+
+        let contents = std::fs::read_to_string(GitInfoExclude::exclude_path(dir.path())).unwrap();
+        // The file must end with exactly one newline after `# END shelfbox`.
+        assert!(
+            contents.ends_with("# END shelfbox\n"),
+            "trailing newlines accumulated; file contents: {contents:?}"
+        );
     }
 }
