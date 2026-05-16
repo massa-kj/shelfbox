@@ -774,10 +774,9 @@ fn doctor_fix_records_cannot_fix_for_store_missing() {
 }
 
 #[test]
-fn doctor_fix_adds_orphan_to_manifest_instead_of_deleting() {
-    // After Phase 3, orphan store items are assumed to be legitimate shelfbox
-    // items whose manifest entry was lost.  doctor --fix adds them to the
-    // manifest rather than queuing them for deletion.
+fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
+    // A store item with no repo-side symlink is a "true orphan".
+    // Without --yes, doctor --fix reports NeedsConfirmation and leaves the file.
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -785,37 +784,36 @@ fn doctor_fix_adds_orphan_to_manifest_instead_of_deleting() {
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
-    // Inject an orphan directly into the items directory.
-    let orphan_path = ctx.items_dir().join("orphan_p2.txt");
+    // Inject a bare orphan: store item exists but no symlink in the repo.
+    let orphan_path = ctx.items_dir().join("bare_orphan.txt");
     std::fs::create_dir_all(ctx.items_dir()).unwrap();
     std::fs::write(&orphan_path, "orphan").unwrap();
 
-    // Phase 3 rebuilds manifest, so the orphan becomes a managed item.
     let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     assert!(
         report
             .actions
             .iter()
-            .any(|a| matches!(a, FixResult::Fixed(_))),
-        "expected Fixed action for manifest rebuild of orphan"
+            .any(|a| matches!(a, FixResult::NeedsConfirmation(_))),
+        "expected NeedsConfirmation for true orphan without --yes"
     );
-    // The orphan is now in the manifest.
+    // True orphan must NOT be absorbed into the manifest.
     assert!(
-        ctx.manifest.contains("orphan_p2.txt"),
-        "orphan must be added to manifest"
+        !ctx.manifest.contains("bare_orphan.txt"),
+        "true orphan must not be added to manifest"
     );
-    // The store-side file must still exist.
+    // The store file must remain untouched.
     assert!(
         orphan_path.exists(),
-        "store file must remain after manifest rebuild"
+        "orphan file must not be deleted without --yes"
     );
 }
 
 #[test]
-fn doctor_fix_rebuilds_and_symlinks_orphan_with_yes() {
-    // With --yes, the orphan is also rebuilt into the manifest and a symlink
-    // is created.  This test verifies that --yes does not break the rebuild path.
+fn doctor_fix_true_orphan_deleted_with_yes() {
+    // A store item with no repo-side symlink is a "true orphan".
+    // With --yes, doctor --fix deletes it.
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -823,11 +821,11 @@ fn doctor_fix_rebuilds_and_symlinks_orphan_with_yes() {
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
-    let orphan_path = ctx.items_dir().join("orphan_yes.txt");
+    let orphan_path = ctx.items_dir().join("bare_orphan_yes.txt");
     std::fs::create_dir_all(ctx.items_dir()).unwrap();
     std::fs::write(&orphan_path, "orphan").unwrap();
 
-    // yes=true: rebuild happens (same as without yes), symlink is created.
+    // yes=true: true orphan must be deleted.
     let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     assert!(
@@ -835,19 +833,9 @@ fn doctor_fix_rebuilds_and_symlinks_orphan_with_yes() {
             .actions
             .iter()
             .any(|a| matches!(a, FixResult::Fixed(_))),
-        "expected Fixed for orphan rebuild"
+        "expected Fixed for orphan deletion"
     );
-    // Store file must still exist (not deleted).
-    assert!(orphan_path.exists(), "store file must survive rebuild");
-    // Symlink must be created at the repo path.
-    let repo_link = repo_dir.path().join("orphan_yes.txt");
-    assert!(
-        repo_link
-            .symlink_metadata()
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false),
-        "symlink must be created for the rebuilt manifest entry"
-    );
+    assert!(!orphan_path.exists(), "orphan must be deleted with --yes");
 }
 
 #[test]
@@ -967,12 +955,13 @@ fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
         ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
     }
 
-    // Delete the manifest and the symlink (simulate full chaos).
+    // Delete only the manifest; the symlink at the repo path remains intact.
+    // This simulates manifest loss while the shelved item is still accessible
+    // via its symlink — the canonical scenario for manifest reconstruction.
     let ctx_check = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     std::fs::remove_file(ctx_check.repo_store.join("manifest.json")).unwrap();
-    std::fs::remove_file(&file_path).unwrap();
 
-    // doctor --fix should rebuild the manifest and recreate the symlink.
+    // doctor --fix should rebuild the manifest (symlink exists → rebuild candidate).
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
@@ -981,10 +970,9 @@ fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
     // Status must be healthy.
     let statuses = ops::status::status(&ctx, &link, &ignore).unwrap();
     assert_eq!(statuses.len(), 1);
-    // link and store should be ok; exclude was also added by fix.
     assert!(
         statuses[0].link_valid,
-        "symlink must be valid after rebuild+fix"
+        "symlink must be valid after rebuild"
     );
     assert!(statuses[0].store_exists, "store item must exist");
 }
@@ -1032,6 +1020,63 @@ fn doctor_fix_rebuilds_only_missing_items_when_partial() {
     assert!(
         ctx.manifest.contains("partial_b.txt"),
         "partial_b must have been re-added"
+    );
+}
+
+#[test]
+fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
+    // Scenario: one store item has a valid symlink (rebuild candidate) and
+    // another has no symlink (true orphan).  doctor --fix should absorb the
+    // rebuild candidate into the manifest while reporting NeedsConfirmation
+    // for the true orphan.
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Shelve a file normally (creates symlink + manifest + exclude).
+    let file_path = repo_dir.path().join("managed_mixed.txt");
+    std::fs::write(&file_path, "managed").unwrap();
+    {
+        let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+        let link = SymlinkStrategy;
+        let ignore = GitInfoExclude;
+        ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    }
+
+    // Simulate manifest loss (symlink remains).
+    let ctx_check = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    std::fs::remove_file(ctx_check.repo_store.join("manifest.json")).unwrap();
+
+    // Inject a bare orphan (no symlink at repo path).
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let orphan_path = ctx.items_dir().join("bare_mixed_orphan.txt");
+    std::fs::write(&orphan_path, "orphan").unwrap();
+
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+
+    // Rebuild candidate must be absorbed into the manifest.
+    assert!(
+        ctx.manifest.contains("managed_mixed.txt"),
+        "rebuild candidate must be in manifest after fix"
+    );
+    // True orphan must NOT be absorbed.
+    assert!(
+        !ctx.manifest.contains("bare_mixed_orphan.txt"),
+        "true orphan must not be added to manifest"
+    );
+    // NeedsConfirmation must be reported for the true orphan.
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, FixResult::NeedsConfirmation(_))),
+        "expected NeedsConfirmation for true orphan"
+    );
+    // True orphan store file must remain (not deleted without --yes).
+    assert!(
+        orphan_path.exists(),
+        "true orphan must not be deleted without --yes"
     );
 }
 

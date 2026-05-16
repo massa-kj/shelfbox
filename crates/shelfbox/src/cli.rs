@@ -340,7 +340,14 @@ fn print_doctor_report(statuses: &[ItemStatus], orphans: &[String], root_matches
 fn print_fix_report(report: &ops::doctor::DoctorFixReport) {
     use ops::doctor::FixResult;
 
-    if report.actions.is_empty() {
+    // Show "everything is healthy" when there are no actions at all, or when
+    // every action is a Skipped (nothing needed fixing).
+    let all_skipped = !report.actions.is_empty()
+        && report
+            .actions
+            .iter()
+            .all(|a| matches!(a, FixResult::Skipped(_)));
+    if report.actions.is_empty() || all_skipped {
         println!("{:<12} everything is healthy", "OK");
         return;
     }

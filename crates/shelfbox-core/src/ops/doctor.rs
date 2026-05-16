@@ -202,10 +202,24 @@ fn rebuild_manifest_from_store(
     actions: &mut Vec<FixResult>,
     dry_run: bool,
 ) -> Result<()> {
-    // Compute which store items are not yet in the manifest.
+    // Only absorb store items that have a corresponding symlink at the expected
+    // repo path.  A symlink indicates the file was intentionally shelved and
+    // just needs its manifest entry reconstructed ("rebuild candidate").
+    //
+    // Store files with NO matching repo symlink are genuine orphans (e.g. left
+    // by a failed `add`, manual file placement, or version mismatch) and are
+    // left for `handle_orphans` to process.
     let to_add: Vec<String> = collect_orphan_store_items(ctx)
         .into_iter()
         .filter(|o| !ctx.manifest.contains(o))
+        .filter(|o| {
+            // Require a symlink at the expected repo-side path.
+            let abs_repo_path = ctx.repo_root.join(o);
+            abs_repo_path
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+        })
         .collect();
 
     if to_add.is_empty() {
@@ -252,7 +266,8 @@ fn rebuild_manifest_from_store(
     Ok(())
 }
 
-/// Fixes an index root mismatch by updating the recorded root to the current/// repository path.
+/// Fixes an index root mismatch by updating the recorded root to the current
+/// repository path.
 fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: bool) -> Result<()> {
     let idx = index::load(&ctx.config.store)?;
     let already_correct = idx
@@ -261,6 +276,7 @@ fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: b
         .unwrap_or(false);
 
     if already_correct {
+        actions.push(FixResult::Skipped("index root already correct".into()));
         return Ok(());
     }
 
@@ -312,6 +328,7 @@ fn fix_exclude_entries(
     }
 
     if missing.is_empty() {
+        actions.push(FixResult::Skipped("all exclude entries present".into()));
         return Ok(());
     }
 
