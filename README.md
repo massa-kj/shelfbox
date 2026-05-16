@@ -44,6 +44,12 @@ shelfbox list
 shelfbox status
 shelfbox doctor
 
+# Fix detected issues automatically
+shelfbox doctor --fix
+
+# Recreate a broken symlink
+shelfbox repair secrets/local.env
+
 # Restore
 shelfbox restore secrets/local.env
 ```
