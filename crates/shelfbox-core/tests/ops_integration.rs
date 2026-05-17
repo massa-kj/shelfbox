@@ -1166,3 +1166,51 @@ fn doctor_fix_rebuild_dry_run_does_not_persist() {
         "dry-run must not write the manifest file"
     );
 }
+
+#[test]
+fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
+    // A symlink at the expected repo-relative path that points to the WRONG
+    // store location must NOT be absorbed as a rebuild candidate.  Only a
+    // symlink whose target matches `<repo_store>/items/<path>` is valid.
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let other_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("secret.txt");
+    std::fs::write(&file_path, "data").unwrap();
+
+    // Add the file normally so a store item exists.
+    {
+        let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+        let link = SymlinkStrategy;
+        let ignore = GitInfoExclude;
+        ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    }
+
+    // Delete manifest and replace the repo-side symlink with one that points
+    // to a different location (simulating a stale symlink from a re-clone or
+    // another tool).
+    {
+        let ctx_check = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+        std::fs::remove_file(ctx_check.repo_store.join("manifest.json")).unwrap();
+    }
+
+    // Remove the correct symlink and create a wrong-target one.
+    std::fs::remove_file(&file_path).unwrap();
+    let decoy_target = other_dir.path().join("decoy.txt");
+    std::fs::write(&decoy_target, "unrelated").unwrap();
+    std::os::unix::fs::symlink(&decoy_target, &file_path).unwrap();
+
+    // doctor --fix --yes: the store item has no manifest entry AND no correct
+    // symlink, so it must be treated as an orphan, not a rebuild candidate.
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
+
+    // The item must NOT have been added to the manifest via rebuild.
+    assert!(
+        !ctx.manifest.contains("secret.txt"),
+        "wrong-target symlink must not be absorbed as a rebuild candidate"
+    );
+}

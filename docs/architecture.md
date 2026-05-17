@@ -219,3 +219,17 @@ cli::cmd_repair()
 | **Store identity via `meta.json`** | `<store>/meta.json` is written on first use. It contains a ULID `store_id` and `created_at` timestamp. This provides a stable identity for the store, which future sync tooling can use to distinguish a same-store clone from an independent store. The write is idempotent: subsequent runs leave the file unchanged. |
 | **`SHELFBOX_STORE` environment variable** | The store root can be set via the `SHELFBOX_STORE` environment variable, overriding `config.toml` but yielding to the `--store` CLI flag. Priority: `--store` > `$SHELFBOX_STORE` > `config.toml` > XDG default. This follows the UNIX convention of env-var config and enables easy store switching in shell sessions without editing config files. |
 | **Store-level advisory file lock** | `context::build()` acquires an advisory `flock` on `<store>/.lock` before reading or writing any store data. Write commands (`add`, `restore`, `doctor --fix`, `repair`) acquire an exclusive lock; read commands (`list`, `status`, `doctor`) acquire a shared lock. This prevents index/manifest inconsistency when two `shelfbox` processes run concurrently against the same store. The lock is released when `RepoContext` is dropped (end of the command). If the lock cannot be acquired an `AppError::StoreLocked` is returned with a human-readable hint. |
+| **`doctor --fix` rebuild candidate requires exact symlink target** | A store item without a manifest entry is treated as a rebuild candidate only if the symlink at the expected repo-relative path points **exactly** to `<repo_store>/items/<path>`. A symlink with a different target (e.g. from a re-clone pointing to an old store, or an unrelated tool's symlink) is treated as an orphan and not absorbed. This guards against incorrect manifest reconstruction caused by stale or coincidental symlinks. |
+
+## Repair policy
+
+The following table defines the contract for `shelfbox repair` depending on the state found at the repo-side path.
+
+| State at repo-side path | `repair` behaviour |
+|---|---|
+| Missing (no file) | Recreate the symlink pointing to the store item. |
+| Dangling symlink (target deleted) | Remove the dangling symlink and recreate it. |
+| Wrong-target symlink (points elsewhere) | Remove and recreate (the symlink is considered stale). **Note:** this is the current unguarded behaviour; a future version may refuse by default and require `--force`. |
+| Regular file (not a symlink) | Return `Err(PathIsRegularFile)` — refuse to overwrite user data. |
+| Directory | Return `Err(PathIsRegularFile)` — refuse to overwrite. |
+| Already healthy (correct symlink) | No-op, return `Ok(AlreadyHealthy)`. |

@@ -207,21 +207,39 @@ fn rebuild_manifest_from_store(
     dry_run: bool,
 ) -> Result<()> {
     // Only absorb store items that have a corresponding symlink at the expected
-    // repo path.  A symlink indicates the file was intentionally shelved and
-    // just needs its manifest entry reconstructed ("rebuild candidate").
+    // repo path AND whose symlink target matches the expected store path.
     //
-    // Store files with NO matching repo symlink are genuine orphans (e.g. left
-    // by a failed `add`, manual file placement, or version mismatch) and are
-    // left for `handle_orphans` to process.
+    // Two conditions must both be true for a "rebuild candidate":
+    //   1. A symlink exists at the repo-relative path.
+    //   2. The symlink target is exactly the store item's canonical location.
+    //
+    // Condition (2) guards against a stale symlink that points to an old store
+    // (e.g. after a re-clone) or an unrelated symlink that happens to share the
+    // same repo-relative path.  Only absorbing items whose target provably
+    // points back to THIS store keeps the operation safe.
+    //
+    // Store files with NO matching repo symlink (or a symlink pointing
+    // elsewhere) are genuine orphans and are left for `handle_orphans`.
     let to_add: Vec<String> = collect_orphan_store_items(ctx)
         .into_iter()
         .filter(|o| !ctx.manifest.contains(o))
         .filter(|o| {
-            // Require a symlink at the expected repo-side path.
+            // Require a symlink whose target is the expected store path.
             let abs_repo_path = ctx.repo_root.join(o);
-            abs_repo_path
-                .symlink_metadata()
-                .map(|m| m.file_type().is_symlink())
+            let expected_store_path = ctx.items_dir().join(o);
+            std::fs::read_link(&abs_repo_path)
+                .map(|target| {
+                    // Resolve relative symlinks before comparing.
+                    let abs_target = if target.is_absolute() {
+                        target
+                    } else {
+                        abs_repo_path
+                            .parent()
+                            .map(|p| p.join(&target))
+                            .unwrap_or(target)
+                    };
+                    abs_target == expected_store_path
+                })
                 .unwrap_or(false)
         })
         .collect();
