@@ -84,6 +84,15 @@ shelfbox add secrets/notes/local.md
 **Rollback:** if symlink creation fails after the move, the file is moved back
 automatically.
 
+> **Caution: directory shelving**  
+> `add` accepts directories, but shelving a directory that contains Git-tracked
+> files or nested repositories is **not tested and not recommended**.  The
+> concern is that `.gitignore` / tracked-file semantics interact with directory
+> symlinks in subtle ways — for example, `git add .` may traverse the symlink
+> and stage files inside it.  
+> Stick to shelving individual files.  If you need to shelter a whole
+> directory, shelve each file inside it individually.
+
 ### `restore <PATH>...`
 
 Returns shelved files to their original locations.

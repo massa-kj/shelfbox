@@ -396,6 +396,12 @@ fn print_fix_report(report: &ops::doctor::DoctorFixReport) {
 }
 
 /// Returns `(severity_label, list_of_problem_descriptions)` for one item.
+///
+/// Severity rules:
+/// - ERROR: any structural failure (symlink missing/invalid, store item gone,
+///   or Git can see the file — the primary shelfbox contract is broken).
+/// - WARN:  exclude entry missing but Git still ignores the file for now.
+/// - OK:    all checks pass.
 fn classify_status(s: &ItemStatus) -> (&'static str, Vec<&'static str>) {
     let mut issues: Vec<&'static str> = Vec::new();
 
@@ -411,12 +417,17 @@ fn classify_status(s: &ItemStatus) -> (&'static str, Vec<&'static str>) {
         issues.push("not in exclude");
     }
     if !s.not_tracked {
+        // Git can see the shelved file — the primary shelfbox contract
+        // ("hide from Git") is broken.  This warrants ERROR, not WARN.
         issues.push("tracked by git");
     }
 
-    let label = if !s.link_exists || !s.link_valid || !s.store_exists {
+    let label = if !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked {
         "ERROR"
     } else if !issues.is_empty() {
+        // Only !in_exclude remains: the symlink is healthy and Git does not
+        // currently track the file, but the exclude entry is gone.  A future
+        // `git add .` could stage it, so this is a real warning.
         "WARN"
     } else {
         "OK"
