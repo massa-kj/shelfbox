@@ -295,12 +295,17 @@ fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: b
         .as_ref()
         .map(|e| e.git_dir.clone())
         .unwrap_or_else(|| ctx.repo_root.join(".git"));
+    let git_common_dir = existing
+        .as_ref()
+        .map(|e| e.git_common_dir.clone())
+        .unwrap_or_else(|| git_dir.clone());
 
     idx.upsert(
         &ctx.repo_id,
         index::RepoEntry {
             root: ctx.repo_root.clone(),
             git_dir,
+            git_common_dir,
             last_seen_at: context::now_iso8601(),
         },
     );

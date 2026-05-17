@@ -68,6 +68,7 @@ Stored at `<store>/index.json`.  One entry per repository ever seen.
     "01JTARXXXXXXXXXXXXXXXX": {
       "root": "/home/user/projects/myapp",
       "git_dir": "/home/user/projects/myapp/.git",
+      "git_common_dir": "/home/user/projects/myapp/.git",
       "last_seen_at": "2026-04-29T12:00:00Z"
     }
   }
@@ -76,7 +77,9 @@ Stored at `<store>/index.json`.  One entry per repository ever seen.
 
 The ULID key is stable for the lifetime of the repository entry.  `root` is an
 absolute path; a mismatch between `root` and the current working Git root is
-reported by `doctor` as a warning.
+reported by `doctor` as a warning.  `git_common_dir` is the output of
+`git rev-parse --git-common-dir`, which is the same as `git_dir` for a normal
+clone and points to the main clone's `.git/` for a linked worktree.
 
 ### Per-repository manifest — `manifest.json`
 
@@ -209,3 +212,4 @@ cli::cmd_repair()
 | **`repair` refuses to overwrite regular files** | If a non-symlink file exists at the target path, `repair` returns `Err(PathIsRegularFile)` rather than silently overwriting user data. |
 | **`# BEGIN shelfbox` block in exclude** | All shelfbox entries are wrapped in a named block so other tools can safely edit the file without conflict. The block is rewritten atomically; existing content outside the block is preserved. |
 | **`LinkStrategy` abstraction** | All filesystem linking is dispatched through the `LinkStrategy` trait. Today only `SymlinkStrategy` (Unix symlinks) is shipped. Future implementations (hardlink, bind mount, copy mode) can be added without touching `ops/`. |
+| **Worktree-aware repo identity** | `RepoEntry` stores both `git_dir` and `git_common_dir` (output of `git rev-parse --git-common-dir`). Repo lookup uses a two-stage strategy: exact `root` match first, then `git_common_dir` match. This ensures that accessing a repository via a linked worktree reuses the same ULID rather than creating a duplicate entry. `exclude_file_path` is also resolved via `git rev-parse --git-path info/exclude` so the correct `.git/info/exclude` is targeted in worktree environments. |

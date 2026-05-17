@@ -21,6 +21,11 @@ pub struct RepoEntry {
     /// for worktrees).
     pub git_dir: PathBuf,
 
+    /// Absolute path to the git-common-dir — the shared `.git/` directory
+    /// that is stable across all linked worktrees of the same clone.
+    /// Equivalent to `git rev-parse --git-common-dir`.
+    pub git_common_dir: PathBuf,
+
     /// ISO-8601 timestamp of the last time this repo was accessed via
     /// shelfbox.
     pub last_seen_at: String,
@@ -66,6 +71,17 @@ impl Index {
         self.repos
             .iter()
             .find_map(|(id, e)| (e.root == root).then_some(id.as_str()))
+    }
+
+    /// Finds the repo ID whose `git_common_dir` matches `common_dir`.
+    ///
+    /// This secondary lookup handles the case where a repository was accessed
+    /// via a linked worktree (different `root`) but shares the same underlying
+    /// git objects directory.
+    pub fn find_by_git_common_dir(&self, common_dir: &Path) -> Option<&str> {
+        self.repos
+            .iter()
+            .find_map(|(id, e)| (e.git_common_dir == common_dir).then_some(id.as_str()))
     }
 }
 
@@ -134,6 +150,7 @@ mod tests {
         RepoEntry {
             root: PathBuf::from(root),
             git_dir: PathBuf::from(format!("{root}/.git")),
+            git_common_dir: PathBuf::from(format!("{root}/.git")),
             last_seen_at: "2026-04-29T00:00:00Z".into(),
         }
     }
