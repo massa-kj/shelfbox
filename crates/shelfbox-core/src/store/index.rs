@@ -10,8 +10,8 @@ use crate::error::{AppError, Result};
 /// A single entry in the global index, describing one known repository.
 ///
 /// Fields that are environment-specific (absolute paths) live in the
-/// local-state index rather than the store manifest so they are not
-/// accidentally synced across machines.
+/// local-state index rather than the store manifest, keeping `manifest.json`
+/// portable across store relocations on the same machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoEntry {
     /// Absolute path to the repository root on this machine.

@@ -12,8 +12,8 @@ use crate::{
 
 /// Contents of `<store>/meta.json`.
 ///
-/// Provides a stable identity for the store itself so that future sync
-/// tooling can distinguish a "same store" clone from an independent store.
+/// Provides a stable identity for the store directory, useful for diagnosing
+/// store relocations and generating human-readable context in error messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreMeta {
     /// Globally unique ULID assigned when the store is first created.

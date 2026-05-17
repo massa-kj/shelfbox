@@ -63,7 +63,7 @@ pub struct Item {
     pub updated_at: String,
 }
 
-/// Repo metadata embedded in the manifest (safe to sync across machines).
+/// Repo metadata embedded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoMeta {
     /// ULID repo identifier.

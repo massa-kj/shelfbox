@@ -373,18 +373,26 @@ shelfbox add .env
 git status  # .env does not appear — it's in .git/info/exclude
 ```
 
-### Moving the store to a synced location (e.g. Dropbox)
+### Moving the store to a different location
 
 ```sh
 # Move existing store
-mv ~/.local/share/shelfbox /mnt/dropbox/shelfbox
+mv ~/.local/share/shelfbox /path/to/new/location
 
 # Tell shelfbox where it is
-echo 'store = "/mnt/dropbox/shelfbox"' > ~/.config/shelfbox/config.toml
+echo 'store = "/path/to/new/location"' > ~/.config/shelfbox/config.toml
 
 # Or use the flag per-invocation
-shelfbox --store /mnt/dropbox/shelfbox list
+shelfbox --store /path/to/new/location list
 ```
+
+> **Note on synced locations (Dropbox, external drives, etc.):**  
+> shelfbox does not support multi-machine store synchronisation.  Placing the
+> store in a synced folder on a single machine is fine, but concurrent writes
+> from two machines are not safe and may corrupt `manifest.json` or the
+> index.  If a sync collision occurs, run `shelfbox doctor --fix` on the
+> affected machine; the deterministic store layout allows full manifest
+> reconstruction.
 
 ### Diagnosing problems after moving a repository
 
