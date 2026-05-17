@@ -37,8 +37,18 @@ const BLOCK_END: &str = "# END shelfbox";
 pub struct GitInfoExclude;
 
 impl GitInfoExclude {
+    /// Returns the path to `.git/info/exclude` for `repo_root`.
+    ///
+    /// Uses `git rev-parse --git-path info/exclude` so that linked worktrees
+    /// (where `.git` is a pointer file, not a directory) are handled correctly.
+    /// Falls back to the hard-coded path if the git command fails (e.g. in
+    /// tests that set up a fake `.git` directory without a real git binary
+    /// configured for worktrees).
     fn exclude_path(repo_root: &Path) -> PathBuf {
-        repo_root.join(".git").join("info").join("exclude")
+        match crate::git::exclude_file_path(repo_root) {
+            Ok(p) => p,
+            Err(_) => repo_root.join(".git").join("info").join("exclude"),
+        }
     }
 
     /// Reads the current contents of `.git/info/exclude`, silently returning

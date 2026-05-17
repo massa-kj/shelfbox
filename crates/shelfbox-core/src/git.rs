@@ -94,6 +94,39 @@ pub fn is_tracked(repo_root: &Path, path: &Path) -> Result<bool> {
     }
 }
 
+/// Returns the path to `.git/info/exclude` for the given repository.
+///
+/// Delegates to `git rev-parse --git-path info/exclude` so that worktrees
+/// (where `.git` is a file, not a directory) are handled correctly.  The
+/// returned path is always absolute.
+pub fn exclude_file_path(repo_root: &Path) -> Result<PathBuf> {
+    let raw = run_git(&["rev-parse", "--git-path", "info/exclude"], repo_root)?;
+    let p = PathBuf::from(&raw);
+    if p.is_absolute() {
+        Ok(p)
+    } else {
+        Ok(repo_root.join(p))
+    }
+}
+
+/// Returns the *git-common-dir* for the repository — the shared `.git`
+/// directory that holds objects, refs, and config across all worktrees.
+///
+/// Equivalent to `git rev-parse --git-common-dir`.  For a normal (non-worktree)
+/// clone this is the same as `--git-dir`.  For a linked worktree it points to
+/// the main clone's `.git/` directory.
+///
+/// The returned path is always absolute.
+pub fn git_common_dir(repo_root: &Path) -> Result<PathBuf> {
+    let raw = run_git(&["rev-parse", "--git-common-dir"], repo_root)?;
+    let p = PathBuf::from(&raw);
+    if p.is_absolute() {
+        Ok(p)
+    } else {
+        Ok(repo_root.join(p))
+    }
+}
+
 /// Returns the `origin` remote URL for the repository, or `None` if no
 /// remote named `origin` is configured.
 ///

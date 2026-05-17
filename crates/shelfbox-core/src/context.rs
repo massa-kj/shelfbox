@@ -102,15 +102,38 @@ fn resolve_repo(
     let store_root = &config.store;
     let mut index = index::load(store_root)?;
 
+    // Determine the git-common-dir once; needed for both identity lookup and
+    // for the new RepoEntry when this repository is seen for the first time.
+    // Fall back to `repo_root/.git` if the git command fails (e.g. in tests
+    // that create a bare-minimum repo without worktrees).
+    let common_dir =
+        crate::git::git_common_dir(repo_root).unwrap_or_else(|_| repo_root.join(".git"));
+
+    // Two-stage lookup:
+    // 1. Exact root match (fast path, normal case).
+    // 2. git-common-dir match (handles linked worktrees and moved repos).
     let repo_id = if let Some(id) = index.find_by_root(repo_root) {
         id.to_string()
+    } else if let Some(id) = index.find_by_git_common_dir(&common_dir) {
+        // Repo was accessed via a different worktree or root path changed;
+        // update the recorded root to the current one.
+        let id = id.to_string();
+        if let Some(entry) = index.get(&id) {
+            let mut updated = entry.clone();
+            updated.root = repo_root.to_path_buf();
+            updated.last_seen_at = now_iso8601();
+            index.upsert(&id, updated);
+            index::save(store_root, &index)?;
+        }
+        id
     } else {
         // First time this repository is seen: generate a new ULID.
         let id = Ulid::new().to_string();
-        let git_dir = repo_root.join(".git");
+        let git_dir = common_dir.clone();
         let entry = RepoEntry {
             root: repo_root.to_path_buf(),
             git_dir,
+            git_common_dir: common_dir,
             last_seen_at: now_iso8601(),
         };
         index.upsert(&id, entry);
