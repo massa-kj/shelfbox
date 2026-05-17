@@ -105,7 +105,13 @@ shelfbox restore secrets/ notes/local.md
 **Rollback:** if the rename back to the repo fails, the symlink is recreated
 automatically.
 
-### `list`
+**Errors:**
+
+| Error | Meaning |
+|---|---|
+| `not a shelfbox managed symlink` | The path is not a symlink pointing into the shelfbox store. |
+| `restore destination already exists as a regular file or directory` | A non-symlink entry exists at the path. Move or rename it first, then re-run `restore`. |
+| `store item not found` | The store-side copy is missing (dangling link). Data may be lost. |
 
 Lists all files currently shelved in the current repository.
 

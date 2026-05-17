@@ -238,7 +238,7 @@ fn add_path_outside_repo_returns_error() {
 }
 
 #[test]
-fn restore_not_managed_link_returns_error() {
+fn restore_regular_file_returns_destination_exists_error() {
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -249,7 +249,31 @@ fn restore_not_managed_link_returns_error() {
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
-    // Trying to restore a file that was never shelved must fail.
+    // A regular file (not a symlink) must return RestoreDestinationExists, not
+    // NotManagedLink, so the user gets a precise error and a helpful hint.
+    let err =
+        ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            shelfbox_core::error::AppError::RestoreDestinationExists { .. }
+        ),
+        "expected RestoreDestinationExists, got: {err}"
+    );
+}
+
+#[test]
+fn restore_nonexistent_path_returns_not_managed_link_error() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // A path that does not exist at all.
+    let file_path = repo_dir.path().join("does_not_exist.txt");
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
     let err =
         ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap_err();
     assert!(

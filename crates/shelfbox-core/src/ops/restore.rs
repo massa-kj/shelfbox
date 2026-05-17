@@ -40,11 +40,31 @@ pub fn restore(
             })?;
     let rel_str = rel_path.to_string_lossy().into_owned();
 
-    // Must be a shelfbox managed symlink.
-    if !link.is_managed_link(abs_path, &ctx.config.store) {
-        return Err(AppError::NotManagedLink {
-            path: abs_path.to_path_buf(),
-        });
+    // Must be a shelfbox managed symlink — and not a regular file/directory.
+    // Using symlink_metadata to distinguish the three cases without following
+    // the link, so we can give a precise error in each situation.
+    match std::fs::symlink_metadata(abs_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            // It is a symlink: verify it points into the shelfbox store.
+            if !link.is_managed_link(abs_path, &ctx.config.store) {
+                return Err(AppError::NotManagedLink {
+                    path: abs_path.to_path_buf(),
+                });
+            }
+        }
+        Ok(_) => {
+            // A regular file or directory exists at the path: refuse to
+            // overwrite it to prevent data loss.
+            return Err(AppError::RestoreDestinationExists {
+                path: abs_path.to_path_buf(),
+            });
+        }
+        Err(_) => {
+            // Nothing at this path.
+            return Err(AppError::NotManagedLink {
+                path: abs_path.to_path_buf(),
+            });
+        }
     }
 
     // Resolve the absolute store path from the manifest entry.

@@ -49,7 +49,13 @@ pub enum AppError {
     #[error("'{path}' is a regular file; refusing to overwrite (use 'shelfbox restore' first)")]
     PathIsRegularFile { path: PathBuf },
 
-    // ── restore validation ─────────────────────────────────────────────────
+    // ── restore validation ─────────────────────────────────────────────────    /// The restore destination is occupied by a non-symlink entry (regular
+    /// file or directory). Overwriting it would cause data loss.
+    #[error(
+        "restore destination already exists as a regular file or directory: {path}\n\
+         hint: move or rename the existing file first, then re-run restore"
+    )]
+    RestoreDestinationExists { path: PathBuf },
     /// The path at the repo side is not a shelfbox managed symlink.
     #[error("'{path}' is not a shelfbox managed symlink")]
     NotManagedLink { path: PathBuf },
