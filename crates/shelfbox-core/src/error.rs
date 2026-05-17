@@ -94,6 +94,18 @@ pub enum AppError {
     #[error("git command failed: {message}")]
     GitCommand { message: String },
 
+    // ── Store lock ────────────────────────────────────────────────────────
+    /// Another `shelfbox` process is holding the store lock.
+    #[error(
+        "store is locked by another process: {lock_path}\n\
+         hint: wait for the other shelfbox invocation to finish, then retry"
+    )]
+    StoreLocked {
+        lock_path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     // ── Internal / unexpected ─────────────────────────────────────────────
     /// An invariant was violated that should never occur in correct usage.
     /// Wraps a human-readable description for debugging.

@@ -124,7 +124,7 @@ fn cmd_add(
     dry_run: bool,
 ) -> Result<()> {
     let mut ctx =
-        context::build(cwd, store_override).context("failed to initialise repo context")?;
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
@@ -164,7 +164,7 @@ fn cmd_restore(
     keep_ignore: bool,
 ) -> Result<()> {
     let mut ctx =
-        context::build(cwd, store_override).context("failed to initialise repo context")?;
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
@@ -180,7 +180,8 @@ fn cmd_restore(
 }
 
 fn cmd_list(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()> {
-    let ctx = context::build(cwd, store_override).context("failed to initialise repo context")?;
+    let ctx =
+        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let items = ops::list::list(&ctx);
 
     if json {
@@ -192,7 +193,8 @@ fn cmd_list(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()>
 }
 
 fn cmd_status(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()> {
-    let ctx = context::build(cwd, store_override).context("failed to initialise repo context")?;
+    let ctx =
+        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
     let statuses = ops::status::status(&ctx, &link, &ignore)?;
@@ -216,8 +218,8 @@ fn cmd_doctor(
     let ignore = GitInfoExclude;
 
     if fix {
-        let mut ctx =
-            context::build(cwd, store_override).context("failed to initialise repo context")?;
+        let mut ctx = context::build(cwd, store_override, true)
+            .context("failed to initialise repo context")?;
         let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, yes, false)?;
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -225,8 +227,8 @@ fn cmd_doctor(
             print_fix_report(&report);
         }
     } else {
-        let ctx =
-            context::build(cwd, store_override).context("failed to initialise repo context")?;
+        let ctx = context::build(cwd, store_override, false)
+            .context("failed to initialise repo context")?;
         let report = ops::doctor::doctor(&ctx, &link, &ignore)?;
         if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -247,7 +249,8 @@ fn cmd_repair(
     paths: &[PathBuf],
     dry_run: bool,
 ) -> Result<()> {
-    let ctx = context::build(cwd, store_override).context("failed to initialise repo context")?;
+    let ctx =
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
 
     for path in paths {

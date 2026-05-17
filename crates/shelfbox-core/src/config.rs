@@ -111,8 +111,14 @@ fn read_config_file() -> Result<RawConfig> {
 mod tests {
     use super::*;
 
+    // Serialize any test that reads or writes SHELFBOX_STORE to avoid races
+    // between threads in the test harness.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn store_override_takes_precedence_over_raw_config() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
         };
@@ -123,6 +129,8 @@ mod tests {
 
     #[test]
     fn raw_config_store_used_when_no_override() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
         };
@@ -132,6 +140,8 @@ mod tests {
 
     #[test]
     fn falls_back_to_platform_default_when_both_absent() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
         let raw = RawConfig { store: None };
         // Platform default must exist on the CI runner (Linux/macOS).
         let cfg = Config::resolve(raw, None).unwrap();
@@ -140,7 +150,7 @@ mod tests {
 
     #[test]
     fn env_var_takes_precedence_over_config_file() {
-        // SAFETY: tests run in a single thread per process; env mutation is acceptable.
+        let _g = ENV_MUTEX.lock().unwrap();
         std::env::set_var("SHELFBOX_STORE", "/from/env");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
@@ -152,6 +162,7 @@ mod tests {
 
     #[test]
     fn cli_flag_takes_precedence_over_env_var() {
+        let _g = ENV_MUTEX.lock().unwrap();
         std::env::set_var("SHELFBOX_STORE", "/from/env");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),

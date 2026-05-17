@@ -1,16 +1,104 @@
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 
+use fd_lock::{RwLock as FdRwLock, RwLockReadGuard, RwLockWriteGuard};
 use ulid::Ulid;
 
 use crate::{
     config::Config,
-    error::Result,
+    error::{AppError, Result},
     store::{
         index::{self, Index, RepoEntry},
         manifest::{self, Manifest, RepoMeta},
         meta,
     },
 };
+
+// ── Store-level advisory lock ─────────────────────────────────────────────────
+
+/// Guard variant held inside [`StoreLock`].
+enum StoreLockGuard {
+    Write(ManuallyDrop<RwLockWriteGuard<'static, std::fs::File>>),
+    Read(ManuallyDrop<RwLockReadGuard<'static, std::fs::File>>),
+}
+
+/// Advisory file lock held on `<store>/.lock` for the duration of a
+/// [`RepoContext`] lifetime.
+///
+/// Prevents concurrent write–write and write–read conflicts across multiple
+/// `shelfbox` processes accessing the same store directory.
+///
+/// # Implementation note
+///
+/// This is a self-referential struct: `guard` borrows from `rw_lock`.
+/// Heap allocation via `Box` gives `rw_lock` a stable address; `ManuallyDrop`
+/// lets us control the drop order (guard first, then lock) in the custom
+/// [`Drop`] implementation.
+struct StoreLock {
+    /// Dropped first — releases the OS advisory lock.
+    guard: StoreLockGuard,
+    /// Dropped second — closes the underlying file descriptor.
+    rw_lock: ManuallyDrop<Box<FdRwLock<std::fs::File>>>,
+}
+
+impl std::fmt::Debug for StoreLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoreLock").finish_non_exhaustive()
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        // SAFETY: Drop order is critical.
+        // 1. `guard` must be dropped first to release the OS advisory lock.
+        // 2. `rw_lock` is then dropped, closing the file descriptor.
+        // The `Box` was never moved or freed while the guard was alive.
+        unsafe {
+            match &mut self.guard {
+                StoreLockGuard::Write(g) => ManuallyDrop::drop(g),
+                StoreLockGuard::Read(g) => ManuallyDrop::drop(g),
+            }
+            ManuallyDrop::drop(&mut self.rw_lock);
+        }
+    }
+}
+
+fn acquire_store_lock(lock_path: &Path, write: bool) -> Result<StoreLock> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|e| AppError::io(lock_path, e))?;
+
+    let mut rw_lock = Box::new(FdRwLock::new(file));
+
+    // SAFETY: The `Box` gives `rw_lock` a stable heap address. The raw
+    // pointer is not moved or freed while the guard is alive (enforced by
+    // the custom `Drop` impl above which drops the guard before the Box).
+    let lock_ref: &'static mut FdRwLock<std::fs::File> =
+        unsafe { &mut *(rw_lock.as_mut() as *mut _) };
+
+    let guard = if write {
+        let g = lock_ref.write().map_err(|e| AppError::StoreLocked {
+            lock_path: lock_path.to_path_buf(),
+            source: e,
+        })?;
+        StoreLockGuard::Write(ManuallyDrop::new(g))
+    } else {
+        let g = lock_ref.read().map_err(|e| AppError::StoreLocked {
+            lock_path: lock_path.to_path_buf(),
+            source: e,
+        })?;
+        StoreLockGuard::Read(ManuallyDrop::new(g))
+    };
+
+    Ok(StoreLock {
+        guard,
+        rw_lock: ManuallyDrop::new(rw_lock),
+    })
+}
 
 // ── RepoContext ───────────────────────────────────────────────────────────────
 
@@ -37,6 +125,10 @@ pub struct RepoContext {
 
     /// Resolved configuration (store path, etc.).
     pub config: Config,
+
+    /// Advisory file lock on `<store>/.lock`, held for this context's lifetime.
+    /// `None` only in unit-test contexts that construct `RepoContext` directly.
+    _store_lock: Option<StoreLock>,
 }
 
 impl RepoContext {
@@ -73,11 +165,20 @@ impl RepoContext {
 ///
 /// The `store_override` parameter lets the `--store` CLI flag take
 /// precedence over values in `config.toml`.
-pub fn build(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
+///
+/// Set `write` to `true` for commands that modify the store (`add`, `restore`,
+/// `doctor --fix`, `repair`). Read-only commands (`list`, `status`, `doctor`)
+/// should pass `false`.
+pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<RepoContext> {
     let config = Config::load(store_override)?;
 
     // Ensure the store has a meta.json identity file before anything else.
     meta::ensure_store_meta(&config.store)?;
+
+    // Acquire an advisory lock on the store so concurrent invocations do not
+    // interleave index and manifest writes.
+    let lock_path = config.store.join(".lock");
+    let store_lock = acquire_store_lock(&lock_path, write)?;
 
     // Phase 3 will fill in git::find_repo_root(); we call it via crate::git.
     let repo_root = crate::git::find_repo_root(cwd)?;
@@ -90,6 +191,7 @@ pub fn build(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
         repo_store,
         manifest,
         config,
+        _store_lock: Some(store_lock),
     })
 }
 
@@ -300,6 +402,7 @@ mod tests {
                 remote: None,
             }),
             config: Config::with_store("/store"),
+            _store_lock: None,
         };
 
         let abs = ctx.store_path_for("notes/design.md");
