@@ -49,7 +49,14 @@ shelfbox add secrets/notes/local.md
 2. Moves the file/directory into `<store>/repos/<id>/items/<rel-path>`.
 3. Creates a symlink at the original location pointing to the store.
 4. Records the item in `manifest.json`.
-5. Adds the repo-relative path to `.git/info/exclude`.
+5. Adds the repo-relative path to `.git/info/exclude` inside a managed block:
+   ```
+   # BEGIN shelfbox
+   .env
+   # END shelfbox
+   ```
+   The block is replaced atomically on every write. Lines outside the block
+   are never touched.
 
 **Flags:**
 
@@ -204,7 +211,7 @@ Applies safe automatic repairs in order:
 | Problem | Action |
 |---|---|
 | Index root mismatch | Updates recorded root to current path |
-| Orphan store items (no manifest entry) | Reconstructs manifest entry from store path |
+| Orphan store items (no manifest entry) | Reconstructs manifest entry from store path. Deletion of true orphans requires `--yes`. |
 | Missing `.git/info/exclude` entries | Re-adds paths from manifest |
 | Missing or broken symlinks | Recreates symlink (via `repair` logic) |
 | Store item missing | Records `WARN` — cannot auto-fix; data may be lost |
@@ -218,15 +225,12 @@ FIXED        repaired symlink: secrets/db.env
 WARN         cannot fix: store item missing for dead.txt
 ```
 
-Using `--yes` allows the fix to perform potentially destructive actions (not
-currently used; reserved for future orphan-deletion behaviour).
-
 **Flags:**
 
 | Flag | Description |
 |---|---|
 | `--fix` | Apply automatic repairs instead of just reporting. |
-| `--yes` | Skip confirmation prompts when used with `--fix`. Requires `--fix`. |
+| `--yes` | Confirms potentially destructive actions when used with `--fix`. Currently gates orphan store item deletion (items found in the store but absent from the manifest). Without `--yes`, orphan deletion is reported but not performed. Requires `--fix`. |
 | `--json` | Emit JSON (`DoctorReport` in read-only mode, `DoctorFixReport` in fix mode). |
 
 ### `repair <PATH>...`

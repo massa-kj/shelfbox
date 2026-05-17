@@ -199,7 +199,7 @@ cli::cmd_repair()
 |---|---|
 | **No `git2` dependency** | `std::process::Command` is sufficient for the two queries needed (`rev-parse`, `ls-files`). Avoids a large C dependency and keeps compile times short. |
 | **ULID for repo IDs** | Monotonically sortable, URL-safe, collision-resistant, and human-readable without a database. |
-| **Atomic index writes** | `index.json` is written to a `.tmp` file and then renamed. `rename(2)` is atomic on POSIX; partial writes cannot corrupt the index. |
+| **Atomic index and manifest writes** | Both `index.json` and `manifest.json` are written via a temp-file-then-rename strategy. `rename(2)` is atomic on POSIX; a crash mid-write cannot corrupt either file. |
 | **`thiserror` in lib / `anyhow` in bin** | Library errors should be typed and stable for callers; binary errors only need to be printable. Mixing them would pollute the library API. |
 | **`store_path` in manifest is repo-store-relative** | Using a relative path (e.g. `"items/.env"`) instead of an absolute one keeps `manifest.json` portable across machines and store relocations. The full path is reconstructed at runtime as `ctx.repo_store.join(&item.store_path)`. |
 | **Exclude entries are sorted** | Deterministic ordering makes diffs human-readable and prevents spurious changes to `.git/info/exclude`. |
@@ -207,3 +207,5 @@ cli::cmd_repair()
 | **`doctor_fix` is ordered and best-effort** | Root fix runs first so path comparisons are correct; each step continues even if a previous one fails, recording `FixResult::Failed` entries rather than aborting. |
 | **Navigation hints are CLI-only** | `shelfbox-core` returns structured `DoctorReport` / `DoctorFixReport` data; formatting, hints, and TTY detection live entirely in the binary crate. |
 | **`repair` refuses to overwrite regular files** | If a non-symlink file exists at the target path, `repair` returns `Err(PathIsRegularFile)` rather than silently overwriting user data. |
+| **`# BEGIN shelfbox` block in exclude** | All shelfbox entries are wrapped in a named block so other tools can safely edit the file without conflict. The block is rewritten atomically; existing content outside the block is preserved. |
+| **`LinkStrategy` abstraction** | All filesystem linking is dispatched through the `LinkStrategy` trait. Today only `SymlinkStrategy` (Unix symlinks) is shipped. Future implementations (hardlink, bind mount, copy mode) can be added without touching `ops/`. |
