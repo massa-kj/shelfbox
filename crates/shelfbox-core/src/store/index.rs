@@ -26,6 +26,10 @@ pub struct RepoEntry {
     /// Equivalent to `git rev-parse --git-common-dir`.
     pub git_common_dir: PathBuf,
 
+    /// Name of the per-repo directory under `<store>/repos/`.
+    /// Format: `<sanitized-repo-name>-<ulid>` (e.g. `my-project-01JTAR...`).
+    pub store_dir: String,
+
     /// ISO-8601 timestamp of the last time this repo was accessed via
     /// shelfbox.
     pub last_seen_at: String,
@@ -151,6 +155,7 @@ mod tests {
             root: PathBuf::from(root),
             git_dir: PathBuf::from(format!("{root}/.git")),
             git_common_dir: PathBuf::from(format!("{root}/.git")),
+            store_dir: "myapp-01JTAR00000000000000000000".into(),
             last_seen_at: "2026-04-29T00:00:00Z".into(),
         }
     }

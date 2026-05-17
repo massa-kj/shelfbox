@@ -313,6 +313,10 @@ fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: b
         .as_ref()
         .map(|e| e.git_common_dir.clone())
         .unwrap_or_else(|| git_dir.clone());
+    let store_dir = existing
+        .as_ref()
+        .map(|e| e.store_dir.clone())
+        .unwrap_or_else(|| ctx.repo_id.clone());
 
     idx.upsert(
         &ctx.repo_id,
@@ -320,6 +324,7 @@ fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: b
             root: ctx.repo_root.clone(),
             git_dir,
             git_common_dir,
+            store_dir,
             last_seen_at: context::now_iso8601(),
         },
     );

@@ -307,21 +307,50 @@ store = "/mnt/external/shelfbox-store"
 
 If the config file does not exist, all defaults are used silently.
 
+### Environment variable
+
+The `SHELFBOX_STORE` environment variable overrides the config file but is
+overridden by the `--store` CLI flag.
+
+Priority (highest → lowest):
+
+| Source | Example |
+|---|---|
+| `--store` CLI flag | `shelfbox --store /tmp/my-store list` |
+| `$SHELFBOX_STORE` env var | `SHELFBOX_STORE=/work/store shelfbox list` |
+| `store` key in config.toml | `store = "/mnt/external/shelfbox-store"` |
+| XDG / platform default | `~/.local/share/shelfbox` |
+
+Useful for temporarily switching between stores in a shell session:
+
+```sh
+export SHELFBOX_STORE=/mnt/dropbox/shelfbox
+shelfbox list    # uses Dropbox store
+unset SHELFBOX_STORE
+shelfbox list    # back to default store
+```
+
 ---
 
 ## Store layout
 
 ```
 ~/.local/share/shelfbox/
+  meta.json                         # store identity (store_id ULID, created_at)
   index.json                        # maps ULID → repo metadata (root path, etc.)
   repos/
-    01JTAR…/                        # one directory per repository (ULID)
+    api-server-01JTAR…/             # <sanitized-repo-name>-<ULID>
       manifest.json                 # items shelved from this repo
       items/
         .env                        # the actual shelved files
         secrets/
           api_key.txt
 ```
+
+Each repository subdirectory is named `<sanitized-name>-<ULID>` where
+`<sanitized-name>` is the directory name of the repository with non-alphanumeric
+characters replaced by `-`.  This makes the store readable with `ls` while
+keeping the ULID suffix for guaranteed uniqueness.
 
 The store is designed to be **portable**: `manifest.json` records stable
 metadata (remote URL, item kind, timestamps) and can be copied across machines.

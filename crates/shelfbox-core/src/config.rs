@@ -48,13 +48,22 @@ impl Config {
     }
 
     fn resolve(raw: RawConfig, store_override: Option<&Path>) -> Result<Self> {
+        // Priority (high → low):
+        //   1. --store CLI flag (store_override)
+        //   2. $SHELFBOX_STORE environment variable
+        //   3. `store` key in config.toml
+        //   4. XDG / platform default
+        let env_store = std::env::var_os("SHELFBOX_STORE").map(PathBuf::from);
         let store = store_override
             .map(|p| p.to_path_buf())
+            .or(env_store)
             .or(raw.store)
             .or_else(default_store_path)
             .ok_or_else(|| {
                 AppError::Internal(
-                    "could not determine store path; set `store` in config.toml".into(),
+                    "could not determine store path; set `store` in config.toml or \
+                     SHELFBOX_STORE env var"
+                        .into(),
                 )
             })?;
 
@@ -127,5 +136,29 @@ mod tests {
         // Platform default must exist on the CI runner (Linux/macOS).
         let cfg = Config::resolve(raw, None).unwrap();
         assert!(cfg.store.to_string_lossy().contains("shelfbox"));
+    }
+
+    #[test]
+    fn env_var_takes_precedence_over_config_file() {
+        // SAFETY: tests run in a single thread per process; env mutation is acceptable.
+        std::env::set_var("SHELFBOX_STORE", "/from/env");
+        let raw = RawConfig {
+            store: Some(PathBuf::from("/from/config")),
+        };
+        let cfg = Config::resolve(raw, None).unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        assert_eq!(cfg.store, PathBuf::from("/from/env"));
+    }
+
+    #[test]
+    fn cli_flag_takes_precedence_over_env_var() {
+        std::env::set_var("SHELFBOX_STORE", "/from/env");
+        let raw = RawConfig {
+            store: Some(PathBuf::from("/from/config")),
+        };
+        let override_path = PathBuf::from("/from/override");
+        let cfg = Config::resolve(raw, Some(&override_path)).unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        assert_eq!(cfg.store, override_path);
     }
 }

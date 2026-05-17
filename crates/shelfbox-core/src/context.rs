@@ -8,6 +8,7 @@ use crate::{
     store::{
         index::{self, Index, RepoEntry},
         manifest::{self, Manifest, RepoMeta},
+        meta,
     },
 };
 
@@ -75,6 +76,9 @@ impl RepoContext {
 pub fn build(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
     let config = Config::load(store_override)?;
 
+    // Ensure the store has a meta.json identity file before anything else.
+    meta::ensure_store_meta(&config.store)?;
+
     // Phase 3 will fill in git::find_repo_root(); we call it via crate::git.
     let repo_root = crate::git::find_repo_root(cwd)?;
 
@@ -109,45 +113,63 @@ fn resolve_repo(
     let common_dir =
         crate::git::git_common_dir(repo_root).unwrap_or_else(|_| repo_root.join(".git"));
 
+    // Human-readable portion of the store directory name (used for new repos).
+    let repo_name = repo_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".into());
+
     // Two-stage lookup:
     // 1. Exact root match (fast path, normal case).
     // 2. git-common-dir match (handles linked worktrees and moved repos).
-    let repo_id = if let Some(id) = index.find_by_root(repo_root) {
-        id.to_string()
+    let (repo_id, store_dir) = if let Some(id) = index.find_by_root(repo_root) {
+        let id = id.to_string();
+        let dir = index
+            .get(&id)
+            .map(|e| e.store_dir.clone())
+            .unwrap_or_else(|| id.clone());
+        (id, dir)
     } else if let Some(id) = index.find_by_git_common_dir(&common_dir) {
         // Repo was accessed via a different worktree or root path changed;
         // update the recorded root to the current one.
         let id = id.to_string();
-        if let Some(entry) = index.get(&id) {
+        let dir = if let Some(entry) = index.get(&id) {
+            let dir = entry.store_dir.clone();
             let mut updated = entry.clone();
             updated.root = repo_root.to_path_buf();
             updated.last_seen_at = now_iso8601();
             index.upsert(&id, updated);
             index::save(store_root, &index)?;
-        }
-        id
+            dir
+        } else {
+            id.clone()
+        };
+        (id, dir)
     } else {
-        // First time this repository is seen: generate a new ULID.
+        // First time this repository is seen: generate a new ULID and a
+        // human-readable directory name.
         let id = Ulid::new().to_string();
+        let dir = format!("{}-{}", sanitize_name(&repo_name), &id);
         let git_dir = common_dir.clone();
         let entry = RepoEntry {
             root: repo_root.to_path_buf(),
             git_dir,
             git_common_dir: common_dir,
+            store_dir: dir.clone(),
             last_seen_at: now_iso8601(),
         };
         index.upsert(&id, entry);
         index::save(store_root, &index)?;
-        id
+        (id, dir)
     };
 
-    let repo_store = store_root.join("repos").join(&repo_id);
+    let repo_store = store_root.join("repos").join(&store_dir);
 
     // Update `last_seen_at` on every access so doctor/status can detect
     // repositories that have vanished.
     update_last_seen(store_root, &mut index, &repo_id)?;
 
-    let manifest = load_or_init_manifest(&repo_store, &repo_id, repo_root, cwd)?;
+    let manifest = load_or_init_manifest(&repo_store, &repo_id, &repo_name, cwd)?;
 
     Ok((repo_id, repo_store, manifest))
 }
@@ -165,23 +187,18 @@ fn update_last_seen(store_root: &Path, index: &mut Index, repo_id: &str) -> Resu
 fn load_or_init_manifest(
     repo_store: &Path,
     repo_id: &str,
-    repo_root: &Path,
+    repo_name: &str,
     _cwd: &Path,
 ) -> Result<Manifest> {
     let path = manifest::manifest_path(repo_store);
     if path.exists() {
         manifest::load(repo_store)
     } else {
-        let name = repo_root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "unknown".into());
-
         // Remote URL is filled in by Phase 3 (git::get_remote_url).
         // Leave it as None for now; it will be updated on first `add`.
         let meta = RepoMeta {
             id: repo_id.to_string(),
-            name,
+            name: repo_name.to_string(),
             remote: None,
         };
         Ok(Manifest::new(meta))
@@ -189,6 +206,28 @@ fn load_or_init_manifest(
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+/// Converts a repository name to a filesystem-safe ASCII slug.
+///
+/// Non-alphanumeric characters are replaced with `-`; consecutive dashes are
+/// collapsed; leading and trailing dashes are stripped.  If the result would
+/// be empty, `"repo"` is returned as a safe fallback.
+fn sanitize_name(name: &str) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let slug = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "repo".into()
+    } else {
+        slug
+    }
+}
 
 /// Returns the current UTC time as a naïve ISO-8601 string.
 ///

@@ -69,6 +69,7 @@ Stored at `<store>/index.json`.  One entry per repository ever seen.
       "root": "/home/user/projects/myapp",
       "git_dir": "/home/user/projects/myapp/.git",
       "git_common_dir": "/home/user/projects/myapp/.git",
+      "store_dir": "myapp-01JTARXXXXXXXXXXXXXXXX",
       "last_seen_at": "2026-04-29T12:00:00Z"
     }
   }
@@ -83,7 +84,7 @@ clone and points to the main clone's `.git/` for a linked worktree.
 
 ### Per-repository manifest — `manifest.json`
 
-Stored at `<store>/repos/<ULID>/manifest.json`.
+Stored at `<store>/repos/<sanitized-name>-<ULID>/manifest.json`.
 
 ```json
 {
@@ -116,9 +117,10 @@ another machine or a different store root without modification.
 
 ```
 ~/.local/share/shelfbox/
+  meta.json            # store identity: store_id ULID + created_at
   index.json
   repos/
-    <ULID>/
+    myapp-01JTAR…/     # <sanitized-name>-<ULID>
       manifest.json
       items/           # mirrors the repository's relative path structure
         .env
@@ -213,3 +215,6 @@ cli::cmd_repair()
 | **`# BEGIN shelfbox` block in exclude** | All shelfbox entries are wrapped in a named block so other tools can safely edit the file without conflict. The block is rewritten atomically; existing content outside the block is preserved. |
 | **`LinkStrategy` abstraction** | All filesystem linking is dispatched through the `LinkStrategy` trait. Today only `SymlinkStrategy` (Unix symlinks) is shipped. Future implementations (hardlink, bind mount, copy mode) can be added without touching `ops/`. |
 | **Worktree-aware repo identity** | `RepoEntry` stores both `git_dir` and `git_common_dir` (output of `git rev-parse --git-common-dir`). Repo lookup uses a two-stage strategy: exact `root` match first, then `git_common_dir` match. This ensures that accessing a repository via a linked worktree reuses the same ULID rather than creating a duplicate entry. `exclude_file_path` is also resolved via `git rev-parse --git-path info/exclude` so the correct `.git/info/exclude` is targeted in worktree environments. |
+| **`<name>-<ULID>` repo store directories** | Per-repo store directories are named `<sanitized-repo-name>-<ULID>` (e.g. `my-project-01JTAR…`). The human-readable prefix makes the store legible with `ls` while the ULID suffix guarantees global uniqueness. Non-alphanumeric characters in the repo name are replaced with `-`. The `store_dir` field is persisted in `index.json` so the directory name never changes after first creation. |
+| **Store identity via `meta.json`** | `<store>/meta.json` is written on first use. It contains a ULID `store_id` and `created_at` timestamp. This provides a stable identity for the store, which future sync tooling can use to distinguish a same-store clone from an independent store. The write is idempotent: subsequent runs leave the file unchanged. |
+| **`SHELFBOX_STORE` environment variable** | The store root can be set via the `SHELFBOX_STORE` environment variable, overriding `config.toml` but yielding to the `--store` CLI flag. Priority: `--store` > `$SHELFBOX_STORE` > `config.toml` > XDG default. This follows the UNIX convention of env-var config and enables easy store switching in shell sessions without editing config files. |
