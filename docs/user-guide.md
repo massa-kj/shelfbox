@@ -70,6 +70,13 @@ shelfbox add secrets/notes/local.md
 2. Must be within the repository root.
 3. Must not be inside `.git/`.
 4. Must not be tracked by Git (`git ls-files --error-unmatch`).
+   If the file is tracked, shelfbox prints a hint:
+   ```
+   error: '.env' is tracked by git
+   hint: remove it from the index first:
+     git rm --cached .env
+   then re-run: shelfbox add .env
+   ```
 5. Must not already be a symlink.
 6. Must not already be managed by shelfbox.
 7. The store destination must not already exist (no silent overwrites).

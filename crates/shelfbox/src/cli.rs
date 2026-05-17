@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use shelfbox_core::{
     context,
+    error::AppError,
     ignore::GitInfoExclude,
     link::SymlinkStrategy,
     ops,
@@ -129,8 +130,25 @@ fn cmd_add(
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        ops::add::add(&mut ctx, &abs, dry_run, &link, &ignore)
-            .with_context(|| format!("add '{}' failed", path.display()))?;
+        match ops::add::add(&mut ctx, &abs, dry_run, &link, &ignore) {
+            Ok(()) => {}
+            // Special-case: give the user an actionable hint for tracked files.
+            Err(AppError::PathIsTracked { path: ref p }) => {
+                let rel = p
+                    .strip_prefix(cwd)
+                    .unwrap_or(p.as_path())
+                    .display()
+                    .to_string();
+                eprintln!("error: '{rel}' is tracked by git");
+                eprintln!("hint: remove it from the index first:");
+                eprintln!("  git rm --cached {rel}");
+                eprintln!("then re-run: shelfbox add {rel}");
+                return Err(anyhow::anyhow!("add '{rel}' failed"));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("add '{}' failed", path.display()));
+            }
+        }
         if !dry_run {
             println!("shelved: {}", path.display());
         }
