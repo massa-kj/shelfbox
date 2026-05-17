@@ -151,7 +151,19 @@ pub fn load(repo_store: &Path) -> Result<Manifest> {
 pub fn save(repo_store: &Path, manifest: &Manifest) -> Result<()> {
     let path = manifest_path(repo_store);
 
+    // Ensure the parent directory exists with restricted permissions so that
+    // other users on the same machine cannot read shelved secrets.
     if let Some(parent) = path.parent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|e| AppError::io(parent, e))?;
+        }
+        #[cfg(not(unix))]
         std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 

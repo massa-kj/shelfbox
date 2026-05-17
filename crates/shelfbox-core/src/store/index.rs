@@ -97,8 +97,19 @@ pub fn load(store_root: &Path) -> Result<Index> {
 pub fn save(store_root: &Path, index: &Index) -> Result<()> {
     let path = index_path(store_root);
 
-    // Ensure the parent directory exists.
+    // Ensure the parent directory exists with restricted permissions so that
+    // other users on the same machine cannot read shelved secrets.
     if let Some(parent) = path.parent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|e| AppError::io(parent, e))?;
+        }
+        #[cfg(not(unix))]
         std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 

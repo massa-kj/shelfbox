@@ -319,6 +319,10 @@ The store is designed to be **portable**: `manifest.json` records stable
 metadata (remote URL, item kind, timestamps) and can be copied across machines.
 Only `index.json` contains environment-specific absolute paths.
 
+The store root and all repository subdirectories are created with mode `0700`
+(owner-only read/write/execute) on Unix. This prevents other users on the same
+machine from reading shelved secrets such as `.env` files.
+
 ---
 
 ## Common workflows
