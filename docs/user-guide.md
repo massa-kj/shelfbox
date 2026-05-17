@@ -224,7 +224,8 @@ Applies safe automatic repairs in order:
 | Problem | Action |
 |---|---|
 | Index root mismatch | Updates recorded root to current path |
-| Orphan store items (no manifest entry) | Reconstructs manifest entry from store path. Deletion of true orphans requires `--yes`. |
+| Orphan store items with a valid symlink (rebuild candidates) | Reconstructs manifest entry from store path. **Requires `--yes`.** Without `--yes`, candidates are reported but not absorbed. |
+| Orphan store items with no symlink (true orphans) | Reports `NeedsConfirmation`. **Requires `--yes`** to delete. |
 | Missing `.git/info/exclude` entries | Re-adds paths from manifest |
 | Missing or broken symlinks | Recreates symlink (via `repair` logic) |
 | Store item missing | Records `WARN` — cannot auto-fix; data may be lost |
@@ -380,13 +381,21 @@ shelfbox repair .env
 
 ### Recovering from a lost manifest
 
-If `manifest.json` is accidentally deleted, `doctor --fix` rebuilds it from
-the store's `items/` directory.  The store path layout is deterministic
+If `manifest.json` is accidentally deleted, `doctor --fix --yes` rebuilds it
+from the store's `items/` directory.  The store path layout is deterministic
 (`items/<repo-relative-path>`), so all items are recovered exactly.  Only
 metadata that cannot be derived from the filesystem (`created_at`,
 `updated_at`) is reset to the time of recovery.
 
+The `--yes` flag is required because manifest reconstruction is a potentially
+destructive operation: shelfbox absorbs every orphan store item that has a
+corresponding symlink at the expected repo path.  Running without `--yes` will
+report the candidates but not modify the manifest.
+
 ```sh
 shelfbox doctor --fix
+# CONFIRM     manifest rebuild candidate '.env': re-run with --yes to absorb
+
+shelfbox doctor --fix --yes
 # FIXED        rebuilt manifest: added 3 item(s): .env, secrets/db.txt, notes/local.md
 ```

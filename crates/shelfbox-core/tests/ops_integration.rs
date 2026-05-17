@@ -928,7 +928,7 @@ fn doctor_fix_rebuilds_manifest_when_missing() {
     let manifest_path = ctx_check.repo_store.join("manifest.json");
     std::fs::remove_file(&manifest_path).unwrap();
 
-    // Rebuild via doctor --fix.
+    // Rebuild via doctor --fix --yes (rebuild requires explicit confirmation).
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     assert_eq!(
         ctx.manifest.items.len(),
@@ -937,7 +937,7 @@ fn doctor_fix_rebuilds_manifest_when_missing() {
     );
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     // A Fixed action must be present for the rebuild.
     assert!(
@@ -985,11 +985,11 @@ fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
     let ctx_check = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     std::fs::remove_file(ctx_check.repo_store.join("manifest.json")).unwrap();
 
-    // doctor --fix should rebuild the manifest (symlink exists → rebuild candidate).
+    // doctor --fix --yes should rebuild the manifest (symlink exists → rebuild candidate).
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     // Status must be healthy.
     let statuses = ops::status::status(&ctx, &link, &ignore).unwrap();
@@ -1021,7 +1021,7 @@ fn doctor_fix_rebuilds_only_missing_items_when_partial() {
     ctx.manifest.remove("partial_b.txt");
     shelfbox_core::store::manifest::save(&ctx.repo_store, &ctx.manifest).unwrap();
 
-    // doctor --fix should add only partial_b (partial_a is already there).
+    // doctor --fix --yes should add only partial_b (partial_a is already there).
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     assert_eq!(
         ctx.manifest.items.len(),
@@ -1030,7 +1030,7 @@ fn doctor_fix_rebuilds_only_missing_items_when_partial() {
     );
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     assert_eq!(
         ctx.manifest.items.len(),
@@ -1050,9 +1050,9 @@ fn doctor_fix_rebuilds_only_missing_items_when_partial() {
 #[test]
 fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
     // Scenario: one store item has a valid symlink (rebuild candidate) and
-    // another has no symlink (true orphan).  doctor --fix should absorb the
-    // rebuild candidate into the manifest while reporting NeedsConfirmation
-    // for the true orphan.
+    // another has no symlink (true orphan).  Without --yes, doctor --fix must
+    // report NeedsConfirmation for both and not modify the manifest or delete
+    // any store item.
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1077,27 +1077,29 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
 
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
+    // Without --yes: both rebuild candidate and true orphan get NeedsConfirmation.
     let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
-    // Rebuild candidate must be absorbed into the manifest.
+    // Neither item must be absorbed into the manifest without --yes.
     assert!(
-        ctx.manifest.contains("managed_mixed.txt"),
-        "rebuild candidate must be in manifest after fix"
+        !ctx.manifest.contains("managed_mixed.txt"),
+        "rebuild candidate must not be absorbed without --yes"
     );
-    // True orphan must NOT be absorbed.
     assert!(
         !ctx.manifest.contains("bare_mixed_orphan.txt"),
         "true orphan must not be added to manifest"
     );
-    // NeedsConfirmation must be reported for the true orphan.
+    // Both must be reported as NeedsConfirmation.
+    let confirmation_count = report
+        .actions
+        .iter()
+        .filter(|a| matches!(a, FixResult::NeedsConfirmation(_)))
+        .count();
     assert!(
-        report
-            .actions
-            .iter()
-            .any(|a| matches!(a, FixResult::NeedsConfirmation(_))),
-        "expected NeedsConfirmation for true orphan"
+        confirmation_count >= 2,
+        "expected NeedsConfirmation for both rebuild candidate and true orphan, got {confirmation_count}"
     );
-    // True orphan store file must remain (not deleted without --yes).
+    // True orphan store file must remain.
     assert!(
         orphan_path.exists(),
         "true orphan must not be deleted without --yes"
@@ -1126,8 +1128,8 @@ fn doctor_fix_rebuild_dry_run_does_not_persist() {
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path())).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    // dry_run = true
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, true).unwrap();
+    // yes=true so rebuild is attempted; dry_run=true so nothing is written.
+    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, true).unwrap();
 
     // Report must still mention the planned action.
     assert!(

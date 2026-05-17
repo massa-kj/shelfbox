@@ -169,12 +169,12 @@ pub fn doctor_fix(
 
     // Order matters:
     // 1. Fix root first so subsequent ops see consistent paths.
-    // 2. Rebuild manifest so symlink/exclude fixes operate on a complete manifest.
+    // 2. Rebuild manifest (only when yes=true; otherwise report candidates).
     // 3. Add missing exclude entries (uses updated manifest).
     // 4. Recreate symlinks (uses updated manifest).
     // 5. Handle any remaining orphans.
     fix_root_mismatch(ctx, &mut actions, dry_run)?;
-    rebuild_manifest_from_store(ctx, &mut actions, dry_run)?;
+    rebuild_manifest_from_store(ctx, &mut actions, yes, dry_run)?;
     fix_exclude_entries(ctx, ignore, &mut actions, dry_run)?;
     fix_symlinks(ctx, link, &mut actions, &mut data_loss_warnings, dry_run);
     handle_orphans(ctx, yes, &mut actions, dry_run);
@@ -197,9 +197,13 @@ pub fn doctor_fix(
 ///
 /// Already-managed items are skipped (`manifest.contains()` check) so the
 /// function is safe to call even when the manifest is partially intact.
+///
+/// When `yes` is `false`, rebuild candidates are reported as
+/// [`FixResult::NeedsConfirmation`] and the manifest is not modified.
 fn rebuild_manifest_from_store(
     ctx: &mut RepoContext,
     actions: &mut Vec<FixResult>,
+    yes: bool,
     dry_run: bool,
 ) -> Result<()> {
     // Only absorb store items that have a corresponding symlink at the expected
@@ -223,6 +227,16 @@ fn rebuild_manifest_from_store(
         .collect();
 
     if to_add.is_empty() {
+        return Ok(());
+    }
+
+    // Without --yes, report rebuild candidates but do not absorb them.
+    if !yes {
+        for candidate in &to_add {
+            actions.push(FixResult::NeedsConfirmation(format!(
+                "manifest rebuild candidate '{candidate}': re-run with --yes to absorb"
+            )));
+        }
         return Ok(());
     }
 
