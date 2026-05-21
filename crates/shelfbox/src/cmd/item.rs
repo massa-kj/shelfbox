@@ -1,0 +1,324 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use clap::Subcommand;
+use shelfbox_core::{
+    context,
+    error::AppError,
+    ignore::GitInfoExclude,
+    link::SymlinkStrategy,
+    ops,
+    ops::status::ItemStatus,
+    store::manifest::{Item, ItemKind},
+};
+
+use crate::cmd::util::resolve_path;
+
+// ── item subcommands ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+pub enum ItemCommand {
+    /// Move a file into the store and leave a symlink in its place.
+    Add {
+        /// Files to shelve (relative to repo root).
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Return a shelved file to its original location and remove it from the store.
+    Restore {
+        /// Files to restore (relative to repo root).
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Keep the .git/info/exclude entry after restoring.
+        #[arg(long)]
+        keep_ignore: bool,
+
+        /// Remove from manifest only; keep the store item and symlink in place.
+        /// The store item becomes an orphan subject to `repo gc`.
+        #[arg(long)]
+        keep_store: bool,
+    },
+
+    /// Recreate a missing or broken symlink for one or more shelved files.
+    Repair {
+        /// Files to repair (relative to repo root).
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// List all shelved files for the current repository.
+    List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show the health status of each shelved file.
+    Status {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Rename a shelved item's tracked path (not yet implemented).
+    Move {
+        #[arg(value_name = "OLD")]
+        old: PathBuf,
+
+        #[arg(value_name = "NEW")]
+        new_path: PathBuf,
+    },
+
+    /// Show metadata for a shelved item (not yet implemented).
+    Info {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+}
+
+// ── item command runner ─────────────────────────────────────────────────────────────────────────
+
+pub fn run_item(command: ItemCommand, cwd: &Path, store_override: Option<&Path>) -> Result<()> {
+    match command {
+        ItemCommand::Add { paths, dry_run } => cmd_add(cwd, store_override, &paths, dry_run),
+        ItemCommand::Restore {
+            paths,
+            dry_run,
+            keep_ignore,
+            keep_store,
+        } => cmd_restore(
+            cwd,
+            store_override,
+            &paths,
+            dry_run,
+            keep_ignore,
+            keep_store,
+        ),
+        ItemCommand::Repair { paths, dry_run } => cmd_repair(cwd, store_override, &paths, dry_run),
+        ItemCommand::List { json } => cmd_list(cwd, store_override, json),
+        ItemCommand::Status { json } => cmd_status(cwd, store_override, json),
+        ItemCommand::Move { .. } | ItemCommand::Info { .. } => {
+            anyhow::bail!("not yet implemented")
+        }
+    }
+}
+
+// ── Subcommand handlers ─────────────────────────────────────────────────────────────────────────
+
+fn cmd_add(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    paths: &[PathBuf],
+    dry_run: bool,
+) -> Result<()> {
+    let mut ctx =
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    for path in paths {
+        let abs = resolve_path(cwd, path);
+        match ops::add::add(&mut ctx, &abs, dry_run, &link, &ignore) {
+            Ok(()) => {}
+            // Special-case: give the user an actionable hint for tracked files.
+            Err(AppError::PathIsTracked { path: ref p }) => {
+                let rel = p
+                    .strip_prefix(cwd)
+                    .unwrap_or(p.as_path())
+                    .display()
+                    .to_string();
+                eprintln!("error: '{rel}' is tracked by git");
+                eprintln!("hint: remove it from the index first:");
+                eprintln!("  git rm --cached {rel}");
+                eprintln!("then re-run: shelfbox add {rel}");
+                return Err(anyhow::anyhow!("add '{rel}' failed"));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("add '{}' failed", path.display()));
+            }
+        }
+        if !dry_run {
+            println!("shelved: {}", path.display());
+        }
+    }
+    Ok(())
+}
+
+fn cmd_restore(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    paths: &[PathBuf],
+    dry_run: bool,
+    keep_ignore: bool,
+    keep_store: bool,
+) -> Result<()> {
+    if keep_store {
+        anyhow::bail!("--keep-store is not yet implemented");
+    }
+    let mut ctx =
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    for path in paths {
+        let abs = resolve_path(cwd, path);
+        ops::restore::restore(&mut ctx, &abs, dry_run, keep_ignore, &link, &ignore)
+            .with_context(|| format!("restore '{}' failed", path.display()))?;
+        if !dry_run {
+            println!("restored: {}", path.display());
+        }
+    }
+    Ok(())
+}
+
+fn cmd_list(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()> {
+    let ctx =
+        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let items = ops::list::list(&ctx);
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(items)?);
+    } else {
+        print_list(items);
+    }
+    Ok(())
+}
+
+fn cmd_status(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()> {
+    let ctx =
+        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    let statuses = ops::status::status(&ctx, &link, &ignore)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&statuses)?);
+    } else {
+        print_status(&statuses);
+    }
+    Ok(())
+}
+
+fn cmd_repair(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    paths: &[PathBuf],
+    dry_run: bool,
+) -> Result<()> {
+    let ctx =
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+
+    for path in paths {
+        let abs = resolve_path(cwd, path);
+        match ops::repair::repair(&ctx, &abs, &link, dry_run)
+            .with_context(|| format!("repair '{}' failed", path.display()))?
+        {
+            ops::repair::RepairOutcome::LinkRecreated => {
+                if !dry_run {
+                    println!("repaired: {}", path.display());
+                }
+            }
+            ops::repair::RepairOutcome::AlreadyHealthy => {
+                println!("ok (no repair needed): {}", path.display());
+            }
+            ops::repair::RepairOutcome::StoreMissing => {
+                eprintln!(
+                    "error: store item missing for '{}' — data may be lost. \
+                     Restore manually and re-add.",
+                    path.display()
+                );
+            }
+            ops::repair::RepairOutcome::NotManaged => {
+                eprintln!("error: '{}' is not managed by shelfbox", path.display());
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Human-readable formatters ───────────────────────────────────────────────────────────────────
+
+fn print_list(items: &[Item]) {
+    if items.is_empty() {
+        println!("(no shelved items)");
+        return;
+    }
+    for item in items {
+        let kind = match item.kind {
+            ItemKind::File => "file",
+            ItemKind::Directory => "dir",
+        };
+        println!("  {:<45} {:<5} {}", item.path, kind, item.created_at);
+    }
+}
+
+fn print_status(statuses: &[ItemStatus]) {
+    if statuses.is_empty() {
+        println!("(no shelved items)");
+        return;
+    }
+    for s in statuses {
+        let (label, issues) = classify_status(s);
+        if issues.is_empty() {
+            println!("{:<8} {}", label, s.path);
+        } else {
+            println!("{:<8} {}  ({})", label, s.path, issues.join(", "));
+        }
+    }
+}
+
+/// Returns `(severity_label, list_of_problem_descriptions)` for one item.
+///
+/// Severity rules:
+/// - ERROR: any structural failure (symlink missing/invalid, store item gone,
+///   or Git can see the file — the primary shelfbox contract is broken).
+/// - WARN:  exclude entry missing but Git still ignores the file for now.
+/// - OK:    all checks pass.
+fn classify_status(s: &ItemStatus) -> (&'static str, Vec<&'static str>) {
+    let mut issues: Vec<&'static str> = Vec::new();
+
+    if !s.link_exists {
+        issues.push("symlink missing");
+    } else if !s.link_valid {
+        issues.push("symlink invalid");
+    }
+    if !s.store_exists {
+        issues.push("store item missing");
+    }
+    if !s.in_exclude {
+        issues.push("not in exclude");
+    }
+    if !s.not_tracked {
+        // Git can see the shelved file — the primary shelfbox contract
+        // ("hide from Git") is broken.  This warrants ERROR, not WARN.
+        issues.push("tracked by git");
+    }
+
+    let label = if !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked {
+        "ERROR"
+    } else if !issues.is_empty() {
+        // Only !in_exclude remains: the symlink is healthy and Git does not
+        // currently track the file, but the exclude entry is gone.  A future
+        // `git add .` could stage it, so this is a real warning.
+        "WARN"
+    } else {
+        "OK"
+    };
+
+    (label, issues)
+}
