@@ -12,6 +12,7 @@ use shelfbox_core::{
     store::manifest::{Item, ItemKind},
 };
 
+use crate::cmd::format::OutputFormat;
 use crate::cmd::util::resolve_path;
 
 // ── item subcommands ────────────────────────────────────────────────────────────────────────────
@@ -62,16 +63,16 @@ pub enum ItemCommand {
 
     /// List all shelved files for the current repository.
     List {
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
     },
 
     /// Show the health status of each shelved file.
     Status {
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
     },
 
     /// Rename a shelved item's tracked path (not yet implemented).
@@ -109,8 +110,8 @@ pub fn run_item(command: ItemCommand, cwd: &Path, store_override: Option<&Path>)
             keep_store,
         ),
         ItemCommand::Repair { paths, dry_run } => cmd_repair(cwd, store_override, &paths, dry_run),
-        ItemCommand::List { json } => cmd_list(cwd, store_override, json),
-        ItemCommand::Status { json } => cmd_status(cwd, store_override, json),
+        ItemCommand::List { format } => cmd_list(cwd, store_override, format),
+        ItemCommand::Status { format } => cmd_status(cwd, store_override, format),
         ItemCommand::Move { .. } | ItemCommand::Info { .. } => {
             anyhow::bail!("not yet implemented")
         }
@@ -185,30 +186,32 @@ fn cmd_restore(
     Ok(())
 }
 
-fn cmd_list(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()> {
+fn cmd_list(cwd: &Path, store_override: Option<&Path>, format: OutputFormat) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let items = ops::list::list(&ctx);
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(items)?);
-    } else {
-        print_list(items);
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(items)?),
+        OutputFormat::Plain => print_list_plain(items),
+        OutputFormat::Table => print_list(items),
+        OutputFormat::Detail => anyhow::bail!("--format detail is not yet implemented"),
     }
     Ok(())
 }
 
-fn cmd_status(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<()> {
+fn cmd_status(cwd: &Path, store_override: Option<&Path>, format: OutputFormat) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
     let statuses = ops::status::status(&ctx, &link, &ignore)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&statuses)?);
-    } else {
-        print_status(&statuses);
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&statuses)?),
+        OutputFormat::Plain => print_status_plain(&statuses),
+        OutputFormat::Table => print_status(&statuses),
+        OutputFormat::Detail => anyhow::bail!("--format detail is not yet implemented"),
     }
     Ok(())
 }
@@ -253,6 +256,13 @@ fn cmd_repair(
 
 // ── Human-readable formatters ───────────────────────────────────────────────────────────────────
 
+/// Plain format: one path per line.
+fn print_list_plain(items: &[Item]) {
+    for item in items {
+        println!("{}", item.path);
+    }
+}
+
 fn print_list(items: &[Item]) {
     if items.is_empty() {
         println!("(no shelved items)");
@@ -264,6 +274,18 @@ fn print_list(items: &[Item]) {
             ItemKind::Directory => "dir",
         };
         println!("  {:<45} {:<5} {}", item.path, kind, item.created_at);
+    }
+}
+
+/// Plain format: `label path [issue,issue,...]`
+fn print_status_plain(statuses: &[ItemStatus]) {
+    for s in statuses {
+        let (label, issues) = classify_status(s);
+        if issues.is_empty() {
+            println!("{} {}", label, s.path);
+        } else {
+            println!("{} {} {}", label, s.path, issues.join(","));
+        }
     }
 }
 

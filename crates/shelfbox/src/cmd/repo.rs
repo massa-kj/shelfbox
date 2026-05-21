@@ -3,15 +3,25 @@ use std::path::Path;
 use anyhow::Result;
 use clap::Subcommand;
 
+use crate::cmd::format::OutputFormat;
+
 // ── repo subcommands ────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
     /// List all repositories known to the store.
-    List,
+    List {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
 
     /// Show the health status of the current repository's shelf.
-    Status,
+    Status {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
 
     /// Apply safe automatic repairs (broken symlinks, exclude, root mismatch).
     Repair {
@@ -42,8 +52,8 @@ pub enum RepoCommand {
 
 pub fn run_repo(command: RepoCommand, _cwd: &Path, _store_override: Option<&Path>) -> Result<()> {
     match command {
-        RepoCommand::List
-        | RepoCommand::Status
+        RepoCommand::List { .. }
+        | RepoCommand::Status { .. }
         | RepoCommand::Repair { .. }
         | RepoCommand::Gc { .. }
         | RepoCommand::Relink
