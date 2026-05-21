@@ -26,6 +26,38 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Manage individual shelved items.
+    Item {
+        #[command(subcommand)]
+        command: ItemCommand,
+    },
+    /// Manage the current repository's shelf.
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
+    /// Manage the global store.
+    Store {
+        #[command(subcommand)]
+        command: StoreCommand,
+    },
+    /// Manage shelfbox configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+    /// Internal and development commands.
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: InternalCommand,
+    },
+}
+
+// ── item subcommands ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+pub enum ItemCommand {
     /// Move a file into the store and leave a symlink in its place.
     Add {
         /// Files to shelve (relative to repo root).
@@ -50,6 +82,22 @@ pub enum Command {
         /// Keep the .git/info/exclude entry after restoring.
         #[arg(long)]
         keep_ignore: bool,
+
+        /// Remove from manifest only; keep the store item and symlink in place.
+        /// The store item becomes an orphan subject to `repo gc`.
+        #[arg(long)]
+        keep_store: bool,
+    },
+
+    /// Recreate a missing or broken symlink for one or more shelved files.
+    Repair {
+        /// Files to repair (relative to repo root).
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// List all shelved files for the current repository.
@@ -66,31 +114,117 @@ pub enum Command {
         json: bool,
     },
 
-    /// Check for broken links, missing store items, and other inconsistencies.
-    Doctor {
-        /// Apply safe automatic fixes for detected issues.
-        #[arg(long)]
-        fix: bool,
+    /// Rename a shelved item's tracked path (not yet implemented).
+    Move {
+        #[arg(value_name = "OLD")]
+        old: PathBuf,
 
-        /// When used with --fix, also perform potentially destructive actions
-        /// such as deleting orphan store items without prompting.
-        #[arg(long, requires = "fix")]
-        yes: bool,
-
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
+        #[arg(value_name = "NEW")]
+        new_path: PathBuf,
     },
 
-    /// Recreate a missing or broken symlink for one or more shelved files.
-    Repair {
-        /// Files to repair (relative to repo root).
-        #[arg(required = true, value_name = "PATH")]
-        paths: Vec<PathBuf>,
+    /// Show metadata for a shelved item (not yet implemented).
+    Info {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+}
 
+// ── repo subcommands ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+pub enum RepoCommand {
+    /// List all repositories known to the store.
+    List,
+
+    /// Show the health status of the current repository's shelf.
+    Status,
+
+    /// Apply safe automatic repairs (broken symlinks, exclude, root mismatch).
+    Repair {
         /// Print what would happen without making any changes.
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Delete orphan store items not referenced by the manifest.
+    Gc {
+        /// Print what would be deleted without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt and perform deletions immediately.
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Re-associate a repository after a reclone or path change (not yet implemented).
+    Relink,
+
+    /// Migrate the manifest schema to the current version (not yet implemented).
+    Migrate,
+}
+
+// ── store subcommands ──────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+pub enum StoreCommand {
+    /// Show store metadata (path, repo count, disk usage).
+    Info,
+
+    /// Run a deep integrity check across all store contents.
+    Verify,
+
+    /// Delete store entries for repositories that no longer exist.
+    Gc {
+        /// Print what would be deleted without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt and perform deletions immediately.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+// ── config subcommands ───────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print the value of a configuration key.
+    Get {
+        #[arg(value_name = "KEY")]
+        key: String,
+    },
+
+    /// Print the path to the configuration file.
+    Path,
+
+    /// Set the value of a configuration key (not yet implemented).
+    Set {
+        #[arg(value_name = "KEY")]
+        key: String,
+
+        #[arg(value_name = "VALUE")]
+        value: String,
+    },
+
+    /// Open the configuration file in $EDITOR (not yet implemented).
+    Edit,
+}
+
+// ── internal subcommands ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+pub enum InternalCommand {
+    /// Dump internal state for debugging.
+    Debug,
+
+    /// Output shell completion script.
+    Completions {
+        /// Target shell (bash, zsh, fish).
+        #[arg(value_name = "SHELL")]
+        shell: String,
     },
 }
 
@@ -102,16 +236,72 @@ pub fn run() -> Result<()> {
     let store_override = cli.store.as_deref();
 
     match cli.command {
-        Command::Add { paths, dry_run } => cmd_add(&cwd, store_override, &paths, dry_run),
-        Command::Restore {
+        Command::Item { command } => run_item(command, &cwd, store_override),
+        Command::Repo { command } => run_repo(command, &cwd, store_override),
+        Command::Store { command } => run_store(command, &cwd, store_override),
+        Command::Config { command } => run_config(command, &cwd, store_override),
+        Command::Internal { command } => run_internal(command),
+    }
+}
+
+fn run_item(command: ItemCommand, cwd: &Path, store_override: Option<&Path>) -> Result<()> {
+    match command {
+        ItemCommand::Add { paths, dry_run } => cmd_add(cwd, store_override, &paths, dry_run),
+        ItemCommand::Restore {
             paths,
             dry_run,
             keep_ignore,
-        } => cmd_restore(&cwd, store_override, &paths, dry_run, keep_ignore),
-        Command::List { json } => cmd_list(&cwd, store_override, json),
-        Command::Status { json } => cmd_status(&cwd, store_override, json),
-        Command::Doctor { fix, yes, json } => cmd_doctor(&cwd, store_override, fix, yes, json),
-        Command::Repair { paths, dry_run } => cmd_repair(&cwd, store_override, &paths, dry_run),
+            keep_store,
+        } => cmd_restore(
+            cwd,
+            store_override,
+            &paths,
+            dry_run,
+            keep_ignore,
+            keep_store,
+        ),
+        ItemCommand::Repair { paths, dry_run } => cmd_repair(cwd, store_override, &paths, dry_run),
+        ItemCommand::List { json } => cmd_list(cwd, store_override, json),
+        ItemCommand::Status { json } => cmd_status(cwd, store_override, json),
+        ItemCommand::Move { .. } | ItemCommand::Info { .. } => {
+            anyhow::bail!("not yet implemented")
+        }
+    }
+}
+
+fn run_repo(command: RepoCommand, _cwd: &Path, _store_override: Option<&Path>) -> Result<()> {
+    match command {
+        RepoCommand::List
+        | RepoCommand::Status
+        | RepoCommand::Repair { .. }
+        | RepoCommand::Gc { .. }
+        | RepoCommand::Relink
+        | RepoCommand::Migrate => anyhow::bail!("not yet implemented"),
+    }
+}
+
+fn run_store(command: StoreCommand, _cwd: &Path, _store_override: Option<&Path>) -> Result<()> {
+    match command {
+        StoreCommand::Info | StoreCommand::Verify | StoreCommand::Gc { .. } => {
+            anyhow::bail!("not yet implemented")
+        }
+    }
+}
+
+fn run_config(command: ConfigCommand, _cwd: &Path, _store_override: Option<&Path>) -> Result<()> {
+    match command {
+        ConfigCommand::Get { .. }
+        | ConfigCommand::Path
+        | ConfigCommand::Set { .. }
+        | ConfigCommand::Edit => anyhow::bail!("not yet implemented"),
+    }
+}
+
+fn run_internal(command: InternalCommand) -> Result<()> {
+    match command {
+        InternalCommand::Debug | InternalCommand::Completions { .. } => {
+            anyhow::bail!("not yet implemented")
+        }
     }
 }
 
@@ -162,7 +352,11 @@ fn cmd_restore(
     paths: &[PathBuf],
     dry_run: bool,
     keep_ignore: bool,
+    keep_store: bool,
 ) -> Result<()> {
+    if keep_store {
+        anyhow::bail!("--keep-store is not yet implemented");
+    }
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
@@ -203,42 +397,6 @@ fn cmd_status(cwd: &Path, store_override: Option<&Path>, json: bool) -> Result<(
         println!("{}", serde_json::to_string_pretty(&statuses)?);
     } else {
         print_status(&statuses);
-    }
-    Ok(())
-}
-
-fn cmd_doctor(
-    cwd: &Path,
-    store_override: Option<&Path>,
-    fix: bool,
-    yes: bool,
-    json: bool,
-) -> Result<()> {
-    let link = SymlinkStrategy;
-    let ignore = GitInfoExclude;
-
-    if fix {
-        let mut ctx = context::build(cwd, store_override, true)
-            .context("failed to initialise repo context")?;
-        let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, yes, false)?;
-        if json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print_fix_report(&report);
-        }
-    } else {
-        let ctx = context::build(cwd, store_override, false)
-            .context("failed to initialise repo context")?;
-        let report = ops::doctor::doctor(&ctx, &link, &ignore)?;
-        if json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print_doctor_report(
-                &report.items,
-                &report.orphan_store_items,
-                report.repo_root_matches_index,
-            );
-        }
     }
     Ok(())
 }
@@ -308,89 +466,6 @@ fn print_status(statuses: &[ItemStatus]) {
             println!("{:<8} {}", label, s.path);
         } else {
             println!("{:<8} {}  ({})", label, s.path, issues.join(", "));
-        }
-    }
-}
-
-fn print_doctor_report(statuses: &[ItemStatus], orphans: &[String], root_matches: bool) {
-    // Repo root integrity line.
-    if root_matches {
-        println!("{:<8} repo root matches index", "OK");
-    } else {
-        println!(
-            "{:<8} repo root mismatch: repository may have been moved",
-            "ERROR"
-        );
-        println!("  → Run: shelfbox doctor --fix");
-    }
-
-    // Print each item with a navigation hint for non-OK states.
-    if statuses.is_empty() {
-        println!("(no shelved items)");
-    } else {
-        for s in statuses {
-            let (label, issues) = classify_status(s);
-            if issues.is_empty() {
-                println!("{:<8} {}", label, s.path);
-            } else {
-                println!("{:<8} {}  ({})", label, s.path, issues.join(", "));
-                // Show the most actionable next step for this item.
-                if !s.store_exists {
-                    println!("  → Data loss: cannot auto-repair. Restore manually and re-add.");
-                } else if !s.link_exists || !s.link_valid {
-                    println!("  → Run: shelfbox repair {}", s.path);
-                } else {
-                    println!("  → Run: shelfbox doctor --fix");
-                }
-            }
-        }
-    }
-
-    if !orphans.is_empty() {
-        if !statuses.is_empty() {
-            println!();
-        }
-        println!("--- orphan store items (not in manifest) ---");
-        for orphan in orphans {
-            println!("  WARN     orphan: {orphan}");
-        }
-        println!("  → Run: shelfbox doctor --fix");
-    }
-}
-
-fn print_fix_report(report: &ops::doctor::DoctorFixReport) {
-    use ops::doctor::FixResult;
-
-    // Show "everything is healthy" when there are no actions at all, or when
-    // every action is a Skipped (nothing needed fixing).
-    let all_skipped = !report.actions.is_empty()
-        && report
-            .actions
-            .iter()
-            .all(|a| matches!(a, FixResult::Skipped(_)));
-    if report.actions.is_empty() || all_skipped {
-        println!("{:<12} everything is healthy", "OK");
-        return;
-    }
-
-    for action in &report.actions {
-        match action {
-            FixResult::Fixed(msg) => println!("{:<12} {msg}", "FIXED"),
-            FixResult::Skipped(msg) => println!("{:<12} {msg}", "OK"),
-            FixResult::Failed(msg) => println!("{:<12} {msg}", "ERROR"),
-            FixResult::NeedsConfirmation(msg) => println!("{:<12} {msg}", "CONFIRM"),
-            FixResult::CannotFix(msg) => println!("{:<12} {msg}", "WARN"),
-        }
-    }
-
-    if !report.data_loss_warnings.is_empty() {
-        println!();
-        println!("--- data loss warnings ---");
-        for w in &report.data_loss_warnings {
-            println!("  {w}");
-            println!(
-                "  Restore manually: rm <symlink> && cp <backup> <path> && shelfbox add <path>"
-            );
         }
     }
 }
