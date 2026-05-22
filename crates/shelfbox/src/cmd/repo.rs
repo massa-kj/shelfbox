@@ -9,7 +9,7 @@ use shelfbox_core::{
     ignore::GitInfoExclude,
     link::SymlinkStrategy,
     ops,
-    ops::doctor::{DoctorReport, FixResult},
+    ops::integrity::{FixResult, IntegrityReport},
     store::{index, manifest},
 };
 
@@ -144,7 +144,7 @@ fn cmd_repo_status(cwd: &Path, store_override: Option<&Path>, format: OutputForm
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    let report = ops::doctor::doctor(&ctx, &link, &ignore)?;
+    let report = ops::integrity::check(&ctx, &link, &ignore)?;
 
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
@@ -162,7 +162,7 @@ fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> 
     let ignore = GitInfoExclude;
 
     // yes=false: safe fixes only; orphan deletion requires explicit `repo gc`.
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, dry_run)?;
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, dry_run)?;
 
     for action in &report.actions {
         print_fix_result(action);
@@ -179,8 +179,8 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
-    // Use doctor() to collect orphan store items.
-    let report = ops::doctor::doctor(&ctx, &link, &ignore)?;
+    // Use check() to collect orphan store items.
+    let report = ops::integrity::check(&ctx, &link, &ignore)?;
 
     if report.orphan_store_items.is_empty() {
         println!("no orphan store items found");
@@ -222,7 +222,7 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
 
 // ── Human-readable formatters ───────────────────────────────────────────────────────────────────
 
-fn print_repo_status(report: &DoctorReport, repo_root: &Path) {
+fn print_repo_status(report: &IntegrityReport, repo_root: &Path) {
     println!("repo: {}", repo_root.display());
 
     let total = report.items.len();
@@ -273,7 +273,7 @@ fn print_repo_status(report: &DoctorReport, repo_root: &Path) {
     println!("index root: [{root_label}]");
 }
 
-fn print_repo_status_plain(report: &DoctorReport) {
+fn print_repo_status_plain(report: &IntegrityReport) {
     for s in &report.items {
         let label = if s.ok { "OK" } else { "ERROR" };
         println!("{label} {}", s.path);

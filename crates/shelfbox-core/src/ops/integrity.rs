@@ -18,11 +18,11 @@ use super::{
     status::{self, ItemStatus},
 };
 
-/// Comprehensive health report produced by the `doctor` command.
+/// Comprehensive health report produced by [`check`].
 ///
-/// This is a read-only operation.  Use [`doctor_fix`] for the repair mode.
+/// This is a read-only operation.  Use [`fix`] for the repair mode.
 #[derive(Debug, Serialize)]
-pub struct DoctorReport {
+pub struct IntegrityReport {
     /// Per-item health status (covers every item in the manifest).
     pub items: Vec<ItemStatus>,
     /// Store-side paths that exist on disk but are not referenced in the manifest.
@@ -31,16 +31,16 @@ pub struct DoctorReport {
     pub repo_root_matches_index: bool,
 }
 
-/// Runs all health checks and returns a [`DoctorReport`].
-pub fn doctor(
+/// Runs all health checks and returns an [`IntegrityReport`].
+pub fn check(
     ctx: &RepoContext,
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
-) -> Result<DoctorReport> {
+) -> Result<IntegrityReport> {
     let items = status::status(ctx, link, ignore)?;
     let orphan_store_items = collect_orphan_store_items(ctx);
     let repo_root_matches_index = check_repo_root_in_index(ctx)?;
-    Ok(DoctorReport {
+    Ok(IntegrityReport {
         items,
         orphan_store_items,
         repo_root_matches_index,
@@ -117,9 +117,9 @@ fn walk_for_orphans(
     }
 }
 
-// ── doctor --fix ──────────────────────────────────────────────────────────────
+// ── fix mode ──────────────────────────────────────────────────────────────────
 
-/// The outcome of a single fix action within [`doctor_fix`].
+/// The outcome of a single fix action within [`fix`].
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", content = "detail")]
 pub enum FixResult {
@@ -135,9 +135,9 @@ pub enum FixResult {
     CannotFix(String),
 }
 
-/// Report produced by [`doctor_fix`].
+/// Report produced by [`fix`].
 #[derive(Debug, Serialize)]
-pub struct DoctorFixReport {
+pub struct IntegrityFixReport {
     /// Ordered log of every fix action attempted.
     pub actions: Vec<FixResult>,
     /// Items whose store-side file is missing; surfaced separately for easy
@@ -157,13 +157,13 @@ pub struct DoctorFixReport {
 ///
 /// `dry_run = true` records what *would* happen without touching the
 /// filesystem, index, or ignore backend.
-pub fn doctor_fix(
+pub fn fix(
     ctx: &mut RepoContext,
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
     yes: bool,
     dry_run: bool,
-) -> Result<DoctorFixReport> {
+) -> Result<IntegrityFixReport> {
     let mut actions: Vec<FixResult> = Vec::new();
     let mut data_loss_warnings: Vec<String> = Vec::new();
 
@@ -179,7 +179,7 @@ pub fn doctor_fix(
     fix_symlinks(ctx, link, &mut actions, &mut data_loss_warnings, dry_run);
     handle_orphans(ctx, yes, &mut actions, dry_run);
 
-    Ok(DoctorFixReport {
+    Ok(IntegrityFixReport {
         actions,
         data_loss_warnings,
     })

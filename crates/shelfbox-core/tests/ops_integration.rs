@@ -13,7 +13,7 @@ use shelfbox_core::{
     ignore::{GitInfoExclude, IgnoreBackend},
     link::{LinkStrategy, SymlinkStrategy},
     ops,
-    ops::doctor::FixResult,
+    ops::integrity::FixResult,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -368,7 +368,7 @@ fn doctor_finds_orphan_store_item() {
     let orphan_path = ctx.items_dir().join("orphan_injected.txt");
     std::fs::write(&orphan_path, "orphan").unwrap();
 
-    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+    let report = ops::integrity::check(&ctx, &link, &ignore).unwrap();
 
     assert_eq!(report.items.len(), 1);
     assert!(report.items[0].ok, "managed item must be reported as ok");
@@ -385,7 +385,7 @@ fn doctor_empty_repo_is_clean() {
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
-    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+    let report = ops::integrity::check(&ctx, &link, &ignore).unwrap();
 
     assert!(report.items.is_empty());
     assert!(report.orphan_store_items.is_empty());
@@ -488,7 +488,7 @@ fn doctor_reports_error_for_dangling_symlink() {
     let store_path = ctx.repo_store.join("items/secrets.txt");
     std::fs::remove_file(&store_path).unwrap();
 
-    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+    let report = ops::integrity::check(&ctx, &link, &ignore).unwrap();
 
     assert_eq!(report.items.len(), 1);
     let s = &report.items[0];
@@ -516,7 +516,7 @@ fn doctor_reports_warn_for_missing_exclude_entry() {
         .remove_entries(repo_dir.path(), &["private.txt"])
         .unwrap();
 
-    let report = ops::doctor::doctor(&ctx, &link, &ignore).unwrap();
+    let report = ops::integrity::check(&ctx, &link, &ignore).unwrap();
 
     assert_eq!(report.items.len(), 1);
     let s = &report.items[0];
@@ -747,7 +747,7 @@ fn doctor_fix_repairs_missing_exclude_entry() {
         "exclude entry must be absent before fix"
     );
 
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     // At least one Fixed action must be present.
     assert!(
@@ -784,7 +784,7 @@ fn doctor_fix_repairs_missing_symlink() {
     // Remove the symlink to simulate the broken state.
     std::fs::remove_file(&file_path).unwrap();
 
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     assert!(
         report
@@ -821,7 +821,7 @@ fn doctor_fix_records_cannot_fix_for_store_missing() {
     // Delete the store-side copy to simulate data loss.
     std::fs::remove_file(ctx.repo_store.join("items/lost.txt")).unwrap();
 
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     assert!(
         report
@@ -852,7 +852,7 @@ fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
     std::fs::create_dir_all(ctx.items_dir()).unwrap();
     std::fs::write(&orphan_path, "orphan").unwrap();
 
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     assert!(
         report
@@ -889,7 +889,7 @@ fn doctor_fix_true_orphan_deleted_with_yes() {
     std::fs::write(&orphan_path, "orphan").unwrap();
 
     // yes=true: true orphan must be deleted.
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     assert!(
         report
@@ -926,7 +926,7 @@ fn doctor_fix_dry_run_makes_no_changes() {
         .join("\n");
     std::fs::write(&exclude_path, stripped).unwrap();
 
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, true).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, true).unwrap();
 
     // dry-run must report what it would do.
     assert!(
@@ -979,7 +979,7 @@ fn doctor_fix_rebuilds_manifest_when_missing() {
     );
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     // A Fixed action must be present for the rebuild.
     assert!(
@@ -1033,7 +1033,7 @@ fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
+    ops::integrity::fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     // Status must be healthy.
     let statuses = ops::status::status(&ctx, &link, &ignore).unwrap();
@@ -1076,7 +1076,7 @@ fn doctor_fix_rebuilds_only_missing_items_when_partial() {
     );
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
+    ops::integrity::fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     assert_eq!(
         ctx.manifest.items.len(),
@@ -1126,7 +1126,7 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
     // Without --yes: both rebuild candidate and true orphan get NeedsConfirmation.
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, false, false).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     // Neither item must be absorbed into the manifest without --yes.
     assert!(
@@ -1181,7 +1181,7 @@ fn doctor_fix_rebuild_dry_run_does_not_persist() {
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
     // yes=true so rebuild is attempted; dry_run=true so nothing is written.
-    let report = ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, true).unwrap();
+    let report = ops::integrity::fix(&mut ctx, &link, &ignore, true, true).unwrap();
 
     // Report must still mention the planned action.
     assert!(
@@ -1245,7 +1245,7 @@ fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
-    ops::doctor::doctor_fix(&mut ctx, &link, &ignore, true, false).unwrap();
+    ops::integrity::fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     // The item must NOT have been added to the manifest via rebuild.
     assert!(

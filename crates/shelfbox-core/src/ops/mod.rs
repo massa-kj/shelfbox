@@ -1,5 +1,5 @@
 pub mod add;
-pub mod doctor;
+pub mod integrity;
 pub mod list;
 pub mod repair;
 pub mod restore;
