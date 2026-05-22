@@ -41,7 +41,7 @@ src/
     restore.rs    # restore() — unshelve a path
     list.rs       # list() — read manifest items
     status.rs     # status() — per-item health check
-    doctor.rs     # doctor() / doctor_fix() — integrity report and repair
+    integrity.rs  # check() / fix() — integrity report and repair
     repair.rs     # repair() — single-file symlink repair
 ```
 
@@ -49,9 +49,22 @@ src/
 
 ```
 src/
-  main.rs         # entry point — calls cli::run()
-  cli.rs          # Clap struct + all cmd_* dispatch functions
+  main.rs           # entry point — calls cli::run()
+  cli.rs            # Cli struct, Command enum (5 groups), run() dispatcher
+  cmd/
+    mod.rs          # re-exports all cmd modules
+    item.rs         # item subcommand logic (add, restore, repair, list, status, info)
+    repo.rs         # repo subcommand logic (list, status, repair, gc)
+    store.rs        # store subcommand logic (info, verify, gc)
+    config.rs       # config subcommand logic (get, path)
+    internal.rs     # internal subcommand logic (debug, completions)
+    format.rs       # OutputFormat enum (Table, Plain, Json, Detail)
+    util.rs         # path resolution helpers
 ```
+
+The binary crate depends on `clap` (CLI parsing), `clap_complete` (shell
+completions), `anyhow` (error formatting), `serde_json` (JSON output), and
+`shelfbox-core` (all business logic).
 
 ---
 
@@ -135,12 +148,12 @@ contents human-readable and easy to inspect manually.
 
 ## Request lifecycle
 
-### `shelfbox add notes.md`
+### `shelfbox item add notes.md`
 
 ```
 CLI parse (clap)
-  └─ cli::cmd_add()
-       ├─ context::build(cwd, store_override)
+  └─ cli::run() → cmd::item::run_item()
+       ├─ context::build(cwd, store_override, write=true)
        |    ├─ git::find_repo_root(cwd)               // git rev-parse --show-toplevel
        |    ├─ Config::load(store_override)           // XDG config file
        |    ├─ Index::load(store_root)                // deserialize index.json
@@ -155,38 +168,37 @@ CLI parse (clap)
             └─ index::save(store_root, index)
 ```
 
-### `shelfbox doctor`
+### `shelfbox repo status`
 
 ```
-cli::cmd_doctor()
-  ├─ context::build(…)
+cmd::repo::run_repo()
+  ├─ context::build(cwd, store_override, write=false)
   ├─ ops::doctor::doctor(ctx, link, ignore)
   |    ├─ ops::status::status()                       // per-item checks
   |    ├─ collect_orphan_store_items()                // walk items/ dir
   |    └─ check_repo_root_in_index()                  // load index, compare root
-  └─ print_doctor_report(statuses, orphans, root_matches)
-       └─ (navigation hint printed below each non-OK line)
+  └─ print_repo_status(report, repo_root)
 ```
 
-### `shelfbox doctor --fix`
+### `shelfbox repo repair`
 
 ```
-cli::cmd_doctor() [fix=true]
-  ├─ context::build(…)
-  ├─ ops::doctor::doctor_fix(ctx, link, ignore, yes, dry_run)
+cmd::repo::run_repo()
+  ├─ context::build(cwd, store_override, write=true)
+  ├─ ops::integrity::fix(ctx, link, ignore, yes=false, dry_run)
   |    ├─ fix_root_mismatch()                        // update index root
   |    ├─ rebuild_manifest_from_store()              // absorb orphans into manifest
   |    ├─ fix_exclude_entries()                      // re-add missing exclude entries
   |    ├─ fix_symlinks()                             // repair() for each broken link
-  |    └─ handle_orphans()                           // delete or confirm remaining orphans
-  └─ print_fix_report(report)                        // FIXED / WARN / ERROR per action
+  |    └─ handle_orphans()                           // confirm remaining orphans
+  └─ print_fix_result(result) for each FixResult
 ```
 
-### `shelfbox repair`
+### `shelfbox item repair <PATH>`
 
 ```
-cli::cmd_repair()
-  ├─ context::build(…)
+cmd::item::run_item()
+  ├─ context::build(cwd, store_override, write=true)
   └─ ops::repair::repair(ctx, abs_path, link, dry_run)
        ├─ manifest.get(rel_path)                     // NotManaged if absent
        ├─ store_path.exists()                        // StoreMissing if absent
@@ -209,8 +221,8 @@ cli::cmd_repair()
 | **`store_path` in manifest is repo-store-relative** | Using a relative path (e.g. `"items/.env"`) instead of an absolute one keeps `manifest.json` portable across machines and store relocations. The full path is reconstructed at runtime as `ctx.repo_store.join(&item.store_path)`. |
 | **Exclude entries are sorted** | Deterministic ordering makes diffs human-readable and prevents spurious changes to `.git/info/exclude`. |
 | **`store_path` layout is deterministic** | `items/<repo-relative-path>` makes manifest reconstruction from store trivially reversible without any guesswork. |
-| **`doctor_fix` is ordered and best-effort** | Root fix runs first so path comparisons are correct; each step continues even if a previous one fails, recording `FixResult::Failed` entries rather than aborting. |
-| **Navigation hints are CLI-only** | `shelfbox-core` returns structured `DoctorReport` / `DoctorFixReport` data; formatting, hints, and TTY detection live entirely in the binary crate. |
+| **`fix` is ordered and best-effort** | Root fix runs first so path comparisons are correct; each step continues even if a previous one fails, recording `FixResult::Failed` entries rather than aborting. |
+| **Navigation hints are CLI-only** | `shelfbox-core` returns structured `IntegrityReport` / `IntegrityFixReport` data; formatting, hints, and TTY detection live entirely in the binary crate. |
 | **`repair` refuses to overwrite regular files** | If a non-symlink file exists at the target path, `repair` returns `Err(PathIsRegularFile)` rather than silently overwriting user data. |
 | **`# BEGIN shelfbox` block in exclude** | All shelfbox entries are wrapped in a named block so other tools can safely edit the file without conflict. The block is rewritten atomically; existing content outside the block is preserved. |
 | **`LinkStrategy` abstraction** | All filesystem linking is dispatched through the `LinkStrategy` trait. Today only `SymlinkStrategy` (Unix symlinks) is shipped. Future implementations (hardlink, bind mount, copy mode) can be added without touching `ops/`. |

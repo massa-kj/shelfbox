@@ -22,7 +22,7 @@ Requirements: Rust 1.75+, Git, Linux or macOS (symlinks required).
 
 ---
 
-## Global flag
+## Global flags
 
 All subcommands accept one global flag:
 
@@ -32,15 +32,38 @@ All subcommands accept one global flag:
 
 ---
 
-## Commands
+## Command structure
 
-### `add <PATH>...`
+Commands are grouped into five top-level groups:
+
+```
+shelfbox
+├── item    — manage individual shelved items in the current repo
+├── repo    — manage the current repository's shelf
+├── store   — manage the global store
+├── config  — manage shelfbox configuration
+└── internal — development and debug utilities (hidden)
+```
+
+All output can be formatted with `--format <FORMAT>` where supported:
+
+| Format | Description |
+|---|---|
+| `table` (default) | Human-readable aligned columns |
+| `plain` | One item per line, machine-parseable |
+| `json` | JSON output |
+
+---
+
+## `item` — manage shelved items
+
+### `item add <PATH>...`
 
 Shelves one or more files or directories.
 
 ```sh
-shelfbox add .env
-shelfbox add secrets/notes/local.md
+shelfbox item add .env
+shelfbox item add secrets/notes/local.md
 ```
 
 **What happens:**
@@ -75,7 +98,7 @@ shelfbox add secrets/notes/local.md
    error: '.env' is tracked by git
    hint: remove it from the index first:
      git rm --cached .env
-   then re-run: shelfbox add .env
+   then re-run: shelfbox item add .env
    ```
 5. Must not already be a symlink.
 6. Must not already be managed by shelfbox.
@@ -84,22 +107,20 @@ shelfbox add secrets/notes/local.md
 **Rollback:** if symlink creation fails after the move, the file is moved back
 automatically.
 
-> **Caution: directory shelving**  
-> `add` accepts directories, but shelving a directory that contains Git-tracked
-> files or nested repositories is **not tested and not recommended**.  The
-> concern is that `.gitignore` / tracked-file semantics interact with directory
-> symlinks in subtle ways — for example, `git add .` may traverse the symlink
-> and stage files inside it.  
-> Stick to shelving individual files.  If you need to shelter a whole
-> directory, shelve each file inside it individually.
+> **Caution: directory shelving**
+> `item add` accepts directories, but shelving a directory that contains
+> Git-tracked files or nested repositories is **not tested and not recommended**.
+> Stick to shelving individual files.
 
-### `restore <PATH>...`
+---
+
+### `item restore <PATH>...`
 
 Returns shelved files to their original locations.
 
 ```sh
-shelfbox restore .env
-shelfbox restore secrets/ notes/local.md
+shelfbox item restore .env
+shelfbox item restore secrets/ notes/local.md
 ```
 
 **What happens:**
@@ -116,29 +137,63 @@ shelfbox restore secrets/ notes/local.md
 | Flag | Description |
 |---|---|
 | `--dry-run` | Print what would happen without making any changes. |
-| `--keep-ignore` | Do not remove the `.git/info/exclude` entry after restoring. Useful when you plan to re-shelve the file shortly. |
-
-**Rollback:** if the rename back to the repo fails, the symlink is recreated
-automatically.
+| `--keep-ignore` | Do not remove the `.git/info/exclude` entry after restoring. |
+| `--keep-store` | Remove the item from the manifest only. The symlink and the store file are left in place (turns the store item into an orphan). Useful for temporarily detaching an item without losing the store copy. |
 
 **Errors:**
 
 | Error | Meaning |
 |---|---|
 | `not a shelfbox managed symlink` | The path is not a symlink pointing into the shelfbox store. |
-| `restore destination already exists as a regular file or directory` | A non-symlink entry exists at the path. Move or rename it first, then re-run `restore`. |
-| `store item not found` | The store-side copy is missing (dangling link). Data may be lost. |
+| `restore destination already exists as a regular file or directory` | A non-symlink entry exists at the path. Move or rename it first. |
+| `store item not found` | The store-side copy is missing (dangling link). |
+
+---
+
+### `item repair <PATH>...`
+
+Recreates a missing or broken symlink for one or more shelved files.
+
+```sh
+shelfbox item repair .env
+shelfbox item repair secrets/api_key.txt .env.local
+```
+
+Use `item repair` when `item status` shows `symlink missing` or `symlink invalid`
+for a file whose store-side copy still exists. It does not touch the manifest,
+exclude entries, or the store itself — it only fixes the symlink.
+
+**Outcomes reported:**
+
+| Outcome | Meaning |
+|---|---|
+| `repaired` | Symlink was recreated successfully. |
+| `ok (no repair needed)` | Symlink was already healthy. |
+| `error: store item missing` | Store copy is gone — data may be lost. |
+| `error: not managed` | Path is not recorded in the manifest. |
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print what would happen without making any changes. |
+
+---
+
+### `item list`
 
 Lists all files currently shelved in the current repository.
 
 ```sh
-shelfbox list
-shelfbox list --json
+shelfbox item list
+shelfbox item list --format plain
+shelfbox item list --format json
 ```
 
-**Output (plain):**
+**Output (table, default):**
 
 ```
+  PATH                                          KIND  CREATED
   .env                                          file  2026-04-29T12:00:00Z
   secrets/api_key.txt                           file  2026-04-29T12:01:00Z
 ```
@@ -147,18 +202,20 @@ shelfbox list --json
 
 | Flag | Description |
 |---|---|
-| `--json` | Emit a JSON array of manifest items. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
 
-### `status`
+---
+
+### `item status`
 
 Checks the health of every shelved item and reports problems.
 
 ```sh
-shelfbox status
-shelfbox status --json
+shelfbox item status
+shelfbox item status --format json
 ```
 
-**Output (plain):**
+**Output (table, default):**
 
 ```
 OK       .env
@@ -185,120 +242,207 @@ Severity:
 
 | Flag | Description |
 |---|---|
-| `--json` | Emit JSON. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
 
-### `doctor`
+---
 
-Runs all status checks plus deeper integrity checks.
+### `item info <PATH>`
+
+Displays detailed information about a single shelved item.
 
 ```sh
-shelfbox doctor
-shelfbox doctor --fix
-shelfbox doctor --fix --yes
-shelfbox doctor --json
+shelfbox item info .env
 ```
 
-**Additional checks beyond `status`:**
+> Not yet implemented — planned for a future release.
 
-- **Orphan store items:** files inside the store's `items/` directory that are
-  not referenced in the manifest (e.g. left by a previous version or manual
-  intervention).
-- **Repo root vs. index:** verifies that the path to this repository recorded
-  in the global index matches the actual current path. A mismatch means the
-  repository was moved or re-cloned.
+---
 
-**Output (plain — read-only mode):**
+## `repo` — manage the current repository's shelf
 
-Each problem line is followed by an actionable navigation hint.
+### `repo list`
 
-```
-OK       repo root matches index
-OK       .env
-WARN     notes/scratch.md  (not in exclude)
-  → Run: shelfbox doctor --fix
-ERROR    secrets/db.env  (symlink missing)
-  → Run: shelfbox repair secrets/db.env
-ERROR    dead.txt  (store item missing)
-  → Data loss: cannot auto-repair. Restore manually and re-add.
+Lists all repositories known to the store, with item counts.
 
---- orphan store items (not in manifest) ---
-  WARN     orphan: stale_file.txt
-  → Run: shelfbox doctor --fix
+```sh
+shelfbox repo list
+shelfbox repo list --format plain
+shelfbox repo list --format json
 ```
 
-**`--fix` mode:**
+**Output (table, default):**
 
-Applies safe automatic repairs in order:
+```
+  NAME                           ROOT                                               ITEMS  LAST SEEN
+  myapp                          /home/user/projects/myapp                              2  2026-04-29T12:00:00Z
+```
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
+
+---
+
+### `repo status`
+
+Runs a full integrity check on the current repository's shelved items and
+reports any problems (equivalent to the old `doctor` command).
+
+```sh
+shelfbox repo status
+shelfbox repo status --format plain
+```
+
+**Checks:**
+
+- Per-item symlink and store-file health (same as `item status`).
+- Orphan store items: files in the store not referenced by the manifest.
+- Repo root match: verifies the recorded root path matches the current repo.
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--format <FORMAT>` | Output format: `table` (default), `plain`. |
+
+---
+
+### `repo repair`
+
+Applies safe automatic repairs to the current repository's shelf (equivalent
+to the old `doctor --fix`).
+
+```sh
+shelfbox repo repair
+shelfbox repo repair --dry-run
+```
+
+**What is fixed automatically:**
 
 | Problem | Action |
 |---|---|
 | Index root mismatch | Updates recorded root to current path |
-| Orphan store items with a valid symlink (rebuild candidates) | Reconstructs manifest entry from store path. **Requires `--yes`.** Without `--yes`, candidates are reported but not absorbed. |
-| Orphan store items with no symlink (true orphans) | Reports `NeedsConfirmation`. **Requires `--yes`** to delete. |
 | Missing `.git/info/exclude` entries | Re-adds paths from manifest |
-| Missing or broken symlinks | Recreates symlink (via `repair` logic) |
-| Store item missing | Records `WARN` — cannot auto-fix; data may be lost |
-
-All operations are idempotent.  `--fix` is safe to run repeatedly.
-
-```
-FIXED        rebuilt manifest: added 1 item(s): old_secret.txt
-FIXED        added exclude entry: notes/scratch.md
-FIXED        repaired symlink: secrets/db.env
-WARN         cannot fix: store item missing for dead.txt
-```
+| Missing or broken symlinks | Recreates symlink |
+| Store item missing | Reports WARN — cannot auto-fix |
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--fix` | Apply automatic repairs instead of just reporting. |
-| `--yes` | Confirms potentially destructive actions when used with `--fix`. Currently gates orphan store item deletion (items found in the store but absent from the manifest). Without `--yes`, orphan deletion is reported but not performed. Requires `--fix`. |
-| `--json` | Emit JSON (`DoctorReport` in read-only mode, `DoctorFixReport` in fix mode). |
-
-### `repair <PATH>...`
-
-Recreates a missing or broken symlink for one or more shelved files.
-
-```sh
-shelfbox repair .env
-shelfbox repair secrets/api_key.txt .env.local
-```
-
-Use `repair` when `doctor` or `status` shows `symlink missing` or
-`symlink invalid` for a file whose store-side copy still exists.  It does not
-touch the manifest, exclude entries, or the store itself — it only fixes the
-symlink.
-
-**What happens:**
-
-1. Looks up the item in the manifest (returns an error if not managed).
-2. Verifies the store-side copy exists (reports `StoreMissing` if not).
-3. If the symlink already points to the correct target, reports `AlreadyHealthy`.
-4. Safety guard: if a regular file (not a symlink) exists at the path, refuses
-   to proceed to prevent data loss.  Remove or rename the file first.
-5. Removes the existing (broken) symlink if present.
-6. Creates a new symlink pointing to the store.
-
-**Outcomes reported:**
-
-| Outcome | Meaning |
-|---|---|
-| `repaired` | Symlink was recreated successfully. |
-| `ok (no repair needed)` | Symlink was already healthy. |
-| `error: store item missing` | Store copy is gone — data may be lost. |
-| `error: not managed` | Path is not recorded in the manifest. |
-| Error (exit 1) | A regular file exists at the path; refusing to overwrite. |
-
-**Flags:**
-
-| Flag | Description |
-|---|---|
-| `--dry-run` | Print what would happen without making any changes. |
+| `--dry-run` | Print what would be fixed without making any changes. |
 
 ---
 
-## Configuration
+### `repo gc`
+
+Deletes orphan store items (files in the store not referenced by the manifest).
+
+```sh
+shelfbox repo gc
+shelfbox repo gc --dry-run
+shelfbox repo gc --yes
+```
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print what would be deleted without making any changes. |
+| `--yes` | Skip confirmation and perform deletions immediately. |
+
+---
+
+## `store` — manage the global store
+
+### `store info`
+
+Displays metadata about the global store.
+
+```sh
+shelfbox store info
+```
+
+**Output:**
+
+```
+Store path  : /home/user/.local/share/shelfbox
+Repositories: 3
+Total items : 7
+Disk usage  : 12.3 KiB
+```
+
+---
+
+### `store verify`
+
+Runs a deep integrity check across all repos in the store, checking that every
+manifest entry has a corresponding symlink and store file.
+
+```sh
+shelfbox store verify
+```
+
+Prints `MISS` lines for any problems found, then a summary.
+
+---
+
+### `store gc`
+
+Removes store entries for repositories whose root directory no longer exists
+on disk (e.g. after deleting or moving a repository without restoring its
+items first).
+
+```sh
+shelfbox store gc
+shelfbox store gc --dry-run
+shelfbox store gc --yes
+```
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print what would be deleted without making any changes. |
+| `--yes` | Skip confirmation and perform deletions immediately. |
+
+---
+
+## `config` — manage configuration
+
+### `config path`
+
+Prints the path to the active configuration file.
+
+```sh
+shelfbox config path
+# /home/user/.config/shelfbox/config.toml
+```
+
+---
+
+### `config get <KEY>`
+
+Prints the resolved value of a configuration key.
+
+```sh
+shelfbox config get store
+# /home/user/.local/share/shelfbox
+```
+
+Supported keys: `store`.
+
+---
+
+### `config set` / `config edit`
+
+Not yet implemented — planned for a future release.
+
+---
+
+## Configuration file
 
 Optional TOML config file at:
 
@@ -325,19 +469,10 @@ Priority (highest → lowest):
 
 | Source | Example |
 |---|---|
-| `--store` CLI flag | `shelfbox --store /tmp/my-store list` |
-| `$SHELFBOX_STORE` env var | `SHELFBOX_STORE=/work/store shelfbox list` |
+| `--store` CLI flag | `shelfbox --store /tmp/my-store item list` |
+| `$SHELFBOX_STORE` env var | `SHELFBOX_STORE=/work/store shelfbox item list` |
 | `store` key in config.toml | `store = "/mnt/external/shelfbox-store"` |
 | XDG / platform default | `~/.local/share/shelfbox` |
-
-Useful for temporarily switching between stores in a shell session:
-
-```sh
-export SHELFBOX_STORE=/mnt/dropbox/shelfbox
-shelfbox list    # uses Dropbox store
-unset SHELFBOX_STORE
-shelfbox list    # back to default store
-```
 
 ---
 
@@ -356,18 +491,8 @@ shelfbox list    # back to default store
           api_key.txt
 ```
 
-Each repository subdirectory is named `<sanitized-name>-<ULID>` where
-`<sanitized-name>` is the directory name of the repository with non-alphanumeric
-characters replaced by `-`.  This makes the store readable with `ls` while
-keeping the ULID suffix for guaranteed uniqueness.
-
-The store is designed to be **portable**: `manifest.json` records stable
-metadata (remote URL, item kind, timestamps) and can be copied across machines.
-Only `index.json` contains environment-specific absolute paths.
-
 The store root and all repository subdirectories are created with mode `0700`
-(owner-only read/write/execute) on Unix. This prevents other users on the same
-machine from reading shelved secrets such as `.env` files.
+(owner-only read/write/execute) on Unix.
 
 ---
 
@@ -377,7 +502,7 @@ machine from reading shelved secrets such as `.env` files.
 
 ```sh
 echo "DATABASE_URL=postgres://…" > .env
-shelfbox add .env
+shelfbox item add .env
 # .env is now a symlink; your app still reads it normally
 git status  # .env does not appear — it's in .git/info/exclude
 ```
@@ -385,63 +510,48 @@ git status  # .env does not appear — it's in .git/info/exclude
 ### Moving the store to a different location
 
 ```sh
-# Move existing store
 mv ~/.local/share/shelfbox /path/to/new/location
-
-# Tell shelfbox where it is
 echo 'store = "/path/to/new/location"' > ~/.config/shelfbox/config.toml
 
 # Or use the flag per-invocation
-shelfbox --store /path/to/new/location list
+shelfbox --store /path/to/new/location item list
 ```
-
-> **Note on synced locations (Dropbox, external drives, etc.):**  
-> shelfbox does not support multi-machine store synchronisation.  Placing the
-> store in a synced folder on a single machine is fine, but concurrent writes
-> from two machines are not safe and may corrupt `manifest.json` or the
-> index.  If a sync collision occurs, run `shelfbox doctor --fix` on the
-> affected machine; the deterministic store layout allows full manifest
-> reconstruction.
 
 ### Diagnosing problems after moving a repository
 
 ```sh
-shelfbox doctor
+shelfbox repo status
 # ERROR    repo root mismatch: repository may have been moved
-#   → Run: shelfbox doctor --fix
 
-shelfbox doctor --fix
+shelfbox repo repair
 # FIXED        updated repo root in index
 ```
 
 ### Recovering from a broken or missing symlink
 
 ```sh
-shelfbox doctor
+shelfbox item status
 # ERROR    .env  (symlink missing)
-#   → Run: shelfbox repair .env
 
-shelfbox repair .env
+shelfbox item repair .env
 # repaired: .env
 ```
 
 ### Recovering from a lost manifest
 
-If `manifest.json` is accidentally deleted, `doctor --fix --yes` rebuilds it
-from the store's `items/` directory.  The store path layout is deterministic
-(`items/<repo-relative-path>`), so all items are recovered exactly.  Only
-metadata that cannot be derived from the filesystem (`created_at`,
-`updated_at`) is reset to the time of recovery.
+If `manifest.json` is accidentally deleted, `repo repair` rebuilds it from the
+store's `items/` directory. The store path layout is deterministic
+(`items/<repo-relative-path>`), so all items are recovered exactly.
 
-The `--yes` flag is required because manifest reconstruction is a potentially
-destructive operation: shelfbox absorbs every orphan store item that has a
-corresponding symlink at the expected repo path.  Running without `--yes` will
-report the candidates but not modify the manifest.
+### Shell completions
 
 ```sh
-shelfbox doctor --fix
-# CONFIRM     manifest rebuild candidate '.env': re-run with --yes to absorb
+# Bash
+shelfbox internal completions bash >> ~/.bash_completion
 
-shelfbox doctor --fix --yes
-# FIXED        rebuilt manifest: added 3 item(s): .env, secrets/db.txt, notes/local.md
+# Zsh
+shelfbox internal completions zsh > ~/.zsh/completions/_shelfbox
+
+# Fish
+shelfbox internal completions fish > ~/.config/fish/completions/shelfbox.fish
 ```
