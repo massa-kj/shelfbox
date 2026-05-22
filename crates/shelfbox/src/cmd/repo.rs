@@ -122,10 +122,7 @@ fn cmd_repo_list(store_override: Option<&Path>, format: OutputFormat) -> Result<
                 println!("(no repositories in store)");
                 return Ok(());
             }
-            println!(
-                "  {:<30} {:<50} {:>5}  last seen",
-                "name", "root", "items"
-            );
+            println!("  {:<30} {:<50} {:>5}  last seen", "name", "root", "items");
             println!("  {}", "-".repeat(100));
             for r in &rows {
                 println!(
@@ -176,12 +173,7 @@ fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> 
     Ok(())
 }
 
-fn cmd_repo_gc(
-    cwd: &Path,
-    store_override: Option<&Path>,
-    dry_run: bool,
-    yes: bool,
-) -> Result<()> {
+fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
@@ -303,4 +295,3 @@ fn print_fix_result(result: &FixResult) {
         FixResult::CannotFix(msg) => eprintln!("  cannot   {msg}"),
     }
 }
-

@@ -65,6 +65,6 @@ pub fn run() -> Result<()> {
         Command::Repo { command } => run_repo(command, &cwd, store_override),
         Command::Store { command } => run_store(command, &cwd, store_override),
         Command::Config { command } => run_config(command, &cwd, store_override),
-        Command::Internal { command } => run_internal(command),
+        Command::Internal { command } => run_internal(command, &cwd, store_override),
     }
 }

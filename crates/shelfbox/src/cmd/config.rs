@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use clap::Subcommand;
+use shelfbox_core::config::{config_file_path, Config};
 
 // ── config subcommands ──────────────────────────────────────────────────────────────────────────
 
@@ -34,12 +35,32 @@ pub enum ConfigCommand {
 pub fn run_config(
     command: ConfigCommand,
     _cwd: &Path,
-    _store_override: Option<&Path>,
+    store_override: Option<&Path>,
 ) -> Result<()> {
     match command {
-        ConfigCommand::Get { .. }
-        | ConfigCommand::Path
-        | ConfigCommand::Set { .. }
-        | ConfigCommand::Edit => anyhow::bail!("not yet implemented"),
+        ConfigCommand::Get { key } => cmd_config_get(&key, store_override),
+        ConfigCommand::Path => cmd_config_path(),
+        ConfigCommand::Set { .. } | ConfigCommand::Edit => {
+            anyhow::bail!("not yet implemented")
+        }
     }
+}
+
+// ── subcommand implementations ─────────────────────────────────────────────────────────────────
+
+fn cmd_config_path() -> Result<()> {
+    match config_file_path() {
+        Some(p) => println!("{}", p.display()),
+        None => eprintln!("could not determine config file path"),
+    }
+    Ok(())
+}
+
+fn cmd_config_get(key: &str, store_override: Option<&Path>) -> Result<()> {
+    let cfg = Config::load(store_override)?;
+    match key {
+        "store" => println!("{}", cfg.store.display()),
+        other => anyhow::bail!("unknown config key: {other}"),
+    }
+    Ok(())
 }

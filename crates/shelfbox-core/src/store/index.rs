@@ -77,6 +77,11 @@ impl Index {
             .find_map(|(id, e)| (e.root == root).then_some(id.as_str()))
     }
 
+    /// Removes the entry for `repo_id`.  Returns `true` if an entry was removed.
+    pub fn remove(&mut self, repo_id: &str) -> bool {
+        self.repos.remove(repo_id).is_some()
+    }
+
     /// Finds the repo ID whose `git_common_dir` matches `common_dir`.
     ///
     /// This secondary lookup handles the case where a repository was accessed

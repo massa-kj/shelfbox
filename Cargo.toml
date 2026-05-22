@@ -20,6 +20,7 @@ ulid = "1"
 dirs = "5"
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 anyhow = "1"
 tempfile = "3"
 fd-lock = "4"
