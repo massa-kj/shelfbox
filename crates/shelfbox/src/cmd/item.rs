@@ -167,9 +167,6 @@ fn cmd_restore(
     keep_ignore: bool,
     keep_store: bool,
 ) -> Result<()> {
-    if keep_store {
-        anyhow::bail!("--keep-store is not yet implemented");
-    }
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
@@ -177,8 +174,16 @@ fn cmd_restore(
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        ops::restore::restore(&mut ctx, &abs, dry_run, keep_ignore, &link, &ignore)
-            .with_context(|| format!("restore '{}' failed", path.display()))?;
+        ops::restore::restore(
+            &mut ctx,
+            &abs,
+            dry_run,
+            keep_ignore,
+            keep_store,
+            &link,
+            &ignore,
+        )
+        .with_context(|| format!("restore '{}' failed", path.display()))?;
         if !dry_run {
             println!("restored: {}", path.display());
         }

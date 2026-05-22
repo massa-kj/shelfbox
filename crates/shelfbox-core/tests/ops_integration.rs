@@ -94,9 +94,7 @@ fn add_and_restore_file() {
     assert!(statuses[0].ok, "status should be ok after add");
 
     // --- restore ---
-    ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap();
-
-    // Original path should now be a regular file again.
+    ops::restore::restore(&mut ctx, &file_path, false, false, false, &link, &ignore).unwrap();
     let restored_meta = file_path.symlink_metadata().unwrap();
     assert!(
         !restored_meta.file_type().is_symlink(),
@@ -169,7 +167,7 @@ fn restore_dry_run_makes_no_changes() {
     assert_eq!(ctx.manifest.items.len(), 1);
 
     // Dry-run restore.
-    ops::restore::restore(&mut ctx, &file_path, true, false, &link, &ignore).unwrap();
+    ops::restore::restore(&mut ctx, &file_path, true, false, false, &link, &ignore).unwrap();
 
     // Symlink must still be in place.
     assert!(
@@ -251,8 +249,8 @@ fn restore_regular_file_returns_destination_exists_error() {
 
     // A regular file (not a symlink) must return RestoreDestinationExists, not
     // NotManagedLink, so the user gets a precise error and a helpful hint.
-    let err =
-        ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap_err();
+    let err = ops::restore::restore(&mut ctx, &file_path, false, false, false, &link, &ignore)
+        .unwrap_err();
     assert!(
         matches!(
             err,
@@ -274,8 +272,8 @@ fn restore_nonexistent_path_returns_not_managed_link_error() {
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
-    let err =
-        ops::restore::restore(&mut ctx, &file_path, false, false, &link, &ignore).unwrap_err();
+    let err = ops::restore::restore(&mut ctx, &file_path, false, false, false, &link, &ignore)
+        .unwrap_err();
     assert!(
         matches!(err, shelfbox_core::error::AppError::NotManagedLink { .. }),
         "expected NotManagedLink, got: {err}"
@@ -300,12 +298,53 @@ fn restore_keep_ignore_preserves_exclude_entry() {
     assert!(ignore.has_entry(repo_dir.path(), "env.sh").unwrap());
 
     // Restore with keep_ignore=true.
-    ops::restore::restore(&mut ctx, &file_path, false, true, &link, &ignore).unwrap();
+    ops::restore::restore(&mut ctx, &file_path, false, true, false, &link, &ignore).unwrap();
 
     // Entry must still be present.
     assert!(
         ignore.has_entry(repo_dir.path(), "env.sh").unwrap(),
         "keep_ignore=true must preserve the exclude entry"
+    );
+}
+
+#[test]
+fn restore_keep_store_leaves_symlink_and_store_item() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("keep.txt");
+    std::fs::write(&file_path, "keep me").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    let store_path = ctx.repo_store.join("items/keep.txt");
+    assert!(store_path.exists(), "store item must exist after add");
+
+    // Restore with keep_store=true: manifest entry removed, but symlink and
+    // store item must remain intact.
+    ops::restore::restore(&mut ctx, &file_path, false, false, true, &link, &ignore).unwrap();
+
+    // Manifest must be empty.
+    assert!(
+        ctx.manifest.items.is_empty(),
+        "manifest must be empty after keep_store restore"
+    );
+    // Store item must still exist (it is now an orphan).
+    assert!(
+        store_path.exists(),
+        "store item must still exist after keep_store restore"
+    );
+    // Symlink must still be in place.
+    assert!(
+        file_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "symlink must still be in place after keep_store restore"
     );
 }
 

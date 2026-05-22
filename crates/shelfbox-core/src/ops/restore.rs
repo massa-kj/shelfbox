@@ -18,6 +18,11 @@ use crate::{
 /// When `true`, the `.git/info/exclude` entry is preserved after restoration
 /// (useful when the user plans to re-shelve the file shortly afterwards).
 ///
+/// # keep_store
+/// When `true`, only the manifest entry is removed.  The symlink and the
+/// store-side item are left in place, making the store item an orphan that
+/// will be collected by `repo gc`.
+///
 /// # Errors
 ///
 /// Returns an error if the path is not a managed symlink or the store item is
@@ -27,6 +32,7 @@ pub fn restore(
     abs_path: &Path,
     dry_run: bool,
     keep_ignore: bool,
+    keep_store: bool,
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
 ) -> Result<()> {
@@ -40,7 +46,35 @@ pub fn restore(
             })?;
     let rel_str = rel_path.to_string_lossy().into_owned();
 
-    // Must be a shelfbox managed symlink — and not a regular file/directory.
+    // ── keep_store fast path ─────────────────────────────────────────────────
+    // Only remove the manifest entry; leave the symlink and store item intact.
+    if keep_store {
+        if !ctx.manifest.contains(&rel_str) {
+            return Err(AppError::NotManagedLink {
+                path: abs_path.to_path_buf(),
+            });
+        }
+
+        if dry_run {
+            println!("[dry-run] restore --keep-store '{rel_str}'");
+            println!("  remove from manifest: {rel_str}");
+            println!("  (symlink and store item left in place — orphan for `repo gc`)");
+            if !keep_ignore {
+                println!("  remove from exclude: {rel_str}");
+            }
+            return Ok(());
+        }
+
+        ctx.manifest.remove(&rel_str);
+        manifest::save(&ctx.repo_store, &ctx.manifest)?;
+
+        if !keep_ignore {
+            ignore.remove_entries(&ctx.repo_root, &[&rel_str])?;
+        }
+        return Ok(());
+    }
+
+    // ── Normal restore ───────────────────────────────────────────────────────
     // Using symlink_metadata to distinguish the three cases without following
     // the link, so we can give a precise error in each situation.
     match std::fs::symlink_metadata(abs_path) {
