@@ -12,7 +12,15 @@ use shelfbox_core::{config::Config, context, store::index};
 #[derive(Debug, Subcommand)]
 pub enum InternalCommand {
     /// Dump internal state for debugging.
-    Debug,
+    ///
+    /// By default, the home directory prefix in all paths is replaced with `~`
+    /// to reduce the risk of leaking absolute paths in AI pastes or public issues.
+    /// Use `--allow-sensitive` to print raw paths.
+    Debug {
+        /// Print raw absolute paths instead of masking the home directory with `~`.
+        #[arg(long)]
+        allow_sensitive: bool,
+    },
 
     /// Output shell completion script.
     Completions {
@@ -30,17 +38,40 @@ pub fn run_internal(
     store_override: Option<&Path>,
 ) -> Result<()> {
     match command {
-        InternalCommand::Debug => cmd_debug(cwd, store_override),
+        InternalCommand::Debug { allow_sensitive } => {
+            cmd_debug(cwd, store_override, allow_sensitive)
+        }
         InternalCommand::Completions { shell } => cmd_completions(shell),
     }
 }
 
 // ── subcommand implementations ─────────────────────────────────────────────────────────────────
 
-fn cmd_debug(cwd: &Path, store_override: Option<&Path>) -> Result<()> {
+/// Mask the home directory prefix in `path` with `~`.
+/// Returns the original path unchanged if `dirs::home_dir()` is unavailable
+/// or the path does not start with the home directory.
+fn mask_home(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rel) = path.strip_prefix(&home) {
+            return format!("~/{}", rel.display());
+        }
+    }
+    path.display().to_string()
+}
+
+/// Format `path` for display, optionally masking the home directory.
+fn display_path(path: &Path, allow_sensitive: bool) -> String {
+    if allow_sensitive {
+        path.display().to_string()
+    } else {
+        mask_home(path)
+    }
+}
+
+fn cmd_debug(cwd: &Path, store_override: Option<&Path>, allow_sensitive: bool) -> Result<()> {
     let cfg = Config::load(store_override)?;
     println!("[config]");
-    println!("  store = {}", cfg.store.display());
+    println!("  store = {}", display_path(&cfg.store, allow_sensitive));
 
     let idx = index::load(&cfg.store)?;
     println!("\n[index]");
@@ -48,7 +79,10 @@ fn cmd_debug(cwd: &Path, store_override: Option<&Path>) -> Result<()> {
     entries.sort_by_key(|(_, e)| e.last_seen_at.as_str());
     for (id, entry) in &entries {
         println!("  {id}");
-        println!("    root        = {}", entry.root.display());
+        println!(
+            "    root        = {}",
+            display_path(&entry.root, allow_sensitive)
+        );
         println!("    store_dir   = {}", entry.store_dir);
         println!("    last_seen   = {}", entry.last_seen_at);
     }
@@ -58,8 +92,14 @@ fn cmd_debug(cwd: &Path, store_override: Option<&Path>) -> Result<()> {
     match context::build(cwd, store_override, false) {
         Ok(ctx) => {
             println!("  repo_id     = {}", ctx.repo_id);
-            println!("  repo_root   = {}", ctx.repo_root.display());
-            println!("  repo_store  = {}", ctx.repo_store.display());
+            println!(
+                "  repo_root   = {}",
+                display_path(&ctx.repo_root, allow_sensitive)
+            );
+            println!(
+                "  repo_store  = {}",
+                display_path(&ctx.repo_store, allow_sensitive)
+            );
         }
         Err(e) => println!("  (not in a git repo or context error: {e})"),
     }

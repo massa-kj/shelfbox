@@ -518,6 +518,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "dirs",
  "serde",
  "serde_json",
  "shelfbox-core",
