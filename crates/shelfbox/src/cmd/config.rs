@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use clap::Subcommand;
-use shelfbox_core::config::{config_file_path, Config};
+use shelfbox_core::config::{config_file_path, set_key, Config};
 
 // ── config subcommands ──────────────────────────────────────────────────────────────────────────
 
@@ -40,7 +40,8 @@ pub fn run_config(
     match command {
         ConfigCommand::Get { key } => cmd_config_get(&key, store_override),
         ConfigCommand::Path => cmd_config_path(),
-        ConfigCommand::Set { .. } | ConfigCommand::Edit => {
+        ConfigCommand::Set { key, value } => cmd_config_set(&key, &value),
+        ConfigCommand::Edit => {
             anyhow::bail!("not yet implemented")
         }
     }
@@ -62,5 +63,11 @@ fn cmd_config_get(key: &str, store_override: Option<&Path>) -> Result<()> {
         "store" => println!("{}", cfg.store.display()),
         other => anyhow::bail!("unknown config key: {other}"),
     }
+    Ok(())
+}
+
+fn cmd_config_set(key: &str, value: &str) -> Result<()> {
+    set_key(key, value)?;
+    println!("set {key} = {value}");
     Ok(())
 }

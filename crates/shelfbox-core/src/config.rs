@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -103,6 +104,56 @@ fn read_config_file() -> Result<RawConfig> {
     };
 
     toml::from_str(&contents).map_err(|e| AppError::toml_parse(path, e))
+}
+
+/// Sets a single key-value pair in the config file, preserving existing
+/// content and comments.  Creates the file (and parent directories) if needed.
+///
+/// Only `"store"` is supported in v0.3.0; any other key returns an error.
+pub fn set_key(key: &str, value: &str) -> Result<()> {
+    match key {
+        "store" => {}
+        other => {
+            return Err(AppError::Internal(format!(
+                "unknown config key '{other}'; supported keys: store"
+            )));
+        }
+    }
+
+    let path = config_file_path()
+        .ok_or_else(|| AppError::Internal("could not determine config file path".into()))?;
+
+    // Read the existing file or start with an empty document to preserve
+    // any user-written comments and unknown keys.
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(AppError::io(&path, e)),
+    };
+
+    let mut doc = contents.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        AppError::Internal(format!("config parse error in '{}': {e}", path.display()))
+    })?;
+
+    doc[key] = toml_edit::value(value);
+    write_config_atomic(&path, &doc.to_string())
+}
+
+/// Writes `contents` to `path` atomically via a same-directory temp file and
+/// `rename(2)`, so a crash mid-write cannot leave the config file truncated.
+fn write_config_atomic(path: &Path, contents: &str) -> Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+
+    let tmp_path = parent.join(".shelfbox-config-write.tmp");
+    {
+        let mut f =
+            std::fs::File::create(&tmp_path).map_err(|e| AppError::io(tmp_path.clone(), e))?;
+        f.write_all(contents.as_bytes())
+            .map_err(|e| AppError::io(tmp_path.clone(), e))?;
+    }
+    std::fs::rename(&tmp_path, path).map_err(|e| AppError::io(path.to_path_buf(), e))?;
+    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
