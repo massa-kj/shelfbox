@@ -26,7 +26,7 @@ disk structures or OS calls.
 src/
   lib.rs          # re-exports public API
   error.rs        # AppError enum (thiserror)
-  config.rs       # Config load / XDG paths
+  config.rs       # Config load / XDG paths / set_key() for atomic TOML writes
   context.rs      # RepoContext + context::build()
   git.rs          # Git plumbing (std::process::Command only)
   ignore.rs       # IgnoreBackend trait + GitInfoExclude impl
@@ -43,21 +43,22 @@ src/
     status.rs     # status() — per-item health check
     integrity.rs  # check() / fix() — integrity report and repair
     repair.rs     # repair() — single-file symlink repair
+    info.rs       # info() — single-item diagnostic metadata
 ```
 
 ### `shelfbox` (binary)
 
 ```
 src/
-  main.rs           # entry point — calls cli::run()
-  cli.rs            # Cli struct, Command enum (5 groups), run() dispatcher
+  main.rs           # entry point — fn main() -> ExitCode, maps Ok(code)/Err to exit
+  cli.rs            # Cli struct, Command enum (5 groups + hidden Doctor alias), run() dispatcher
   cmd/
     mod.rs          # re-exports all cmd modules
     item.rs         # item subcommand logic (add, restore, repair, list, status, info)
     repo.rs         # repo subcommand logic (list, status, repair, gc)
     store.rs        # store subcommand logic (info, verify, gc)
-    config.rs       # config subcommand logic (get, path)
-    internal.rs     # internal subcommand logic (debug, completions)
+    config.rs       # config subcommand logic (get, set, path)
+    internal.rs     # internal subcommand logic (debug with path masking, completions)
     format.rs       # OutputFormat enum (Table, Plain, Json, Detail)
     util.rs         # path resolution helpers
 ```
@@ -91,7 +92,7 @@ Stored at `<store>/index.json`.  One entry per repository ever seen.
 
 The ULID key is stable for the lifetime of the repository entry.  `root` is an
 absolute path; a mismatch between `root` and the current working Git root is
-reported by `doctor` as a warning.  `git_common_dir` is the output of
+reported by `repo status` as a warning.  `git_common_dir` is the output of
 `git rev-parse --git-common-dir`, which is the same as `git_dir` for a normal
 clone and points to the main clone's `.git/` for a linked worktree.
 
@@ -173,11 +174,12 @@ CLI parse (clap)
 ```
 cmd::repo::run_repo()
   ├─ context::build(cwd, store_override, write=false)
-  ├─ ops::doctor::doctor(ctx, link, ignore)
+  ├─ ops::integrity::check(ctx, link, ignore)
   |    ├─ ops::status::status()                       // per-item checks
   |    ├─ collect_orphan_store_items()                // walk items/ dir
   |    └─ check_repo_root_in_index()                  // load index, compare root
-  └─ print_repo_status(report, repo_root)
+  ├─ print_repo_status(report, repo_root)           // or detail/json/plain variant
+  └─ classify_integrity_exit(&report)               // returns ExitCode 0 / 1 / 2
 ```
 
 ### `shelfbox repo repair`
@@ -230,9 +232,13 @@ cmd::item::run_item()
 | **`<name>-<ULID>` repo store directories** | Per-repo store directories are named `<sanitized-repo-name>-<ULID>` (e.g. `my-project-01JTAR…`). The human-readable prefix makes the store legible with `ls` while the ULID suffix guarantees global uniqueness. Non-alphanumeric characters in the repo name are replaced with `-`. The `store_dir` field is persisted in `index.json` so the directory name never changes after first creation. |
 | **Store identity via `meta.json`** | `<store>/meta.json` is written on first use. It contains a ULID `store_id` and `created_at` timestamp. This provides a stable identity for the store, useful for diagnosing relocations and generating informative error messages. The write is idempotent: subsequent runs leave the file unchanged. |
 | **`SHELFBOX_STORE` environment variable** | The store root can be set via the `SHELFBOX_STORE` environment variable, overriding `config.toml` but yielding to the `--store` CLI flag. Priority: `--store` > `$SHELFBOX_STORE` > `config.toml` > XDG default. This follows the UNIX convention of env-var config and enables easy store switching in shell sessions without editing config files. |
-| **Store-level advisory file lock** | `context::build()` acquires an advisory `flock` on `<store>/.lock` before reading or writing any store data. Write commands (`add`, `restore`, `doctor --fix`, `repair`) acquire an exclusive lock; read commands (`list`, `status`, `doctor`) acquire a shared lock. This prevents index/manifest inconsistency when two `shelfbox` processes run concurrently against the same store. The lock is released when `RepoContext` is dropped (end of the command). If the lock cannot be acquired an `AppError::StoreLocked` is returned with a human-readable hint. |
-| **No multi-machine sync support** | shelfbox deliberately does not support synchronising the store across machines. Correct distributed sync requires conflict resolution, merge semantics, operation logs, and crash recovery — effectively a mini distributed database — which is out of scope. The store layout is instead designed to be **resilient to single-machine partial failures**: atomic writes prevent mid-write corruption, and `doctor --fix` can fully reconstruct the manifest from the deterministic `items/` layout. Users who place the store in a synced folder (e.g. Dropbox) are advised to do so on one machine at a time; `doctor --fix` is the recovery path if a sync collision occurs. |
-| **`doctor --fix` rebuild candidate requires exact symlink target** | A store item without a manifest entry is treated as a rebuild candidate only if the symlink at the expected repo-relative path points **exactly** to `<repo_store>/items/<path>`. A symlink with a different target (e.g. from a re-clone pointing to an old store, or an unrelated tool's symlink) is treated as an orphan and not absorbed. This guards against incorrect manifest reconstruction caused by stale or coincidental symlinks. |
+| **Store-level advisory file lock** | `context::build()` acquires an advisory `flock` on `<store>/.lock` before reading or writing any store data. Write commands (`add`, `restore`, `repo repair`, `item repair`) acquire an exclusive lock; read commands (`list`, `status`, `repo status`) acquire a shared lock. This prevents index/manifest inconsistency when two `shelfbox` processes run concurrently against the same store. The lock is released when `RepoContext` is dropped (end of the command). If the lock cannot be acquired an `AppError::StoreLocked` is returned with a human-readable hint. |
+| **Machine-readable exit codes** | `repo status` returns 0/1/2 and `store verify` returns 0/2 based on the severity of issues found. All other commands return 0 on success. Any unhandled `anyhow::Error` produces exit code 255. `fn main()` is typed as `-> ExitCode` rather than `-> Result<()>` so the process exit value is always explicit. |
+| **`internal debug` path masking** | By default, `internal debug` replaces the home directory prefix in all output paths with `~`, reducing the risk of leaking absolute paths in bug reports or AI chats. The `--allow-sensitive` flag disables masking for use in scripts that need raw paths. |
+| **`config set` uses `toml_edit`** | `config set <key> <value>` patches the TOML config file using `toml_edit::DocumentMut` (parse → patch → atomic rename) rather than full re-serialisation. This preserves user comments and unknown keys. Only keys that correspond to a known `Config` field are accepted; others return an error. |
+| **`doctor` as a hidden alias** | `shelfbox doctor` is registered as a hidden `Command::Doctor` variant that delegates to `run_repo(RepoCommand::Status { format })`. It is invisible in `--help` but fully functional, following the `brew doctor` / `flutter doctor` convention. |
+| **No multi-machine sync support** | shelfbox deliberately does not support synchronising the store across machines. Correct distributed sync requires conflict resolution, merge semantics, operation logs, and crash recovery — effectively a mini distributed database — which is out of scope. The store layout is instead designed to be **resilient to single-machine partial failures**: atomic writes prevent mid-write corruption, and `repo repair` can fully reconstruct the manifest from the deterministic `items/` layout. Users who place the store in a synced folder (e.g. Dropbox) are advised to do so on one machine at a time; `repo repair` is the recovery path if a sync collision occurs. |
+| **`repo repair` rebuild candidate requires exact symlink target** | A store item without a manifest entry is treated as a rebuild candidate only if the symlink at the expected repo-relative path points **exactly** to `<repo_store>/items/<path>`. A symlink with a different target (e.g. from a re-clone pointing to an old store, or an unrelated tool's symlink) is treated as an orphan and not absorbed. This guards against incorrect manifest reconstruction caused by stale or coincidental symlinks. |
 
 ## Repair policy
 

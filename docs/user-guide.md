@@ -52,6 +52,7 @@ All output can be formatted with `--format <FORMAT>` where supported:
 | `table` (default) | Human-readable aligned columns |
 | `plain` | One item per line, machine-parseable |
 | `json` | JSON output |
+| `detail` | Verbose table with extended fields (store path, symlink target, all health fields) |
 
 ---
 
@@ -202,7 +203,7 @@ shelfbox item list --format json
 
 | Flag | Description |
 |---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`, `detail`. |
 
 ---
 
@@ -242,19 +243,36 @@ Severity:
 
 | Flag | Description |
 |---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`, `detail`. |
 
 ---
 
 ### `item info <PATH>`
 
-Displays detailed information about a single shelved item.
+Displays detailed metadata about a single shelved item.
 
 ```sh
 shelfbox item info .env
+shelfbox item info .env --format json
 ```
 
-> Not yet implemented — planned for a future release.
+**Output (table, default):**
+
+```
+path        .env
+repo_root   ~/projects/myapp
+store_path  ~/.local/share/shelfbox/repos/myapp-01JT…/items/.env
+link_target ~/.local/share/shelfbox/repos/myapp-01JT…/items/.env
+symlink_ok  true
+tracked     true
+in_exclude  true
+```
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--format <FORMAT>` | Output format: `table` (default), `plain` (store path only), `json`, `detail`. |
 
 ---
 
@@ -305,7 +323,15 @@ shelfbox repo status --format plain
 
 | Flag | Description |
 |---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain`. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`, `detail`. |
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | All items are healthy. |
+| `1` | Warnings only (e.g. missing exclude entry). |
+| `2` | Errors present (broken symlink, missing store item, git-tracked item). |
 
 ---
 
@@ -387,6 +413,13 @@ shelfbox store verify
 
 Prints `MISS` lines for any problems found, then a summary.
 
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | No issues found. |
+| `2` | One or more issues found. |
+
 ---
 
 ### `store gc`
@@ -436,9 +469,16 @@ Supported keys: `store`.
 
 ---
 
-### `config set` / `config edit`
+### `config set <KEY> <VALUE>`
 
-Not yet implemented — planned for a future release.
+Updates a configuration key in `config.toml` without touching other content
+(comments and unknown keys are preserved).
+
+```sh
+shelfbox config set store /mnt/external/shelfbox-store
+```
+
+Supported keys: `store`.
 
 ---
 
@@ -554,4 +594,27 @@ shelfbox internal completions zsh > ~/.zsh/completions/_shelfbox
 
 # Fish
 shelfbox internal completions fish > ~/.config/fish/completions/shelfbox.fish
+```
+
+### Debugging internal state
+
+`internal debug` dumps the active configuration, store index, and current repo
+context. By default, the home directory prefix in all paths is replaced with `~`
+so the output is safe to paste into bug reports or AI chats.
+
+```sh
+shelfbox internal debug
+
+# Print raw absolute paths (e.g. to share with a script that needs them)
+shelfbox internal debug --allow-sensitive
+```
+
+### `doctor` alias
+
+`shelfbox doctor` is a hidden alias for `shelfbox repo status`, following the
+`brew doctor` / `flutter doctor` convention. It accepts the same `--format` flag.
+
+```sh
+shelfbox doctor
+shelfbox doctor --format json
 ```
