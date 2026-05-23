@@ -8,7 +8,7 @@ use shelfbox_core::{
     ignore::GitInfoExclude,
     link::SymlinkStrategy,
     ops,
-    ops::status::ItemStatus,
+    ops::{info::ItemInfo, status::ItemStatus},
     store::manifest::{Item, ItemKind},
 };
 
@@ -84,10 +84,15 @@ pub enum ItemCommand {
         new_path: PathBuf,
     },
 
-    /// Show metadata for a shelved item (not yet implemented).
+    /// Show metadata for a shelved item.
     Info {
+        /// File to inspect (relative to repo root).
         #[arg(value_name = "PATH")]
         path: PathBuf,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
     },
 }
 
@@ -112,9 +117,15 @@ pub fn run_item(command: ItemCommand, cwd: &Path, store_override: Option<&Path>)
         ItemCommand::Repair { paths, dry_run } => cmd_repair(cwd, store_override, &paths, dry_run),
         ItemCommand::List { format } => cmd_list(cwd, store_override, format),
         ItemCommand::Status { format } => cmd_status(cwd, store_override, format),
-        ItemCommand::Move { .. } | ItemCommand::Info { .. } => {
-            anyhow::bail!("not yet implemented")
-        }
+        ItemCommand::Move { .. } => anyhow::bail!(
+            "`item move` is not yet implemented.\n\
+             \n\
+             workaround:\n\
+             \x20 shelfbox item restore <old>\n\
+             \x20 mv <old> <new>\n\
+             \x20 shelfbox item add <new>"
+        ),
+        ItemCommand::Info { path, format } => cmd_info(cwd, store_override, &path, format),
     }
 }
 
@@ -348,4 +359,55 @@ fn classify_status(s: &ItemStatus) -> (&'static str, Vec<&'static str>) {
     };
 
     (label, issues)
+}
+
+// ── item info ───────────────────────────────────────────────────────────────
+
+fn cmd_info(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    path: &Path,
+    format: OutputFormat,
+) -> Result<()> {
+    let ctx =
+        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    let abs = resolve_path(cwd, path);
+    let item_info = ops::info::info(&ctx, &abs, &link, &ignore)?;
+
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&item_info)?),
+        OutputFormat::Plain => {
+            if let Some(ref sp) = item_info.store_path {
+                println!("{}", sp.display());
+            }
+        }
+        OutputFormat::Table | OutputFormat::Detail => print_info_table(&item_info),
+    }
+    Ok(())
+}
+
+fn print_info_table(info: &ItemInfo) {
+    println!("{:<14} {}", "path:", info.path);
+    println!("{:<14} {}", "repo_root:", info.repo_root.display());
+    println!(
+        "{:<14} {}",
+        "store_path:",
+        info.store_path
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(not in manifest)".to_string())
+    );
+    println!(
+        "{:<14} {}",
+        "link_target:",
+        info.link_target
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(no symlink)".to_string())
+    );
+    println!("{:<14} {}", "symlink_ok:", info.symlink_ok);
+    println!("{:<14} {}", "tracked:", info.tracked);
+    println!("{:<14} {}", "in_exclude:", info.in_exclude);
 }
