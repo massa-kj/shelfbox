@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -27,6 +28,8 @@ pub enum RepoCommand {
     },
 
     /// Show the health status of the current repository's shelf.
+    ///
+    /// Exit codes: 0 = all OK, 1 = warnings only, 2 = errors present.
     Status {
         /// Output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
@@ -60,12 +63,25 @@ pub enum RepoCommand {
 
 // ── repo command runner ─────────────────────────────────────────────────────────────────────────
 
-pub fn run_repo(command: RepoCommand, cwd: &Path, store_override: Option<&Path>) -> Result<()> {
+pub fn run_repo(
+    command: RepoCommand,
+    cwd: &Path,
+    store_override: Option<&Path>,
+) -> Result<ExitCode> {
     match command {
-        RepoCommand::List { format } => cmd_repo_list(store_override, format),
+        RepoCommand::List { format } => {
+            cmd_repo_list(store_override, format)?;
+            Ok(ExitCode::SUCCESS)
+        }
         RepoCommand::Status { format } => cmd_repo_status(cwd, store_override, format),
-        RepoCommand::Repair { dry_run } => cmd_repo_repair(cwd, store_override, dry_run),
-        RepoCommand::Gc { dry_run, yes } => cmd_repo_gc(cwd, store_override, dry_run, yes),
+        RepoCommand::Repair { dry_run } => {
+            cmd_repo_repair(cwd, store_override, dry_run)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        RepoCommand::Gc { dry_run, yes } => {
+            cmd_repo_gc(cwd, store_override, dry_run, yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
         RepoCommand::Relink | RepoCommand::Migrate => {
             anyhow::bail!("not yet implemented")
         }
@@ -176,7 +192,11 @@ fn cmd_repo_list(store_override: Option<&Path>, format: OutputFormat) -> Result<
     Ok(())
 }
 
-fn cmd_repo_status(cwd: &Path, store_override: Option<&Path>, format: OutputFormat) -> Result<()> {
+fn cmd_repo_status(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    format: OutputFormat,
+) -> Result<ExitCode> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
@@ -189,7 +209,7 @@ fn cmd_repo_status(cwd: &Path, store_override: Option<&Path>, format: OutputForm
         OutputFormat::Table => print_repo_status(&report, &ctx.repo_root),
         OutputFormat::Detail => print_repo_status_detail(&report, &ctx.repo_root),
     }
-    Ok(())
+    Ok(classify_integrity_exit(&report))
 }
 
 fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> Result<()> {
@@ -359,6 +379,30 @@ fn print_repo_status_detail(report: &IntegrityReport, repo_root: &Path) {
         "WARN"
     };
     println!("index root: [{root_label}]");
+}
+
+/// Determine the exit code for `repo status` based on the integrity report.
+///
+/// - 2: structural ERROR (broken/missing symlink, missing store item, git-tracked)
+/// - 1: WARN only (missing exclude entry, orphan store items, root mismatch)
+/// - 0: all clear
+fn classify_integrity_exit(report: &IntegrityReport) -> ExitCode {
+    let has_error = report
+        .items
+        .iter()
+        .any(|s| !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked);
+    if has_error {
+        return ExitCode::from(2);
+    }
+
+    let has_warn = report.items.iter().any(|s| !s.in_exclude)
+        || !report.orphan_store_items.is_empty()
+        || !report.repo_root_matches_index;
+    if has_warn {
+        return ExitCode::from(1);
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn print_fix_result(result: &FixResult) {

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -55,16 +56,25 @@ pub enum Command {
 
 // ── Entry point ─────────────────────────────────────────────────────────────────────────────────
 
-pub fn run() -> Result<()> {
+pub fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir().context("failed to get current directory")?;
     let store_override = cli.store.as_deref();
 
     match cli.command {
-        Command::Item { command } => run_item(command, &cwd, store_override),
+        Command::Item { command } => {
+            run_item(command, &cwd, store_override)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Repo { command } => run_repo(command, &cwd, store_override),
         Command::Store { command } => run_store(command, &cwd, store_override),
-        Command::Config { command } => run_config(command, &cwd, store_override),
-        Command::Internal { command } => run_internal(command, &cwd, store_override),
+        Command::Config { command } => {
+            run_config(command, &cwd, store_override)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Internal { command } => {
+            run_internal(command, &cwd, store_override)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }

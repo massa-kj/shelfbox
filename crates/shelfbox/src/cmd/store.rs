@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -15,6 +16,8 @@ pub enum StoreCommand {
     Info,
 
     /// Run a deep integrity check across all store contents.
+    ///
+    /// Exit codes: 0 = all OK, 2 = issues found.
     Verify,
 
     /// Delete store entries for repositories that no longer exist.
@@ -31,11 +34,21 @@ pub enum StoreCommand {
 
 // ── store command runner ────────────────────────────────────────────────────────────────────────
 
-pub fn run_store(command: StoreCommand, _cwd: &Path, store_override: Option<&Path>) -> Result<()> {
+pub fn run_store(
+    command: StoreCommand,
+    _cwd: &Path,
+    store_override: Option<&Path>,
+) -> Result<ExitCode> {
     match command {
-        StoreCommand::Info => cmd_store_info(store_override),
+        StoreCommand::Info => {
+            cmd_store_info(store_override)?;
+            Ok(ExitCode::SUCCESS)
+        }
         StoreCommand::Verify => cmd_store_verify(store_override),
-        StoreCommand::Gc { dry_run, yes } => cmd_store_gc(store_override, dry_run, yes),
+        StoreCommand::Gc { dry_run, yes } => {
+            cmd_store_gc(store_override, dry_run, yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -105,7 +118,7 @@ fn cmd_store_info(store_override: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_store_verify(store_override: Option<&Path>) -> Result<()> {
+fn cmd_store_verify(store_override: Option<&Path>) -> Result<ExitCode> {
     let cfg = Config::load(store_override)?;
     let idx = index::load(&cfg.store)?;
 
@@ -141,11 +154,11 @@ fn cmd_store_verify(store_override: Option<&Path>) -> Result<()> {
 
     if issues == 0 {
         println!("OK — no issues found.");
+        Ok(ExitCode::SUCCESS)
     } else {
         println!("{issues} issue(s) found. Run `shelfbox repo repair` to fix.");
+        Ok(ExitCode::from(2))
     }
-
-    Ok(())
 }
 
 fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
