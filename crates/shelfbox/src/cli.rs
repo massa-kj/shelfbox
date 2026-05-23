@@ -6,6 +6,7 @@ use clap::Parser;
 
 use crate::cmd::{
     config::{run_config, ConfigCommand},
+    format::OutputFormat,
     internal::{run_internal, InternalCommand},
     item::{run_item, ItemCommand},
     repo::{run_repo, RepoCommand},
@@ -52,6 +53,17 @@ pub enum Command {
         #[command(subcommand)]
         command: InternalCommand,
     },
+
+    /// Hidden alias for `repo status` (follows the `brew doctor` / `flutter doctor` convention).
+    ///
+    /// Runs a read-only health check for the current repository's shelf.
+    /// For the canonical command and full documentation, see `shelfbox repo status --help`.
+    #[command(hide = true)]
+    Doctor {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────────────────────────
@@ -75,6 +87,9 @@ pub fn run() -> Result<ExitCode> {
         Command::Internal { command } => {
             run_internal(command, &cwd, store_override)?;
             Ok(ExitCode::SUCCESS)
+        }
+        Command::Doctor { format } => {
+            run_repo(RepoCommand::Status { format }, &cwd, store_override)
         }
     }
 }
