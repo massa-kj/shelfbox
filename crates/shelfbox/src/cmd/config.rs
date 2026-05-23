@@ -27,6 +27,7 @@ pub enum ConfigCommand {
     },
 
     /// Open the configuration file in $EDITOR (not yet implemented).
+    #[command(hide = true)]
     Edit,
 }
 

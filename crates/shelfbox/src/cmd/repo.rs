@@ -55,9 +55,11 @@ pub enum RepoCommand {
     },
 
     /// Re-associate a repository after a reclone or path change (not yet implemented).
+    #[command(hide = true)]
     Relink,
 
     /// Migrate the manifest schema to the current version (not yet implemented).
+    #[command(hide = true)]
     Migrate,
 }
 
