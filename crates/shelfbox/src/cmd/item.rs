@@ -211,7 +211,7 @@ fn cmd_list(cwd: &Path, store_override: Option<&Path>, format: OutputFormat) -> 
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(items)?),
         OutputFormat::Plain => print_list_plain(items),
         OutputFormat::Table => print_list(items),
-        OutputFormat::Detail => anyhow::bail!("--format detail is not yet implemented"),
+        OutputFormat::Detail => print_list_detail(items, &ctx),
     }
     Ok(())
 }
@@ -227,7 +227,7 @@ fn cmd_status(cwd: &Path, store_override: Option<&Path>, format: OutputFormat) -
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&statuses)?),
         OutputFormat::Plain => print_status_plain(&statuses),
         OutputFormat::Table => print_status(&statuses),
-        OutputFormat::Detail => anyhow::bail!("--format detail is not yet implemented"),
+        OutputFormat::Detail => print_status_detail(&statuses, &ctx),
     }
     Ok(())
 }
@@ -317,6 +317,51 @@ fn print_status(statuses: &[ItemStatus]) {
         } else {
             println!("{:<8} {}  ({})", label, s.path, issues.join(", "));
         }
+    }
+}
+
+/// Detail format: one block per item, showing all fields.
+fn print_list_detail(items: &[Item], ctx: &context::RepoContext) {
+    if items.is_empty() {
+        println!("(no shelved items)");
+        return;
+    }
+    for item in items {
+        let kind = match item.kind {
+            ItemKind::File => "file",
+            ItemKind::Directory => "dir",
+        };
+        let store_path = ctx.repo_store.join(&item.store_path);
+        let link_target = std::fs::read_link(ctx.repo_root.join(&item.path)).ok();
+        println!("  {:<45} {:<5} {}", item.path, kind, item.created_at);
+        println!("    store:  {}", store_path.display());
+        match link_target {
+            Some(t) => println!("    link→   {}", t.display()),
+            None => println!("    link→   (none)"),
+        }
+    }
+}
+
+/// Detail format: one block per item, showing all health fields.
+fn print_status_detail(statuses: &[ItemStatus], ctx: &context::RepoContext) {
+    if statuses.is_empty() {
+        println!("(no shelved items)");
+        return;
+    }
+    for (s, item) in statuses.iter().zip(ctx.manifest.items.iter()) {
+        let label = if s.ok { "OK" } else { "ERROR" };
+        println!("  {label:<8} {}", s.path);
+        let store_path = ctx.repo_store.join(&item.store_path);
+        println!("    store:        {}", store_path.display());
+        let link_target = std::fs::read_link(ctx.repo_root.join(&s.path)).ok();
+        match link_target {
+            Some(t) => println!("    link→         {}", t.display()),
+            None => println!("    link→         (none)"),
+        }
+        println!("    link_valid:   {}", s.link_valid);
+        println!("    store_exists: {}", s.store_exists);
+        println!("    in_exclude:   {}", s.in_exclude);
+        println!("    not_tracked:  {}", s.not_tracked);
     }
 }
 

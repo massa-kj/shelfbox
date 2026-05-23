@@ -1,4 +1,7 @@
 /// Output format selection for list/status commands.
+///
+/// `Detail` is a table format with the full field set (verbosity = verbose).
+/// Future: split into `--format <fmt>` + `--verbose` flag.
 #[derive(Clone, Debug, Default, clap::ValueEnum)]
 pub enum OutputFormat {
     /// Aligned columns (default).
@@ -8,6 +11,6 @@ pub enum OutputFormat {
     Plain,
     /// Machine-readable JSON.
     Json,
-    /// Verbose key-value pairs (not yet implemented).
+    /// Verbose table with extended fields.
     Detail,
 }

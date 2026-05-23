@@ -134,7 +134,44 @@ fn cmd_repo_list(store_override: Option<&Path>, format: OutputFormat) -> Result<
                 );
             }
         }
-        OutputFormat::Detail => anyhow::bail!("--format detail is not yet implemented"),
+        OutputFormat::Detail => {
+            let mut entries: Vec<(&str, &_)> = idx.iter().collect();
+            entries.sort_by(|(_, a), (_, b)| {
+                let na = a
+                    .root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let nb = b
+                    .root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                na.cmp(&nb)
+            });
+            if entries.is_empty() {
+                println!("(no repositories in store)");
+                return Ok(());
+            }
+            for (_, entry) in &entries {
+                let repo_store = config.store.join("repos").join(&entry.store_dir);
+                let item_count = manifest::load(&repo_store)
+                    .map(|m| m.items.len())
+                    .unwrap_or(0);
+                let name = entry
+                    .root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| entry.root.to_string_lossy().into_owned());
+                println!("  {name}");
+                println!("    root:        {}", entry.root.display());
+                println!("    git_common:  {}", entry.git_common_dir.display());
+                println!("    store_dir:   {}", entry.store_dir);
+                println!("    items:       {item_count}");
+                println!("    last_seen:   {}", entry.last_seen_at);
+                println!();
+            }
+        }
     }
     Ok(())
 }
@@ -150,7 +187,7 @@ fn cmd_repo_status(cwd: &Path, store_override: Option<&Path>, format: OutputForm
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
         OutputFormat::Plain => print_repo_status_plain(&report),
         OutputFormat::Table => print_repo_status(&report, &ctx.repo_root),
-        OutputFormat::Detail => anyhow::bail!("--format detail is not yet implemented"),
+        OutputFormat::Detail => print_repo_status_detail(&report, &ctx.repo_root),
     }
     Ok(())
 }
@@ -284,6 +321,44 @@ fn print_repo_status_plain(report: &IntegrityReport) {
     if !report.repo_root_matches_index {
         println!("ROOT_MISMATCH");
     }
+}
+
+/// Detail format: per-item blocks with every health field listed individually.
+fn print_repo_status_detail(report: &IntegrityReport, repo_root: &Path) {
+    println!("repo: {}", repo_root.display());
+
+    let total = report.items.len();
+    let errors = report.items.iter().filter(|s| !s.ok).count();
+    let overall = if errors > 0 { "ERROR" } else { "OK" };
+
+    println!("items: {total} total, {errors} with issues  [{overall}]");
+
+    for s in &report.items {
+        let label = if s.ok { "OK" } else { "ERROR" };
+        println!("  {label:<8} {}", s.path);
+        println!("    link_exists:  {}", s.link_exists);
+        println!("    link_valid:   {}", s.link_valid);
+        println!("    store_exists: {}", s.store_exists);
+        println!("    in_exclude:   {}", s.in_exclude);
+        println!("    not_tracked:  {}", s.not_tracked);
+    }
+
+    let orphan_count = report.orphan_store_items.len();
+    if orphan_count > 0 {
+        println!("orphan store items: {orphan_count}  [WARN]");
+        for o in &report.orphan_store_items {
+            println!("  {o}");
+        }
+    } else {
+        println!("orphan store items: 0  [OK]");
+    }
+
+    let root_label = if report.repo_root_matches_index {
+        "OK"
+    } else {
+        "WARN"
+    };
+    println!("index root: [{root_label}]");
 }
 
 fn print_fix_result(result: &FixResult) {
