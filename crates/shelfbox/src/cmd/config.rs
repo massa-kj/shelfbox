@@ -150,14 +150,14 @@ fn cmd_config_list(format: OutputFormat, store_override: Option<&Path>) -> Resul
             key: KEY_STORE.key,
             type_name: KEY_STORE.type_name,
             default: KEY_STORE.default_display,
-            source: resolved.store_source.to_string(),
+            source: resolved.store_source.short().to_string(),
             current: resolved.store.display().to_string(),
         },
         Row {
             key: KEY_DEFAULT_FORMAT.key,
             type_name: KEY_DEFAULT_FORMAT.type_name,
             default: KEY_DEFAULT_FORMAT.default_display,
-            source: resolved.default_format_source.to_string(),
+            source: resolved.default_format_source.short().to_string(),
             current: resolved
                 .default_format
                 .unwrap_or_else(|| KEY_DEFAULT_FORMAT.default_display.to_string()),

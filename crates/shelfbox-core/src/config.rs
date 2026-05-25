@@ -38,19 +38,32 @@ struct RawConfig {
 pub enum ConfigSource {
     /// Passed via the `--store` CLI flag.
     CliFlag,
-    /// Read from an environment variable (e.g. `SHELFBOX_STORE`).
-    Env,
+    /// Read from an environment variable; carries the variable name.
+    Env(&'static str),
     /// Read from `config.toml`.
     File,
     /// Computed from the platform default.
     Default,
 }
 
+impl ConfigSource {
+    /// Short label for tabular output (e.g. `config list` SOURCE column).
+    /// `Env("SHELFBOX_STORE")` → `"env"`, others unchanged from [`Display`].
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::CliFlag => "cli",
+            Self::Env(_) => "env",
+            Self::File => "config",
+            Self::Default => "default",
+        }
+    }
+}
+
 impl fmt::Display for ConfigSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CliFlag => write!(f, "cli"),
-            Self::Env => write!(f, "env"),
+            Self::Env(var) => write!(f, "env:{var}"),
             Self::File => write!(f, "config"),
             Self::Default => write!(f, "default"),
         }
@@ -120,7 +133,7 @@ impl Config {
         let (store, store_source) = if let Some(p) = store_override {
             (p.to_path_buf(), ConfigSource::CliFlag)
         } else if let Some(p) = env_store {
-            (p, ConfigSource::Env)
+            (p, ConfigSource::Env("SHELFBOX_STORE"))
         } else if let Some(p) = raw.store {
             (p, ConfigSource::File)
         } else if let Some(p) = default_store_path() {
@@ -340,7 +353,7 @@ mod tests {
         let r = Config::resolve_full(raw, None).unwrap();
         std::env::remove_var("SHELFBOX_STORE");
         assert_eq!(r.store, PathBuf::from("/from/env"));
-        assert_eq!(r.store_source, ConfigSource::Env);
+        assert_eq!(r.store_source, ConfigSource::Env("SHELFBOX_STORE"));
     }
 
     #[test]
