@@ -52,7 +52,10 @@ All output can be formatted with `--format <FORMAT>` where supported:
 | `table` (default) | Human-readable aligned columns |
 | `plain` | One item per line, machine-parseable |
 | `json` | JSON output |
-| `detail` | Verbose table with extended fields (store path, symlink target, all health fields) |
+
+Use `--verbose` to show extended fields (store path, symlink target, all health
+fields) in table format. The `default_format` config key sets the format used
+when `--format` is not specified.
 
 ---
 
@@ -228,6 +231,7 @@ Lists all files currently shelved in the current repository.
 shelfbox item list
 shelfbox item list --format plain
 shelfbox item list --format json
+shelfbox item list --verbose
 ```
 
 **Output (table, default):**
@@ -242,7 +246,8 @@ shelfbox item list --format json
 
 | Flag | Description |
 |---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`, `detail`. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
+| `--verbose` | Show extended fields: store path and symlink target for each item. |
 
 ---
 
@@ -253,6 +258,7 @@ Checks the health of every shelved item and reports problems.
 ```sh
 shelfbox item status
 shelfbox item status --format json
+shelfbox item status --verbose
 ```
 
 **Output (table, default):**
@@ -282,7 +288,8 @@ Severity:
 
 | Flag | Description |
 |---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`, `detail`. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
+| `--verbose` | Show all health fields (link_exists, link_valid, store_exists, in_exclude, not_tracked) for each item. |
 
 ---
 
@@ -311,7 +318,7 @@ in_exclude  true
 
 | Flag | Description |
 |---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain` (store path only), `json`, `detail`. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain` (store path only), `json`. |
 
 ---
 
@@ -325,6 +332,7 @@ Lists all repositories known to the store, with item counts.
 shelfbox repo list
 shelfbox repo list --format plain
 shelfbox repo list --format json
+shelfbox repo list --verbose
 ```
 
 **Output (table, default):**
@@ -339,6 +347,7 @@ shelfbox repo list --format json
 | Flag | Description |
 |---|---|
 | `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
+| `--verbose` | Show extended fields: git_common dir, store_dir, and last_seen timestamp per repository. |
 
 ---
 
@@ -350,6 +359,7 @@ reports any problems (equivalent to the old `doctor` command).
 ```sh
 shelfbox repo status
 shelfbox repo status --format plain
+shelfbox repo status --verbose
 ```
 
 **Checks:**
@@ -362,7 +372,8 @@ shelfbox repo status --format plain
 
 | Flag | Description |
 |---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`, `detail`. |
+| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
+| `--verbose` | Show all health fields for each item individually. |
 
 **Exit codes:**
 

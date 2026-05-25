@@ -61,8 +61,11 @@ pub enum Command {
     #[command(hide = true)]
     Doctor {
         /// Output format.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
-        format: OutputFormat,
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+        /// Show extended fields for each item.
+        #[arg(long)]
+        verbose: bool,
     },
 }
 
@@ -88,8 +91,10 @@ pub fn run() -> Result<ExitCode> {
             run_internal(command, &cwd, store_override)?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Doctor { format } => {
-            run_repo(RepoCommand::Status { format }, &cwd, store_override)
-        }
+        Command::Doctor { format, verbose } => run_repo(
+            RepoCommand::Status { format, verbose },
+            &cwd,
+            store_override,
+        ),
     }
 }

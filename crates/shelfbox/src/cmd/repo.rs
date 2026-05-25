@@ -23,8 +23,11 @@ pub enum RepoCommand {
     /// List all repositories known to the store.
     List {
         /// Output format.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
-        format: OutputFormat,
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+        /// Show extended fields for each repository.
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Show the health status of the current repository's shelf.
@@ -32,8 +35,11 @@ pub enum RepoCommand {
     /// Exit codes: 0 = all OK, 1 = warnings only, 2 = errors present.
     Status {
         /// Output format.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
-        format: OutputFormat,
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+        /// Show extended fields for each item.
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Apply safe automatic repairs (broken symlinks, exclude, root mismatch).
@@ -71,11 +77,13 @@ pub fn run_repo(
     store_override: Option<&Path>,
 ) -> Result<ExitCode> {
     match command {
-        RepoCommand::List { format } => {
-            cmd_repo_list(store_override, format)?;
+        RepoCommand::List { format, verbose } => {
+            cmd_repo_list(store_override, format, verbose)?;
             Ok(ExitCode::SUCCESS)
         }
-        RepoCommand::Status { format } => cmd_repo_status(cwd, store_override, format),
+        RepoCommand::Status { format, verbose } => {
+            cmd_repo_status(cwd, store_override, format, verbose)
+        }
         RepoCommand::Repair { dry_run } => {
             cmd_repo_repair(cwd, store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
@@ -101,7 +109,11 @@ struct RepoSummary {
     last_seen_at: String,
 }
 
-fn cmd_repo_list(store_override: Option<&Path>, format: OutputFormat) -> Result<()> {
+fn cmd_repo_list(
+    store_override: Option<&Path>,
+    format: Option<OutputFormat>,
+    verbose: bool,
+) -> Result<()> {
     let config = Config::load(store_override).context("failed to load config")?;
     let idx = index::load(&config.store).context("failed to load store index")?;
 
@@ -128,7 +140,9 @@ fn cmd_repo_list(store_override: Option<&Path>, format: OutputFormat) -> Result<
     // Stable sort by repository name for deterministic output.
     rows.sort_by(|a, b| a.name.cmp(&b.name));
 
-    match format {
+    let fmt = OutputFormat::resolve(format, &config.default_format);
+
+    match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&rows)?),
         OutputFormat::Plain => {
             for r in &rows {
@@ -136,58 +150,60 @@ fn cmd_repo_list(store_override: Option<&Path>, format: OutputFormat) -> Result<
             }
         }
         OutputFormat::Table => {
-            if rows.is_empty() {
-                println!("(no repositories in store)");
-                return Ok(());
-            }
-            println!("  {:<30} {:<50} {:>5}  last seen", "name", "root", "items");
-            println!("  {}", "-".repeat(100));
-            for r in &rows {
-                println!(
-                    "  {:<30} {:<50} {:>5}  {}",
-                    r.name,
-                    r.root.display(),
-                    r.item_count,
-                    r.last_seen_at,
-                );
-            }
-        }
-        OutputFormat::Detail => {
-            let mut entries: Vec<(&str, &_)> = idx.iter().collect();
-            entries.sort_by(|(_, a), (_, b)| {
-                let na = a
-                    .root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let nb = b
-                    .root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                na.cmp(&nb)
-            });
-            if entries.is_empty() {
-                println!("(no repositories in store)");
-                return Ok(());
-            }
-            for (_, entry) in &entries {
-                let repo_store = config.store.join("repos").join(&entry.store_dir);
-                let item_count = manifest::load(&repo_store)
-                    .map(|m| m.items.len())
-                    .unwrap_or(0);
-                let name = entry
-                    .root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| entry.root.to_string_lossy().into_owned());
-                println!("  {name}");
-                println!("    root:        {}", entry.root.display());
-                println!("    git_common:  {}", entry.git_common_dir.display());
-                println!("    store_dir:   {}", entry.store_dir);
-                println!("    items:       {item_count}");
-                println!("    last_seen:   {}", entry.last_seen_at);
-                println!();
+            if verbose {
+                // Verbose: one multi-line block per repository.
+                let mut entries: Vec<(&str, &_)> = idx.iter().collect();
+                entries.sort_by(|(_, a), (_, b)| {
+                    let na = a
+                        .root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let nb = b
+                        .root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    na.cmp(&nb)
+                });
+                if entries.is_empty() {
+                    println!("(no repositories in store)");
+                    return Ok(());
+                }
+                for (_, entry) in &entries {
+                    let repo_store = config.store.join("repos").join(&entry.store_dir);
+                    let item_count = manifest::load(&repo_store)
+                        .map(|m| m.items.len())
+                        .unwrap_or(0);
+                    let name = entry
+                        .root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| entry.root.to_string_lossy().into_owned());
+                    println!("  {name}");
+                    println!("    root:        {}", entry.root.display());
+                    println!("    git_common:  {}", entry.git_common_dir.display());
+                    println!("    store_dir:   {}", entry.store_dir);
+                    println!("    items:       {item_count}");
+                    println!("    last_seen:   {}", entry.last_seen_at);
+                    println!();
+                }
+            } else {
+                if rows.is_empty() {
+                    println!("(no repositories in store)");
+                    return Ok(());
+                }
+                println!("  {:<30} {:<50} {:>5}  last seen", "name", "root", "items");
+                println!("  {}", "-".repeat(100));
+                for r in &rows {
+                    println!(
+                        "  {:<30} {:<50} {:>5}  {}",
+                        r.name,
+                        r.root.display(),
+                        r.item_count,
+                        r.last_seen_at,
+                    );
+                }
             }
         }
     }
@@ -197,19 +213,20 @@ fn cmd_repo_list(store_override: Option<&Path>, format: OutputFormat) -> Result<
 fn cmd_repo_status(
     cwd: &Path,
     store_override: Option<&Path>,
-    format: OutputFormat,
+    format: Option<OutputFormat>,
+    verbose: bool,
 ) -> Result<ExitCode> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
     let report = ops::integrity::check(&ctx, &link, &ignore)?;
 
-    match format {
+    match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
         OutputFormat::Plain => print_repo_status_plain(&report),
-        OutputFormat::Table => print_repo_status(&report, &ctx.repo_root),
-        OutputFormat::Detail => print_repo_status_detail(&report, &ctx.repo_root),
+        OutputFormat::Table => print_repo_status(&report, verbose, &ctx.repo_root),
     }
     Ok(classify_integrity_exit(&report))
 }
@@ -281,7 +298,7 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
 
 // ── Human-readable formatters ───────────────────────────────────────────────────────────────────
 
-fn print_repo_status(report: &IntegrityReport, repo_root: &Path) {
+fn print_repo_status(report: &IntegrityReport, verbose: bool, repo_root: &Path) {
     println!("repo: {}", repo_root.display());
 
     let total = report.items.len();
@@ -291,26 +308,35 @@ fn print_repo_status(report: &IntegrityReport, repo_root: &Path) {
     println!("items: {total} total, {errors} with issues  [{overall}]");
 
     for s in &report.items {
-        let mut issues: Vec<&str> = Vec::new();
-        if !s.link_exists {
-            issues.push("symlink missing");
-        } else if !s.link_valid {
-            issues.push("symlink invalid");
-        }
-        if !s.store_exists {
-            issues.push("store item missing");
-        }
-        if !s.in_exclude {
-            issues.push("not in exclude");
-        }
-        if !s.not_tracked {
-            issues.push("tracked by git");
-        }
         let label = if s.ok { "OK" } else { "ERROR" };
-        if issues.is_empty() {
+        if verbose {
             println!("  {label:<8} {}", s.path);
+            println!("    link_exists:  {}", s.link_exists);
+            println!("    link_valid:   {}", s.link_valid);
+            println!("    store_exists: {}", s.store_exists);
+            println!("    in_exclude:   {}", s.in_exclude);
+            println!("    not_tracked:  {}", s.not_tracked);
         } else {
-            println!("  {label:<8} {}  ({})", s.path, issues.join(", "));
+            let mut issues: Vec<&str> = Vec::new();
+            if !s.link_exists {
+                issues.push("symlink missing");
+            } else if !s.link_valid {
+                issues.push("symlink invalid");
+            }
+            if !s.store_exists {
+                issues.push("store item missing");
+            }
+            if !s.in_exclude {
+                issues.push("not in exclude");
+            }
+            if !s.not_tracked {
+                issues.push("tracked by git");
+            }
+            if issues.is_empty() {
+                println!("  {label:<8} {}", s.path);
+            } else {
+                println!("  {label:<8} {}  ({})", s.path, issues.join(", "));
+            }
         }
     }
 
@@ -343,44 +369,6 @@ fn print_repo_status_plain(report: &IntegrityReport) {
     if !report.repo_root_matches_index {
         println!("ROOT_MISMATCH");
     }
-}
-
-/// Detail format: per-item blocks with every health field listed individually.
-fn print_repo_status_detail(report: &IntegrityReport, repo_root: &Path) {
-    println!("repo: {}", repo_root.display());
-
-    let total = report.items.len();
-    let errors = report.items.iter().filter(|s| !s.ok).count();
-    let overall = if errors > 0 { "ERROR" } else { "OK" };
-
-    println!("items: {total} total, {errors} with issues  [{overall}]");
-
-    for s in &report.items {
-        let label = if s.ok { "OK" } else { "ERROR" };
-        println!("  {label:<8} {}", s.path);
-        println!("    link_exists:  {}", s.link_exists);
-        println!("    link_valid:   {}", s.link_valid);
-        println!("    store_exists: {}", s.store_exists);
-        println!("    in_exclude:   {}", s.in_exclude);
-        println!("    not_tracked:  {}", s.not_tracked);
-    }
-
-    let orphan_count = report.orphan_store_items.len();
-    if orphan_count > 0 {
-        println!("orphan store items: {orphan_count}  [WARN]");
-        for o in &report.orphan_store_items {
-            println!("  {o}");
-        }
-    } else {
-        println!("orphan store items: 0  [OK]");
-    }
-
-    let root_label = if report.repo_root_matches_index {
-        "OK"
-    } else {
-        "WARN"
-    };
-    println!("index root: [{root_label}]");
 }
 
 /// Determine the exit code for `repo status` based on the integrity report.

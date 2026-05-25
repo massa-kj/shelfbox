@@ -89,7 +89,10 @@ pub struct ResolvedConfig {
 
 impl From<ResolvedConfig> for Config {
     fn from(r: ResolvedConfig) -> Self {
-        Self { store: r.store }
+        Self {
+            store: r.store,
+            default_format: r.default_format,
+        }
     }
 }
 
@@ -102,6 +105,9 @@ impl From<ResolvedConfig> for Config {
 pub struct Config {
     /// Root directory of the external store.
     pub store: PathBuf,
+    /// Default output format ("table" | "plain" | "json"), or `None` to use
+    /// the built-in default (`"table"`).
+    pub default_format: Option<String>,
 }
 
 impl Config {
@@ -172,6 +178,7 @@ impl Config {
     pub fn with_store(store: impl Into<PathBuf>) -> Self {
         Self {
             store: store.into(),
+            default_format: None,
         }
     }
 }

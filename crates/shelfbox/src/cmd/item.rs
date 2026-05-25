@@ -64,15 +64,21 @@ pub enum ItemCommand {
     /// List all shelved files for the current repository.
     List {
         /// Output format.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
-        format: OutputFormat,
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+        /// Show extended fields (store path, symlink target).
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Show the health status of each shelved file.
     Status {
         /// Output format.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
-        format: OutputFormat,
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+        /// Show extended fields for each item.
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Rename a shelved item's tracked path.
@@ -95,8 +101,8 @@ pub enum ItemCommand {
         path: PathBuf,
 
         /// Output format.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
-        format: OutputFormat,
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
     },
 }
 
@@ -119,8 +125,8 @@ pub fn run_item(command: ItemCommand, cwd: &Path, store_override: Option<&Path>)
             keep_store,
         ),
         ItemCommand::Repair { paths, dry_run } => cmd_repair(cwd, store_override, &paths, dry_run),
-        ItemCommand::List { format } => cmd_list(cwd, store_override, format),
-        ItemCommand::Status { format } => cmd_status(cwd, store_override, format),
+        ItemCommand::List { format, verbose } => cmd_list(cwd, store_override, format, verbose),
+        ItemCommand::Status { format, verbose } => cmd_status(cwd, store_override, format, verbose),
         ItemCommand::Move {
             old,
             new_path,
@@ -203,32 +209,42 @@ fn cmd_restore(
     Ok(())
 }
 
-fn cmd_list(cwd: &Path, store_override: Option<&Path>, format: OutputFormat) -> Result<()> {
+fn cmd_list(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    format: Option<OutputFormat>,
+    verbose: bool,
+) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
     let items = ops::list::list(&ctx);
 
-    match format {
+    match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(items)?),
         OutputFormat::Plain => print_list_plain(items),
-        OutputFormat::Table => print_list(items),
-        OutputFormat::Detail => print_list_detail(items, &ctx),
+        OutputFormat::Table => print_list(items, verbose, &ctx),
     }
     Ok(())
 }
 
-fn cmd_status(cwd: &Path, store_override: Option<&Path>, format: OutputFormat) -> Result<()> {
+fn cmd_status(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    format: Option<OutputFormat>,
+    verbose: bool,
+) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
     let statuses = ops::status::status(&ctx, &link, &ignore)?;
 
-    match format {
+    match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&statuses)?),
         OutputFormat::Plain => print_status_plain(&statuses),
-        OutputFormat::Table => print_status(&statuses),
-        OutputFormat::Detail => print_status_detail(&statuses, &ctx),
+        OutputFormat::Table => print_status(&statuses, verbose, &ctx),
     }
     Ok(())
 }
@@ -301,7 +317,7 @@ fn print_list_plain(items: &[Item]) {
     }
 }
 
-fn print_list(items: &[Item]) {
+fn print_list(items: &[Item], verbose: bool, ctx: &context::RepoContext) {
     if items.is_empty() {
         println!("(no shelved items)");
         return;
@@ -312,6 +328,15 @@ fn print_list(items: &[Item]) {
             ItemKind::Directory => "dir",
         };
         println!("  {:<45} {:<5} {}", item.path, kind, item.created_at);
+        if verbose {
+            let store_path = ctx.repo_store.join(&item.store_path);
+            let link_target = std::fs::read_link(ctx.repo_root.join(&item.path)).ok();
+            println!("    store:  {}", store_path.display());
+            match link_target {
+                Some(t) => println!("    link\u{2192}   {}", t.display()),
+                None => println!("    link\u{2192}   (none)"),
+            }
+        }
     }
 }
 
@@ -327,63 +352,31 @@ fn print_status_plain(statuses: &[ItemStatus]) {
     }
 }
 
-fn print_status(statuses: &[ItemStatus]) {
+fn print_status(statuses: &[ItemStatus], verbose: bool, ctx: &context::RepoContext) {
     if statuses.is_empty() {
         println!("(no shelved items)");
         return;
     }
-    for s in statuses {
+    for (s, item) in statuses.iter().zip(ctx.manifest.items.iter()) {
         let (label, issues) = classify_status(s);
         if issues.is_empty() {
             println!("{:<8} {}", label, s.path);
         } else {
             println!("{:<8} {}  ({})", label, s.path, issues.join(", "));
         }
-    }
-}
-
-/// Detail format: one block per item, showing all fields.
-fn print_list_detail(items: &[Item], ctx: &context::RepoContext) {
-    if items.is_empty() {
-        println!("(no shelved items)");
-        return;
-    }
-    for item in items {
-        let kind = match item.kind {
-            ItemKind::File => "file",
-            ItemKind::Directory => "dir",
-        };
-        let store_path = ctx.repo_store.join(&item.store_path);
-        let link_target = std::fs::read_link(ctx.repo_root.join(&item.path)).ok();
-        println!("  {:<45} {:<5} {}", item.path, kind, item.created_at);
-        println!("    store:  {}", store_path.display());
-        match link_target {
-            Some(t) => println!("    link→   {}", t.display()),
-            None => println!("    link→   (none)"),
+        if verbose {
+            let store_path = ctx.repo_store.join(&item.store_path);
+            let link_target = std::fs::read_link(ctx.repo_root.join(&s.path)).ok();
+            println!("    store:        {}", store_path.display());
+            match link_target {
+                Some(t) => println!("    link\u{2192}         {}", t.display()),
+                None => println!("    link\u{2192}         (none)"),
+            }
+            println!("    link_valid:   {}", s.link_valid);
+            println!("    store_exists: {}", s.store_exists);
+            println!("    in_exclude:   {}", s.in_exclude);
+            println!("    not_tracked:  {}", s.not_tracked);
         }
-    }
-}
-
-/// Detail format: one block per item, showing all health fields.
-fn print_status_detail(statuses: &[ItemStatus], ctx: &context::RepoContext) {
-    if statuses.is_empty() {
-        println!("(no shelved items)");
-        return;
-    }
-    for (s, item) in statuses.iter().zip(ctx.manifest.items.iter()) {
-        let label = if s.ok { "OK" } else { "ERROR" };
-        println!("  {label:<8} {}", s.path);
-        let store_path = ctx.repo_store.join(&item.store_path);
-        println!("    store:        {}", store_path.display());
-        let link_target = std::fs::read_link(ctx.repo_root.join(&s.path)).ok();
-        match link_target {
-            Some(t) => println!("    link→         {}", t.display()),
-            None => println!("    link→         (none)"),
-        }
-        println!("    link_valid:   {}", s.link_valid);
-        println!("    store_exists: {}", s.store_exists);
-        println!("    in_exclude:   {}", s.in_exclude);
-        println!("    not_tracked:  {}", s.not_tracked);
     }
 }
 
@@ -434,23 +427,24 @@ fn cmd_info(
     cwd: &Path,
     store_override: Option<&Path>,
     path: &Path,
-    format: OutputFormat,
+    format: Option<OutputFormat>,
 ) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
     let abs = resolve_path(cwd, path);
     let item_info = ops::info::info(&ctx, &abs, &link, &ignore)?;
 
-    match format {
+    match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&item_info)?),
         OutputFormat::Plain => {
             if let Some(ref sp) = item_info.store_path {
                 println!("{}", sp.display());
             }
         }
-        OutputFormat::Table | OutputFormat::Detail => print_info_table(&item_info),
+        OutputFormat::Table => print_info_table(&item_info),
     }
     Ok(())
 }
