@@ -129,6 +129,28 @@ impl Manifest {
         self.items.retain(|i| i.path != path);
         self.items.len() < before
     }
+
+    /// Renames a manifest item in-place.
+    ///
+    /// Updates `path`, `store_path`, and `updated_at` while preserving all
+    /// other fields (`kind`, `link`, `git`, `created_at`).
+    /// Returns `false` if `old_path` is not found.
+    pub fn rename(
+        &mut self,
+        old_path: &str,
+        new_path: &str,
+        new_store_path: &str,
+        updated_at: &str,
+    ) -> bool {
+        if let Some(item) = self.items.iter_mut().find(|i| i.path == old_path) {
+            item.path = new_path.to_string();
+            item.store_path = new_store_path.to_string();
+            item.updated_at = updated_at.to_string();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // ── I/O ───────────────────────────────────────────────────────────────────────
@@ -254,5 +276,44 @@ mod tests {
         manifest.remove("a.md");
         assert!(!manifest.contains("a.md"));
         assert!(manifest.contains("b.md"));
+    }
+
+    #[test]
+    fn rename_updates_path_and_store_path() {
+        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
+        manifest.add(sample_item("old/file.md"));
+
+        let renamed = manifest.rename(
+            "old/file.md",
+            "new/file.md",
+            "items/new/file.md",
+            "2026-05-25T00:00:00Z",
+        );
+
+        assert!(renamed);
+        assert!(!manifest.contains("old/file.md"));
+        let item = manifest.get("new/file.md").expect("new path must exist");
+        assert_eq!(item.store_path, "items/new/file.md");
+        assert_eq!(item.updated_at, "2026-05-25T00:00:00Z");
+        // Other fields are preserved.
+        assert_eq!(item.created_at, "2026-04-29T00:00:00Z");
+        assert_eq!(item.kind, ItemKind::File);
+    }
+
+    #[test]
+    fn rename_nonexistent_returns_false() {
+        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
+        assert!(!manifest.rename("ghost.md", "other.md", "items/other.md", "2026-05-25T00:00:00Z"));
+    }
+
+    #[test]
+    fn rename_preserves_other_items() {
+        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
+        manifest.add(sample_item("a.md"));
+        manifest.add(sample_item("b.md"));
+        manifest.rename("a.md", "c.md", "items/c.md", "2026-05-25T00:00:00Z");
+        assert!(manifest.contains("c.md"));
+        assert!(manifest.contains("b.md"));
+        assert!(!manifest.contains("a.md"));
     }
 }

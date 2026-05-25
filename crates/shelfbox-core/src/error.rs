@@ -43,6 +43,23 @@ pub enum AppError {
     #[error("store conflict: '{store_path}' already exists")]
     StoreConflict { store_path: PathBuf },
 
+    // ── move validation ─────────────────────────────────────────────────────
+    /// The destination path for `item move` is already occupied.
+    #[error("move destination already exists: {path}")]
+    MoveDestinationExists { path: PathBuf },
+
+    /// The symlink at the move source does not point to the expected store path.
+    /// Running `item repair` first will re-establish the correct link.
+    #[error(
+        "symlink at '{path}' does not point to expected store location\n\
+         hint: run 'shelfbox item repair' on this path first"
+    )]
+    MoveSourceSymlinkMismatch { path: PathBuf },
+
+    /// Moving directory items is not supported in this version.
+    #[error("moving directory items is not supported in this version")]
+    MoveDirectoryUnsupported,
+
     // ── repair validation ──────────────────────────────────────────────────
     /// A regular (non-symlink) file exists at the repo path; overwriting it
     /// would cause data loss, so `repair` refuses to proceed.
