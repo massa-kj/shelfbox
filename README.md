@@ -47,26 +47,28 @@ Requires Rust 1.75+ and Git. Linux / macOS only (symlinks required).
 
 ```sh
 # Shelve a file
-shelfbox add secrets/local.env
+shelfbox item add ai-config.local.md
 
 # Preview without making changes
-shelfbox add notes.md --dry-run
+shelfbox item add .env --dry-run
 
 # List shelved items
-shelfbox list
+shelfbox item list
 
-# Check health
-shelfbox status
-shelfbox doctor
+# Check health of shelved items
+shelfbox item status
+
+# Full integrity check of the current repo
+shelfbox repo status
 
 # Fix detected issues automatically
-shelfbox doctor --fix
+shelfbox repo repair
 
 # Recreate a broken symlink
-shelfbox repair secrets/local.env
+shelfbox item repair ai-config.local.md
 
-# Restore
-shelfbox restore secrets/local.env
+# Restore (undo shelving)
+shelfbox item restore ai-config.local.md
 ```
 
 ## Configuration
@@ -75,11 +77,23 @@ Optional config file at `$XDG_CONFIG_HOME/shelfbox/config.toml`
 (default: `~/.config/shelfbox/config.toml`):
 
 ```toml
-# Override the store directory (default: ~/.local/share/shelfbox)
-store = "/mnt/data/shelfbox-store"
+# Root directory for the global shelfbox store.
+# Default: ~/.local/share/shelfbox
+# store = "/mnt/data/shelfbox-store"
+
+# Default output format for list/status commands.
+# Valid values: table (default), plain, json
+# default_format = "table"
 ```
 
 The `--store <PATH>` global flag overrides config at runtime.
+
+Inspect the current configuration:
+
+```sh
+shelfbox config list
+shelfbox config explain store
+```
 
 ## Documentation
 
