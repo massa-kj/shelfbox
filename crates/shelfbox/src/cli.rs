@@ -77,10 +77,7 @@ pub fn run() -> Result<ExitCode> {
     let store_override = cli.store.as_deref();
 
     match cli.command {
-        Command::Item { command } => {
-            run_item(command, &cwd, store_override)?;
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Item { command } => run_item(command, &cwd, store_override),
         Command::Repo { command } => run_repo(command, &cwd, store_override),
         Command::Store { command } => run_store(command, &cwd, store_override),
         Command::Config { command } => {

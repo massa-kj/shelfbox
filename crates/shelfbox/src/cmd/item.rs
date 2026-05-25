@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -108,31 +109,53 @@ pub enum ItemCommand {
 
 // ── item command runner ─────────────────────────────────────────────────────────────────────────
 
-pub fn run_item(command: ItemCommand, cwd: &Path, store_override: Option<&Path>) -> Result<()> {
+pub fn run_item(
+    command: ItemCommand,
+    cwd: &Path,
+    store_override: Option<&Path>,
+) -> Result<ExitCode> {
     match command {
-        ItemCommand::Add { paths, dry_run } => cmd_add(cwd, store_override, &paths, dry_run),
+        ItemCommand::Add { paths, dry_run } => {
+            cmd_add(cwd, store_override, &paths, dry_run)?;
+            Ok(ExitCode::SUCCESS)
+        }
         ItemCommand::Restore {
             paths,
             dry_run,
             keep_ignore,
             keep_store,
-        } => cmd_restore(
-            cwd,
-            store_override,
-            &paths,
-            dry_run,
-            keep_ignore,
-            keep_store,
-        ),
-        ItemCommand::Repair { paths, dry_run } => cmd_repair(cwd, store_override, &paths, dry_run),
-        ItemCommand::List { format, verbose } => cmd_list(cwd, store_override, format, verbose),
+        } => {
+            cmd_restore(
+                cwd,
+                store_override,
+                &paths,
+                dry_run,
+                keep_ignore,
+                keep_store,
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ItemCommand::Repair { paths, dry_run } => {
+            cmd_repair(cwd, store_override, &paths, dry_run)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ItemCommand::List { format, verbose } => {
+            cmd_list(cwd, store_override, format, verbose)?;
+            Ok(ExitCode::SUCCESS)
+        }
         ItemCommand::Status { format, verbose } => cmd_status(cwd, store_override, format, verbose),
         ItemCommand::Move {
             old,
             new_path,
             dry_run,
-        } => cmd_move(cwd, store_override, &old, &new_path, dry_run),
-        ItemCommand::Info { path, format } => cmd_info(cwd, store_override, &path, format),
+        } => {
+            cmd_move(cwd, store_override, &old, &new_path, dry_run)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ItemCommand::Info { path, format } => {
+            cmd_info(cwd, store_override, &path, format)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -233,7 +256,7 @@ fn cmd_status(
     store_override: Option<&Path>,
     format: Option<OutputFormat>,
     verbose: bool,
-) -> Result<()> {
+) -> Result<ExitCode> {
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
@@ -246,7 +269,7 @@ fn cmd_status(
         OutputFormat::Plain => print_status_plain(&statuses),
         OutputFormat::Table => print_status(&statuses, verbose, &ctx),
     }
-    Ok(())
+    Ok(classify_status_exit(&statuses))
 }
 
 fn cmd_repair(
@@ -419,6 +442,27 @@ fn classify_status(s: &ItemStatus) -> (&'static str, Vec<&'static str>) {
     };
 
     (label, issues)
+}
+
+/// Determine the exit code for `item status` based on the item statuses.
+///
+/// - 2: structural ERROR (broken/missing symlink, missing store item, git-tracked)
+/// - 1: WARN only (exclude entry missing)
+/// - 0: all clear
+fn classify_status_exit(statuses: &[ItemStatus]) -> ExitCode {
+    let has_error = statuses
+        .iter()
+        .any(|s| !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked);
+    if has_error {
+        return ExitCode::from(2);
+    }
+
+    let has_warn = statuses.iter().any(|s| !s.in_exclude);
+    if has_warn {
+        return ExitCode::from(1);
+    }
+
+    ExitCode::SUCCESS
 }
 
 // ── item info ───────────────────────────────────────────────────────────────
