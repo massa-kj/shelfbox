@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +26,58 @@ fn default_store_path() -> Option<PathBuf> {
 struct RawConfig {
     /// Override for the store root directory.
     store: Option<PathBuf>,
+    /// Default output format ("table" | "plain" | "json").
+    default_format: Option<String>,
+}
+
+// ── Config source metadata ──────────────────────────────────────────────────
+
+/// The origin of a resolved configuration value, ordered by precedence
+/// (highest to lowest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    /// Passed via the `--store` CLI flag.
+    CliFlag,
+    /// Read from an environment variable (e.g. `SHELFBOX_STORE`).
+    Env,
+    /// Read from `config.toml`.
+    File,
+    /// Computed from the platform default.
+    Default,
+}
+
+impl fmt::Display for ConfigSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CliFlag => write!(f, "cli"),
+            Self::Env => write!(f, "env"),
+            Self::File => write!(f, "config"),
+            Self::Default => write!(f, "default"),
+        }
+    }
+}
+
+/// Fully resolved configuration together with the origin of each value.
+///
+/// Used by `config list` / `config get --source` to show where values come
+/// from.  For pure business-logic use, prefer the lighter [`Config`].
+#[derive(Debug, Clone)]
+pub struct ResolvedConfig {
+    /// Resolved store root directory.
+    pub store: PathBuf,
+    /// Origin of [`store`](Self::store).
+    pub store_source: ConfigSource,
+    /// Resolved default output format, or `None` if using the built-in
+    /// default (`"table"`).
+    pub default_format: Option<String>,
+    /// Origin of [`default_format`](Self::default_format).
+    pub default_format_source: ConfigSource,
+}
+
+impl From<ResolvedConfig> for Config {
+    fn from(r: ResolvedConfig) -> Self {
+        Self { store: r.store }
+    }
 }
 
 // ── Public resolved config ────────────────────────────────────────────────────
@@ -44,31 +97,60 @@ impl Config {
     ///
     /// If the config file does not exist the function silently uses defaults.
     pub fn load(store_override: Option<&Path>) -> Result<Self> {
-        let raw = read_config_file()?;
-        Self::resolve(raw, store_override)
+        Ok(Self::load_resolved(store_override)?.into())
     }
 
-    fn resolve(raw: RawConfig, store_override: Option<&Path>) -> Result<Self> {
+    /// Like [`load`](Self::load), but also returns the origin of each value.
+    ///
+    /// Use this when you need to display *where* a value came from
+    /// (e.g. `config list`, `config get --source`).
+    pub fn load_resolved(store_override: Option<&Path>) -> Result<ResolvedConfig> {
+        let raw = read_config_file()?;
+        Self::resolve_full(raw, store_override)
+    }
+
+    fn resolve_full(raw: RawConfig, store_override: Option<&Path>) -> Result<ResolvedConfig> {
         // Priority (high → low):
         //   1. --store CLI flag (store_override)
         //   2. $SHELFBOX_STORE environment variable
         //   3. `store` key in config.toml
         //   4. XDG / platform default
         let env_store = std::env::var_os("SHELFBOX_STORE").map(PathBuf::from);
-        let store = store_override
-            .map(|p| p.to_path_buf())
-            .or(env_store)
-            .or(raw.store)
-            .or_else(default_store_path)
-            .ok_or_else(|| {
-                AppError::Internal(
-                    "could not determine store path; set `store` in config.toml or \
-                     SHELFBOX_STORE env var"
-                        .into(),
-                )
-            })?;
 
-        Ok(Self { store })
+        let (store, store_source) = if let Some(p) = store_override {
+            (p.to_path_buf(), ConfigSource::CliFlag)
+        } else if let Some(p) = env_store {
+            (p, ConfigSource::Env)
+        } else if let Some(p) = raw.store {
+            (p, ConfigSource::File)
+        } else if let Some(p) = default_store_path() {
+            (p, ConfigSource::Default)
+        } else {
+            return Err(AppError::Internal(
+                "could not determine store path; set `store` in config.toml or \
+                 SHELFBOX_STORE env var"
+                    .into(),
+            ));
+        };
+
+        let (default_format, default_format_source) = if let Some(f) = raw.default_format {
+            (Some(f), ConfigSource::File)
+        } else {
+            (None, ConfigSource::Default)
+        };
+
+        Ok(ResolvedConfig {
+            store,
+            store_source,
+            default_format,
+            default_format_source,
+        })
+    }
+
+    /// Kept for internal use by tests; delegates to `resolve_full`.
+    #[cfg(test)]
+    fn resolve(raw: RawConfig, store_override: Option<&Path>) -> Result<Self> {
+        Ok(Self::resolve_full(raw, store_override)?.into())
     }
 
     /// Convenience constructor for tests: use an explicit store path with no
@@ -108,14 +190,20 @@ fn read_config_file() -> Result<RawConfig> {
 
 /// Sets a single key-value pair in the config file, preserving existing
 /// content and comments.  Creates the file (and parent directories) if needed.
-///
-/// Only `"store"` is supported in v0.3.0; any other key returns an error.
 pub fn set_key(key: &str, value: &str) -> Result<()> {
     match key {
         "store" => {}
+        "default_format" => match value {
+            "table" | "plain" | "json" => {}
+            other => {
+                return Err(AppError::Internal(format!(
+                    "invalid value '{other}' for default_format; valid values: table, plain, json"
+                )));
+            }
+        },
         other => {
             return Err(AppError::Internal(format!(
-                "unknown config key '{other}'; supported keys: store"
+                "unknown config key '{other}'; supported keys: store, default_format"
             )));
         }
     }
@@ -172,6 +260,7 @@ mod tests {
         std::env::remove_var("SHELFBOX_STORE");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
+            ..Default::default()
         };
         let override_path = PathBuf::from("/from/override");
         let cfg = Config::resolve(raw, Some(&override_path)).unwrap();
@@ -184,6 +273,7 @@ mod tests {
         std::env::remove_var("SHELFBOX_STORE");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
+            ..Default::default()
         };
         let cfg = Config::resolve(raw, None).unwrap();
         assert_eq!(cfg.store, PathBuf::from("/from/config"));
@@ -193,7 +283,7 @@ mod tests {
     fn falls_back_to_platform_default_when_both_absent() {
         let _g = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("SHELFBOX_STORE");
-        let raw = RawConfig { store: None };
+        let raw = RawConfig::default();
         // Platform default must exist on the CI runner (Linux/macOS).
         let cfg = Config::resolve(raw, None).unwrap();
         assert!(cfg.store.to_string_lossy().contains("shelfbox"));
@@ -205,6 +295,7 @@ mod tests {
         std::env::set_var("SHELFBOX_STORE", "/from/env");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
+            ..Default::default()
         };
         let cfg = Config::resolve(raw, None).unwrap();
         std::env::remove_var("SHELFBOX_STORE");
@@ -217,10 +308,63 @@ mod tests {
         std::env::set_var("SHELFBOX_STORE", "/from/env");
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
+            ..Default::default()
         };
         let override_path = PathBuf::from("/from/override");
         let cfg = Config::resolve(raw, Some(&override_path)).unwrap();
         std::env::remove_var("SHELFBOX_STORE");
         assert_eq!(cfg.store, override_path);
+    }
+
+    #[test]
+    fn resolve_full_records_source_cli_flag() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        let raw = RawConfig {
+            store: Some(PathBuf::from("/from/config")),
+            ..Default::default()
+        };
+        let override_path = PathBuf::from("/from/override");
+        let r = Config::resolve_full(raw, Some(&override_path)).unwrap();
+        assert_eq!(r.store, override_path);
+        assert_eq!(r.store_source, ConfigSource::CliFlag);
+        assert_eq!(r.default_format, None);
+        assert_eq!(r.default_format_source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn resolve_full_records_source_env() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("SHELFBOX_STORE", "/from/env");
+        let raw = RawConfig::default();
+        let r = Config::resolve_full(raw, None).unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        assert_eq!(r.store, PathBuf::from("/from/env"));
+        assert_eq!(r.store_source, ConfigSource::Env);
+    }
+
+    #[test]
+    fn resolve_full_records_source_file() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        let raw = RawConfig {
+            store: Some(PathBuf::from("/from/config")),
+            default_format: Some("json".to_string()),
+        };
+        let r = Config::resolve_full(raw, None).unwrap();
+        assert_eq!(r.store_source, ConfigSource::File);
+        assert_eq!(r.default_format.as_deref(), Some("json"));
+        assert_eq!(r.default_format_source, ConfigSource::File);
+    }
+
+    #[test]
+    fn resolve_full_records_source_default() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        let raw = RawConfig::default();
+        let r = Config::resolve_full(raw, None).unwrap();
+        assert_eq!(r.store_source, ConfigSource::Default);
+        assert_eq!(r.default_format, None);
+        assert_eq!(r.default_format_source, ConfigSource::Default);
     }
 }
