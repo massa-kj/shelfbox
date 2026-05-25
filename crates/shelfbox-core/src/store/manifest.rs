@@ -303,7 +303,12 @@ mod tests {
     #[test]
     fn rename_nonexistent_returns_false() {
         let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
-        assert!(!manifest.rename("ghost.md", "other.md", "items/other.md", "2026-05-25T00:00:00Z"));
+        assert!(!manifest.rename(
+            "ghost.md",
+            "other.md",
+            "items/other.md",
+            "2026-05-25T00:00:00Z"
+        ));
     }
 
     #[test]

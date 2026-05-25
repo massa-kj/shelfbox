@@ -114,10 +114,7 @@ fn cmd_config_get(key: &str, show_source: bool, store_override: Option<&Path>) -
     let resolved = Config::load_resolved(store_override)?;
 
     let (value, source) = match key {
-        "store" => (
-            resolved.store.display().to_string(),
-            resolved.store_source,
-        ),
+        "store" => (resolved.store.display().to_string(), resolved.store_source),
         "default_format" => (
             resolved
                 .default_format
@@ -189,9 +186,24 @@ fn cmd_config_list(format: OutputFormat, store_override: Option<&Path>) -> Resul
         }
         _ => {
             let kw = rows.iter().map(|r| r.key.len()).max().unwrap_or(0).max(3);
-            let tw = rows.iter().map(|r| r.type_name.len()).max().unwrap_or(0).max(4);
-            let dw = rows.iter().map(|r| r.default.len()).max().unwrap_or(0).max(7);
-            let sw = rows.iter().map(|r| r.source.len()).max().unwrap_or(0).max(6);
+            let tw = rows
+                .iter()
+                .map(|r| r.type_name.len())
+                .max()
+                .unwrap_or(0)
+                .max(4);
+            let dw = rows
+                .iter()
+                .map(|r| r.default.len())
+                .max()
+                .unwrap_or(0)
+                .max(7);
+            let sw = rows
+                .iter()
+                .map(|r| r.source.len())
+                .max()
+                .unwrap_or(0)
+                .max(6);
             println!(
                 "{}  {}  {}  {}  CURRENT",
                 ljust("KEY", kw),
