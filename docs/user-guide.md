@@ -281,8 +281,8 @@ Each item is checked for:
 
 Severity:
 - `OK` — all checks pass.
-- `WARN` — `link_valid` and `store_exists` are true, but `in_exclude` or `not_tracked` is false.
-- `ERROR` — `link_exists`, `link_valid`, or `store_exists` is false.
+- `WARN` — symlink and store are healthy, Git is not tracking the file, but the path is missing from `.git/info/exclude`.
+- `ERROR` — any of: symlink missing, symlink invalid, store item missing, or Git is tracking the file (`not_tracked` is false).
 
 **Flags:**
 
@@ -290,6 +290,20 @@ Severity:
 |---|---|
 | `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
 | `--verbose` | Show all health fields (link_exists, link_valid, store_exists, in_exclude, not_tracked) for each item. |
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | All items OK. |
+| `1` | At least one WARN (path missing from `.git/info/exclude`). |
+| `2` | At least one ERROR (symlink missing, symlink invalid, store item missing, or path tracked by Git). |
+
+Suitable for use in shell scripts:
+
+```sh
+shelfbox item status || echo "issues detected (exit $?)"
+```
 
 ---
 

@@ -1,24 +1,51 @@
 # shelfbox
 
-Shelve repo-local files **outside Git**, while keeping them visible in your editor via symlinks.
+Keep per-developer AI context, personal notes, and local configs **outside Git**, while keeping them visible in your editor.
 
-Useful for local notes, AI configs, editor configs, secrets, or any file you need in the repository tree but must never be tracked by Git.
+Useful for AI context files, editor configs, local notes, secrets — anything that belongs in your repo tree on this machine but must never be committed.
+
+## Typical use cases
+
+- `CLAUDE.local.md`, `ai-context.local.md` — per-developer AI context that should not be shared with the team
+- `.cursor/rules/local.mdc` — personal AI editor rules
+- `.env` — local secrets and credentials
+- `notes/scratch.md` — personal development notes
+- `config/local.yml` — machine-specific config overrides
 
 ## How it works
 
 ```
-shelfbox add .env
+shelfbox item add ai-context.local.md
 ```
 
-1. Moves `.env` into an external store (`~/.local/share/shelfbox/…`).
+1. Moves the file into a plain store directory (`~/.local/share/shelfbox/…`).
 2. Leaves a symlink at the original path — your editor still sees the file.
 3. Adds the path to `.git/info/exclude` so Git ignores it silently.
 
 ```
-shelfbox restore .env
+shelfbox item restore ai-context.local.md
 ```
 
 Reverses the process: removes the symlink, moves the file back, and cleans the exclude entry.
+
+The store is a regular directory of plain files, shared across all your repositories.
+Each repo's files are organized under their own directory, identified by the repository root.
+If anything ever goes wrong, open `~/.local/share/shelfbox/` and sort it out by hand.
+
+## Why not `.gitignore` or `git update-index`?
+
+`.gitignore` only affects untracked files. Files already known to Git will still appear in `git status` regardless. It also requires committing the entry, which means your teammates see it too.
+
+`git update-index --skip-worktree` only affects the local Git index. It breaks silently across reclones, worktrees, and index resets — leaving files accidentally staged or exposed.
+
+shelfbox physically moves the file outside the repository, so it survives:
+
+- `git clone` / reclones
+- `git worktree add`
+- repository moves and renames
+- index resets
+
+Your editor still sees the file at its original path via symlink.
 
 ## Installation
 
@@ -31,8 +58,8 @@ curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh |
 Installs to `~/.local/bin` by default. To specify a version or directory:
 
 ```sh
-VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | sh
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
 ### From source
@@ -47,28 +74,16 @@ Requires Rust 1.75+ and Git. Linux / macOS only (symlinks required).
 
 ```sh
 # Shelve a file
-shelfbox item add ai-config.local.md
-
-# Preview without making changes
-shelfbox item add .env --dry-run
+shelfbox item add ai-context.local.md
 
 # List shelved items
 shelfbox item list
 
-# Check health of shelved items
+# Check health (exits 0 ok / 1 warn / 2 error)
 shelfbox item status
 
-# Full integrity check of the current repo
-shelfbox repo status
-
-# Fix detected issues automatically
-shelfbox repo repair
-
-# Recreate a broken symlink
-shelfbox item repair ai-config.local.md
-
 # Restore (undo shelving)
-shelfbox item restore ai-config.local.md
+shelfbox item restore ai-context.local.md
 ```
 
 ## Configuration
@@ -94,6 +109,14 @@ Inspect the current configuration:
 shelfbox config list
 shelfbox config explain store
 ```
+
+## Non-goals
+
+shelfbox is a **single-machine local storage** tool.
+
+Placing the store on Dropbox, iCloud, OneDrive, or NFS may work, but is not officially supported. Sync conflicts or partial writes may leave items in an inconsistent state; run `shelfbox repo repair` to recover.
+
+Multi-machine sync, secret encryption, and team-shared files are out of scope.
 
 ## Documentation
 
