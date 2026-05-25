@@ -181,6 +181,45 @@ exclude entries, or the store itself — it only fixes the symlink.
 
 ---
 
+### `item move <OLD> <NEW>`
+
+Renames a shelved item's tracked path without restoring and re-shelving it.
+
+Both `OLD` and `NEW` are paths relative to the repository root.
+
+```sh
+shelfbox item move .env .env.local
+shelfbox item move secrets/api_key.txt secrets/keys/api_key.txt
+```
+
+**What happens:**
+
+1. The store-side file is renamed atomically (`items/<old>` → `items/<new>`).
+2. The old symlink is removed and a new symlink is created at `NEW`.
+3. The manifest is updated with the new path and store path.
+4. `.git/info/exclude` is updated: old entry removed, new entry added.
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print what would happen without making any changes. |
+
+**Errors:**
+
+| Error | Meaning |
+|---|---|
+| `not a shelfbox managed symlink` | `OLD` is not recorded in the manifest. |
+| `move destination already exists` | A file or directory already exists at `NEW`. |
+| `already managed by shelfbox` | `NEW` is already a shelved path. |
+| `symlink does not point to expected store location` | The symlink at `OLD` is inconsistent. Run `item repair` first. |
+| `moving directory items is not supported` | `OLD` is a shelved directory — not supported in this version. |
+
+> **Note:** Moving directory items is not supported in this version.
+> As a workaround: `item restore` the directory, rename it with `mv`, then `item add` the new path.
+
+---
+
 ### `item list`
 
 Lists all files currently shelved in the current repository.

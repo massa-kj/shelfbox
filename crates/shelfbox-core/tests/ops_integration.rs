@@ -1253,3 +1253,239 @@ fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
         "wrong-target symlink must not be absorbed as a rebuild candidate"
     );
 }
+
+// ── move_item ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn move_item_renames_store_and_updates_symlink() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let old_path = repo_dir.path().join("old.txt");
+    std::fs::write(&old_path, "file content").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &old_path, false, &link, &ignore).unwrap();
+    assert!(old_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    // Move to a subdirectory to also test parent directory creation.
+    let new_path = repo_dir.path().join("subdir/new.txt");
+    ops::move_item::move_item(&mut ctx, &old_path, &new_path, false, &link, &ignore).unwrap();
+
+    // Old symlink must be gone.
+    assert!(!old_path.exists(), "old symlink must be removed");
+
+    // New symlink must exist and be readable.
+    assert!(
+        new_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "new symlink must exist"
+    );
+    assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "file content");
+
+    // Store item must have moved.
+    assert!(
+        !ctx.repo_store.join("items/old.txt").exists(),
+        "old store path must not exist"
+    );
+    assert!(
+        ctx.repo_store.join("items/subdir/new.txt").exists(),
+        "new store path must exist"
+    );
+
+    // Manifest must reflect the new path.
+    assert!(
+        !ctx.manifest.contains("old.txt"),
+        "old path must be removed from manifest"
+    );
+    assert!(
+        ctx.manifest.contains("subdir/new.txt"),
+        "new path must be in manifest"
+    );
+    let item = ctx.manifest.get("subdir/new.txt").unwrap();
+    assert_eq!(item.store_path, "items/subdir/new.txt");
+
+    // Exclude must have the new entry and not the old one.
+    assert!(
+        !ignore.has_entry(repo_dir.path(), "old.txt").unwrap(),
+        "old exclude entry must be removed"
+    );
+    assert!(
+        ignore.has_entry(repo_dir.path(), "subdir/new.txt").unwrap(),
+        "new exclude entry must be added"
+    );
+}
+
+#[test]
+fn move_item_rejects_directory_kind() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Create a directory with content and shelve it.
+    let dir_path = repo_dir.path().join("mydir");
+    std::fs::create_dir(&dir_path).unwrap();
+    std::fs::write(dir_path.join("file.txt"), "contents").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &dir_path, false, &link, &ignore).unwrap();
+    assert_eq!(
+        ctx.manifest.get("mydir").unwrap().kind,
+        shelfbox_core::store::manifest::ItemKind::Directory
+    );
+
+    let new_path = repo_dir.path().join("mydir_renamed");
+    let err = ops::move_item::move_item(&mut ctx, &dir_path, &new_path, false, &link, &ignore)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            shelfbox_core::error::AppError::MoveDirectoryUnsupported
+        ),
+        "expected MoveDirectoryUnsupported, got: {err}"
+    );
+}
+
+#[test]
+fn move_item_rejects_when_destination_exists() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let old_path = repo_dir.path().join("source.txt");
+    std::fs::write(&old_path, "content").unwrap();
+
+    // A file already occupying the destination.
+    let new_path = repo_dir.path().join("existing.txt");
+    std::fs::write(&new_path, "already here").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &old_path, false, &link, &ignore).unwrap();
+
+    let err = ops::move_item::move_item(&mut ctx, &old_path, &new_path, false, &link, &ignore)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            shelfbox_core::error::AppError::MoveDestinationExists { .. }
+        ),
+        "expected MoveDestinationExists, got: {err}"
+    );
+
+    // Original item must be untouched.
+    assert!(ctx.manifest.contains("source.txt"));
+    assert!(ctx.repo_store.join("items/source.txt").exists());
+}
+
+#[test]
+fn move_item_rejects_when_new_path_already_managed() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_a = repo_dir.path().join("a.txt");
+    let file_b = repo_dir.path().join("b.txt");
+    std::fs::write(&file_a, "aaa").unwrap();
+    std::fs::write(&file_b, "bbb").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_a, false, &link, &ignore).unwrap();
+    ops::add::add(&mut ctx, &file_b, false, &link, &ignore).unwrap();
+
+    // Attempt to move a.txt → b.txt where b.txt is already managed.
+    let err =
+        ops::move_item::move_item(&mut ctx, &file_a, &file_b, false, &link, &ignore).unwrap_err();
+    assert!(
+        matches!(err, shelfbox_core::error::AppError::AlreadyManaged { .. }),
+        "expected AlreadyManaged, got: {err}"
+    );
+
+    // Both items must remain intact.
+    assert!(ctx.manifest.contains("a.txt"));
+    assert!(ctx.manifest.contains("b.txt"));
+}
+
+#[test]
+fn move_item_rejects_when_symlink_mismatch() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("secret.txt");
+    std::fs::write(&file_path, "secret").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Replace the managed symlink with one pointing elsewhere.
+    std::fs::remove_file(&file_path).unwrap();
+    std::os::unix::fs::symlink("/tmp/nonexistent_target_for_shelfbox_test", &file_path).unwrap();
+
+    let new_path = repo_dir.path().join("secret_renamed.txt");
+    let err = ops::move_item::move_item(&mut ctx, &file_path, &new_path, false, &link, &ignore)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            shelfbox_core::error::AppError::MoveSourceSymlinkMismatch { .. }
+        ),
+        "expected MoveSourceSymlinkMismatch, got: {err}"
+    );
+
+    // Store item must be untouched.
+    assert!(ctx.repo_store.join("items/secret.txt").exists());
+}
+
+#[test]
+fn move_item_dry_run_makes_no_changes() {
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let old_path = repo_dir.path().join("original.txt");
+    std::fs::write(&old_path, "data").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &old_path, false, &link, &ignore).unwrap();
+
+    let new_path = repo_dir.path().join("renamed.txt");
+    ops::move_item::move_item(&mut ctx, &old_path, &new_path, true, &link, &ignore).unwrap();
+
+    // Symlink at old path must still be present.
+    assert!(
+        old_path
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "dry-run must not remove old symlink"
+    );
+    // No symlink at new path.
+    assert!(!new_path.exists(), "dry-run must not create new symlink");
+    // Store item must remain at old location.
+    assert!(ctx.repo_store.join("items/original.txt").exists());
+    assert!(!ctx.repo_store.join("items/renamed.txt").exists());
+    // Manifest must be unchanged.
+    assert!(ctx.manifest.contains("original.txt"));
+    assert!(!ctx.manifest.contains("renamed.txt"));
+}

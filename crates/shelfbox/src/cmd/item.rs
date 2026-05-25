@@ -75,13 +75,17 @@ pub enum ItemCommand {
         format: OutputFormat,
     },
 
-    /// Rename a shelved item's tracked path (not yet implemented).
+    /// Rename a shelved item's tracked path.
     Move {
         #[arg(value_name = "OLD")]
         old: PathBuf,
 
         #[arg(value_name = "NEW")]
         new_path: PathBuf,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Show metadata for a shelved item.
@@ -117,14 +121,11 @@ pub fn run_item(command: ItemCommand, cwd: &Path, store_override: Option<&Path>)
         ItemCommand::Repair { paths, dry_run } => cmd_repair(cwd, store_override, &paths, dry_run),
         ItemCommand::List { format } => cmd_list(cwd, store_override, format),
         ItemCommand::Status { format } => cmd_status(cwd, store_override, format),
-        ItemCommand::Move { .. } => anyhow::bail!(
-            "`item move` is not yet implemented.\n\
-             \n\
-             workaround:\n\
-             \x20 shelfbox item restore <old>\n\
-             \x20 mv <old> <new>\n\
-             \x20 shelfbox item add <new>"
-        ),
+        ItemCommand::Move {
+            old,
+            new_path,
+            dry_run,
+        } => cmd_move(cwd, store_override, &old, &new_path, dry_run),
         ItemCommand::Info { path, format } => cmd_info(cwd, store_override, &path, format),
     }
 }
@@ -266,6 +267,27 @@ fn cmd_repair(
                 eprintln!("error: '{}' is not managed by shelfbox", path.display());
             }
         }
+    }
+    Ok(())
+}
+
+fn cmd_move(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    old: &Path,
+    new_path: &Path,
+    dry_run: bool,
+) -> Result<()> {
+    let old_abs = resolve_path(cwd, old);
+    let new_abs = resolve_path(cwd, new_path);
+    let mut ctx =
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::move_item::move_item(&mut ctx, &old_abs, &new_abs, dry_run, &link, &ignore)
+        .with_context(|| format!("move '{}' → '{}' failed", old.display(), new_path.display()))?;
+    if !dry_run {
+        println!("moved: {} → {}", old.display(), new_path.display());
     }
     Ok(())
 }

@@ -152,11 +152,7 @@ pub fn move_item(
             old_store_path.display(),
             new_store_path.display()
         );
-        println!(
-            "  symlink {} → {}",
-            old_abs.display(),
-            new_abs.display()
-        );
+        println!("  symlink {} → {}", old_abs.display(), new_abs.display());
         println!("  manifest: update path and store_path");
         println!("  exclude:  remove '{old_rel_str}', add '{new_rel_str}'");
         return Ok(());
