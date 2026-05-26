@@ -124,6 +124,7 @@ Multi-machine sync, secret encryption, and team-shared files are out of scope.
 |---|---|
 | [docs/user-guide.md](docs/user-guide.md) | All commands, flags, and common workflows |
 | [docs/architecture.md](docs/architecture.md) | Crate layout, data model, and design decisions |
+| [docs/failure-matrix.md](docs/failure-matrix.md) | Failure modes, detection, and recovery strategies |
 
 ## License
 
