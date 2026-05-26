@@ -66,6 +66,19 @@ pub enum AppError {
     #[error("'{path}' is a regular file; refusing to overwrite (use 'shelfbox restore' first)")]
     PathIsRegularFile { path: PathBuf },
 
+    /// A symlink exists at the repo path but points to an unexpected target.
+    /// Overwriting it silently could mask a wrong machine, stale store, or
+    /// copied-repo situation.  Use `repair --force` to override explicitly.
+    #[error(
+        "symlink target mismatch at '{path}': points to '{actual_target}', expected '{expected_target}'\n\
+         hint: run 'shelfbox item repair --force' if this is intentional"
+    )]
+    RepairSymlinkTargetMismatch {
+        path: PathBuf,
+        actual_target: PathBuf,
+        expected_target: PathBuf,
+    },
+
     // ── restore validation ─────────────────────────────────────────────────    /// The restore destination is occupied by a non-symlink entry (regular
     /// file or directory). Overwriting it would cause data loss.
     #[error(

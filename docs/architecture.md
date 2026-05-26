@@ -201,11 +201,12 @@ cmd::repo::run_repo()
 ```
 cmd::item::run_item()
   ├─ context::build(cwd, store_override, write=true)
-  └─ ops::repair::repair(ctx, abs_path, link, dry_run)
+  └─ ops::repair::repair(ctx, abs_path, link, dry_run, force)
        ├─ manifest.get(rel_path)                     // NotManaged if absent
        ├─ store_path.exists()                        // StoreMissing if absent
        ├─ link.is_managed_link()                     // AlreadyHealthy if OK
        ├─ [safety] regular file check                // Err(PathIsRegularFile) if present
+       ├─ [safety] wrong-target symlink check        // Err(RepairSymlinkTargetMismatch) unless force=true
        ├─ remove existing symlink (if any)
        └─ link.create(store_path, abs_path)          // LinkRecreated
 ```
@@ -226,6 +227,7 @@ cmd::item::run_item()
 | **`fix` is ordered and best-effort** | Root fix runs first so path comparisons are correct; each step continues even if a previous one fails, recording `FixResult::Failed` entries rather than aborting. |
 | **Navigation hints are CLI-only** | `shelfbox-core` returns structured `IntegrityReport` / `IntegrityFixReport` data; formatting, hints, and TTY detection live entirely in the binary crate. |
 | **`repair` refuses to overwrite regular files** | If a non-symlink file exists at the target path, `repair` returns `Err(PathIsRegularFile)` rather than silently overwriting user data. |
+| **`repair` requires `--force` for wrong-target symlinks** | If a symlink exists at the repo path but points to an unexpected target (outside the managed store), `repair` returns `Err(RepairSymlinkTargetMismatch)` unless `force = true`. This is consistent with `move_item`'s `MoveSourceSymlinkMismatch` guard and with `rebuild_manifest_from_store`'s exact-target requirement. Silent overwrite would mask stale links from reclones, store relocations, or copied repos — situations the user should investigate before proceeding. `integrity::fix` always passes `force = false`, keeping automated repair conservative. |
 | **`# BEGIN shelfbox` block in exclude** | All shelfbox entries are wrapped in a named block so other tools can safely edit the file without conflict. The block is rewritten atomically; existing content outside the block is preserved. |
 | **`LinkStrategy` abstraction** | All filesystem linking is dispatched through the `LinkStrategy` trait. Today only `SymlinkStrategy` (Unix symlinks) is shipped. Future implementations (hardlink, bind mount, copy mode) can be added without touching `ops/`. |
 | **Worktree-aware repo identity** | `RepoEntry` stores both `git_dir` and `git_common_dir` (output of `git rev-parse --git-common-dir`). Repo lookup uses a two-stage strategy: exact `root` match first, then `git_common_dir` match. This ensures that accessing a repository via a linked worktree reuses the same ULID rather than creating a duplicate entry. `exclude_file_path` is also resolved via `git rev-parse --git-path info/exclude` so the correct `.git/info/exclude` is targeted in worktree environments. |
@@ -247,8 +249,8 @@ The following table defines the contract for `shelfbox repair` depending on the 
 | State at repo-side path | `repair` behaviour |
 |---|---|
 | Missing (no file) | Recreate the symlink pointing to the store item. |
-| Dangling symlink (target deleted) | Remove the dangling symlink and recreate it. |
-| Wrong-target symlink (points elsewhere) | Remove and recreate (the symlink is considered stale). **Note:** this is the current unguarded behaviour; a future version may refuse by default and require `--force`. |
+| Dangling symlink (target deleted) | Return `Err(RepairSymlinkTargetMismatch)` unless `force = true`; with force, remove and recreate. |
+| Wrong-target symlink (points to a live file/dir outside the store) | Return `Err(RepairSymlinkTargetMismatch)` unless `force = true`; with force, remove and recreate. |
 | Regular file (not a symlink) | Return `Err(PathIsRegularFile)` — refuse to overwrite user data. |
 | Directory | Return `Err(PathIsRegularFile)` — refuse to overwrite. |
 | Already healthy (correct symlink) | No-op, return `Ok(AlreadyHealthy)`. |

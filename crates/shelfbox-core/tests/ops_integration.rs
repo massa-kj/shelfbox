@@ -552,7 +552,7 @@ fn repair_recreates_missing_symlink() {
     std::fs::remove_file(&file_path).unwrap();
     assert!(!file_path.exists(), "symlink must be gone before repair");
 
-    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false, false).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
 
     // Symlink must be back and readable.
@@ -565,7 +565,10 @@ fn repair_recreates_missing_symlink() {
 }
 
 #[test]
-fn repair_relinks_invalid_symlink() {
+fn repair_rejects_wrong_target_symlink_without_force() {
+    // A symlink that points outside the managed store must NOT be silently
+    // overwritten.  repair() must return RepairSymlinkTargetMismatch so the
+    // user can investigate before running with --force.
     let repo_dir = init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -583,10 +586,47 @@ fn repair_relinks_invalid_symlink() {
     std::os::unix::fs::symlink("/tmp/nonexistent", &file_path).unwrap();
     assert!(
         !link.is_managed_link(&file_path, &ctx.config.store),
-        "symlink must be invalid before repair"
+        "symlink must not be managed before the test"
     );
 
-    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    // Without --force, repair must refuse.
+    let result = ops::repair::repair(&ctx, &file_path, &link, false, false);
+    assert!(
+        matches!(
+            result,
+            Err(shelfbox_core::error::AppError::RepairSymlinkTargetMismatch { .. })
+        ),
+        "expected RepairSymlinkTargetMismatch, got: {result:?}"
+    );
+
+    // The wrong-target symlink must be untouched.
+    assert!(
+        !link.is_managed_link(&file_path, &ctx.config.store),
+        "wrong-target symlink must not have been changed"
+    );
+}
+
+#[test]
+fn repair_force_relinks_wrong_target_symlink() {
+    // With --force, repair must overwrite a wrong-target symlink and restore
+    // the correct link to the managed store item.
+    let repo_dir = init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("cfg.toml");
+    std::fs::write(&file_path, "[db]").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = SymlinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    // Replace managed symlink with one pointing elsewhere.
+    std::fs::remove_file(&file_path).unwrap();
+    std::os::unix::fs::symlink("/tmp/nonexistent", &file_path).unwrap();
+
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false, true).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
 
     assert!(link.is_managed_link(&file_path, &ctx.config.store));
@@ -607,7 +647,7 @@ fn repair_already_healthy_returns_no_op() {
 
     ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
 
-    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false, false).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::AlreadyHealthy);
 }
 
@@ -629,7 +669,7 @@ fn repair_returns_store_missing_when_store_item_gone() {
     let store_item = ctx.repo_store.join("items/secrets.txt");
     std::fs::remove_file(&store_item).unwrap();
 
-    let outcome = ops::repair::repair(&ctx, &file_path, &link, false).unwrap();
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, false, false).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::StoreMissing);
 
     // The (now dangling) symlink must be left untouched.
@@ -650,7 +690,7 @@ fn repair_returns_not_managed_for_unknown_path() {
     let ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = SymlinkStrategy;
 
-    let outcome = ops::repair::repair(&ctx, &unmanaged, &link, false).unwrap();
+    let outcome = ops::repair::repair(&ctx, &unmanaged, &link, false, false).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::NotManaged);
 }
 
@@ -680,7 +720,7 @@ fn repair_refuses_to_overwrite_regular_file() {
         "must be a regular file before the safety check"
     );
 
-    let result = ops::repair::repair(&ctx, &file_path, &link, false);
+    let result = ops::repair::repair(&ctx, &file_path, &link, false, false);
     assert!(
         result.is_err(),
         "repair must return an error to prevent data loss"
@@ -708,7 +748,7 @@ fn repair_dry_run_makes_no_changes() {
     ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
     std::fs::remove_file(&file_path).unwrap();
 
-    let outcome = ops::repair::repair(&ctx, &file_path, &link, true).unwrap();
+    let outcome = ops::repair::repair(&ctx, &file_path, &link, true, false).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
 
     // Symlink must NOT have been recreated in dry-run mode.

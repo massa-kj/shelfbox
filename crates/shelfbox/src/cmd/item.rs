@@ -60,6 +60,12 @@ pub enum ItemCommand {
         /// Print what would happen without making any changes.
         #[arg(long)]
         dry_run: bool,
+
+        /// Allow overwriting a symlink that points to an unexpected target.
+        /// Without this flag, `repair` refuses to touch wrong-target symlinks
+        /// to avoid silently masking stale links from reclones or copied repos.
+        #[arg(long)]
+        force: bool,
     },
 
     /// List all shelved files for the current repository.
@@ -135,8 +141,12 @@ pub fn run_item(
             )?;
             Ok(ExitCode::SUCCESS)
         }
-        ItemCommand::Repair { paths, dry_run } => {
-            cmd_repair(cwd, store_override, &paths, dry_run)?;
+        ItemCommand::Repair {
+            paths,
+            dry_run,
+            force,
+        } => {
+            cmd_repair(cwd, store_override, &paths, dry_run, force)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::List { format, verbose } => {
@@ -277,6 +287,7 @@ fn cmd_repair(
     store_override: Option<&Path>,
     paths: &[PathBuf],
     dry_run: bool,
+    force: bool,
 ) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
@@ -284,7 +295,7 @@ fn cmd_repair(
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        match ops::repair::repair(&ctx, &abs, &link, dry_run)
+        match ops::repair::repair(&ctx, &abs, &link, dry_run, force)
             .with_context(|| format!("repair '{}' failed", path.display()))?
         {
             ops::repair::RepairOutcome::LinkRecreated => {

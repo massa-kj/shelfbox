@@ -25,6 +25,10 @@ pub enum RepairOutcome {
 ///
 /// - If a regular file (not a symlink) exists at `abs_path`, the function
 ///   returns [`AppError::PathIsRegularFile`] to prevent overwriting user data.
+/// - If a symlink exists at `abs_path` but points to an unexpected target,
+///   the function returns [`AppError::RepairSymlinkTargetMismatch`] unless
+///   `force` is `true`.  This protects against silently masking a wrong
+///   machine, stale store, or copied-repo situation.
 /// - If the store-side copy is missing, returns [`RepairOutcome::StoreMissing`]
 ///   without touching the filesystem.
 ///
@@ -36,6 +40,7 @@ pub fn repair(
     abs_path: &Path,
     link: &dyn LinkStrategy,
     dry_run: bool,
+    force: bool,
 ) -> Result<RepairOutcome> {
     // ── Resolve repo-relative path ────────────────────────────────────────
     let rel_path =
@@ -70,6 +75,30 @@ pub fn repair(
         if !meta.file_type().is_symlink() {
             return Err(AppError::PathIsRegularFile {
                 path: abs_path.to_path_buf(),
+            });
+        }
+    }
+
+    // ── Safety: refuse to silently overwrite a wrong-target symlink ───────
+    // A symlink that exists but points outside the managed store is ambiguous:
+    // it could be a stale link from a reclone, a different machine's store, or
+    // a copied repo.  Overwriting it silently would mask those situations.
+    // Require --force to proceed.
+    if !force {
+        if let Ok(actual_target) = std::fs::read_link(abs_path) {
+            // Resolve relative symlinks against the link's parent directory.
+            let abs_actual = if actual_target.is_absolute() {
+                actual_target.clone()
+            } else {
+                abs_path
+                    .parent()
+                    .map(|p| p.join(&actual_target))
+                    .unwrap_or_else(|| actual_target.clone())
+            };
+            return Err(AppError::RepairSymlinkTargetMismatch {
+                path: abs_path.to_path_buf(),
+                actual_target: abs_actual,
+                expected_target: store_path.clone(),
             });
         }
     }

@@ -167,12 +167,31 @@ Use `item repair` when `item status` shows `symlink missing` or `symlink invalid
 for a file whose store-side copy still exists. It does not touch the manifest,
 exclude entries, or the store itself — it only fixes the symlink.
 
+**Wrong-target symlinks require `--force`:**
+
+If a symlink exists at the path but points to an unexpected location (for example,
+a stale link left after a reclone, store relocation, or copied repo), `repair`
+refuses to overwrite it without `--force`. This prevents silently masking a
+potentially incorrect machine or store state.
+
+```sh
+# Without --force: error
+shelfbox item repair .env
+# error: symlink target mismatch at '.env': points to '/old/store/.env',
+#        expected '/current/store/.env'
+# hint: run 'shelfbox item repair --force' if this is intentional
+
+# Investigate the discrepancy, then override explicitly if correct
+shelfbox item repair --force .env
+```
+
 **Outcomes reported:**
 
 | Outcome | Meaning |
 |---|---|
 | `repaired` | Symlink was recreated successfully. |
 | `ok (no repair needed)` | Symlink was already healthy. |
+| `error: symlink target mismatch` | A symlink exists but points elsewhere. Use `--force` to override. |
 | `error: store item missing` | Store copy is gone — data may be lost. |
 | `error: not managed` | Path is not recorded in the manifest. |
 
@@ -181,6 +200,7 @@ exclude entries, or the store itself — it only fixes the symlink.
 | Flag | Description |
 |---|---|
 | `--dry-run` | Print what would happen without making any changes. |
+| `--force` | Allow overwriting a wrong-target symlink. Without this flag, `repair` refuses to touch symlinks that point to an unexpected location. |
 
 ---
 
@@ -697,6 +717,20 @@ shelfbox item status
 # ERROR    .env  (symlink missing)
 
 shelfbox item repair .env
+# repaired: .env
+```
+
+If the symlink exists but points to a different location (e.g. after a store
+relocation or reclone), `repair` will report a target mismatch error:
+
+```sh
+shelfbox item repair .env
+# error: symlink target mismatch at '.env': points to '/old/store/.env',
+#        expected '/current/store/.env'
+# hint: run 'shelfbox item repair --force' if this is intentional
+
+# Verify the current store has the right content, then:
+shelfbox item repair --force .env
 # repaired: .env
 ```
 
