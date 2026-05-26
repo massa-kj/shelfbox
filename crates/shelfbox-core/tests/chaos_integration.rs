@@ -15,53 +15,7 @@ use shelfbox_core::{
     context, ignore::GitInfoExclude, link::SymlinkStrategy, ops, ops::integrity::FixResult,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Creates a minimal Git repository with one empty commit and returns the temp
-/// dir.  The empty commit is required by `git worktree add`.
-fn init_git_repo_with_commit() -> TempDir {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path();
-
-    for args in [
-        vec!["init", "-b", "main"],
-        vec!["config", "user.email", "test@example.com"],
-        vec!["config", "user.name", "Test User"],
-        vec!["commit", "--allow-empty", "-m", "initial"],
-    ] {
-        let out = StdCommand::new("git")
-            .args(&args)
-            .current_dir(path)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {} failed: {}",
-            args[0],
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    dir
-}
-
-/// Creates a minimal Git repository (no commit) and returns the temp dir.
-fn init_git_repo() -> TempDir {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path();
-
-    for args in [
-        vec!["init", "-b", "main"],
-        vec!["config", "user.email", "test@example.com"],
-        vec!["config", "user.name", "Test User"],
-    ] {
-        StdCommand::new("git")
-            .args(&args)
-            .current_dir(path)
-            .output()
-            .unwrap();
-    }
-    dir
-}
+mod common;
 
 // ── Worktree scenarios (failure matrix #6) ────────────────────────────────────
 
@@ -72,7 +26,7 @@ fn init_git_repo() -> TempDir {
 /// clone's `.git/`, which is used as the secondary lookup key in the index.
 #[test]
 fn worktree_add_reuses_repo_ulid() {
-    let main_dir = init_git_repo_with_commit();
+    let main_dir = common::init_git_repo_with_commit();
     let store_dir = TempDir::new().unwrap();
 
     // Register the main clone in the index.
@@ -106,7 +60,7 @@ fn worktree_add_reuses_repo_ulid() {
 /// repository is accessed via a linked worktree.
 #[test]
 fn worktree_shelved_items_visible_from_linked_worktree() {
-    let main_dir = init_git_repo_with_commit();
+    let main_dir = common::init_git_repo_with_commit();
     let store_dir = TempDir::new().unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
@@ -151,7 +105,7 @@ fn worktree_shelved_items_visible_from_linked_worktree() {
 /// it becomes an orphan unreachable via the new context.
 #[test]
 fn index_deleted_creates_fresh_context_with_empty_manifest() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
@@ -213,7 +167,7 @@ fn index_deleted_creates_fresh_context_with_empty_manifest() {
 /// blocking each other (shared `flock` mode).
 #[test]
 fn concurrent_read_locks_are_shared() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Two read-only contexts can be held simultaneously.
@@ -237,7 +191,7 @@ fn concurrent_read_locks_are_shared() {
 /// touching the healthy ones.
 #[test]
 fn partial_store_corruption_shows_mixed_status() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;

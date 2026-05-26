@@ -4,8 +4,6 @@
 /// the core operations end-to-end using real file I/O and (where required)
 /// real Git subprocesses.  No mocking is used; the tests verify the full
 /// interaction between context, manifest, link strategy and ignore backend.
-use std::process::Command as StdCommand;
-
 use tempfile::TempDir;
 
 use shelfbox_core::{
@@ -16,37 +14,13 @@ use shelfbox_core::{
     ops::integrity::FixResult,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Creates a minimal Git repository in a temp directory and returns it.
-fn init_git_repo() -> TempDir {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path();
-
-    StdCommand::new("git")
-        .args(["init", "-b", "main"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    StdCommand::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    StdCommand::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-
-    dir
-}
+mod common;
 
 // ── add / restore ─────────────────────────────────────────────────────────────
 
 #[test]
 fn add_and_restore_file() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Create an untracked file to shelve.
@@ -117,7 +91,7 @@ fn add_and_restore_file() {
 
 #[test]
 fn add_dry_run_makes_no_changes() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("config.toml");
@@ -152,7 +126,7 @@ fn add_dry_run_makes_no_changes() {
 
 #[test]
 fn restore_dry_run_makes_no_changes() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("notes.md");
@@ -188,7 +162,7 @@ fn add_already_managed_returns_error() {
     // symlink was removed and the original file was copied back manually.
     // In this state the path is a regular file, not a symlink, so the
     // IsSymlink check passes, but the manifest check must fire.
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("data.txt");
@@ -218,7 +192,7 @@ fn add_already_managed_returns_error() {
 
 #[test]
 fn add_path_outside_repo_returns_error() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let outside_file = store_dir.path().join("outside.txt");
@@ -237,7 +211,7 @@ fn add_path_outside_repo_returns_error() {
 
 #[test]
 fn restore_regular_file_returns_destination_exists_error() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("plain.txt");
@@ -262,7 +236,7 @@ fn restore_regular_file_returns_destination_exists_error() {
 
 #[test]
 fn restore_nonexistent_path_returns_not_managed_link_error() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // A path that does not exist at all.
@@ -284,7 +258,7 @@ fn restore_nonexistent_path_returns_not_managed_link_error() {
 
 #[test]
 fn restore_keep_ignore_preserves_exclude_entry() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("env.sh");
@@ -309,7 +283,7 @@ fn restore_keep_ignore_preserves_exclude_entry() {
 
 #[test]
 fn restore_keep_store_leaves_symlink_and_store_item() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("keep.txt");
@@ -352,7 +326,7 @@ fn restore_keep_store_leaves_symlink_and_store_item() {
 
 #[test]
 fn doctor_finds_orphan_store_item() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("orphan_test.txt");
@@ -378,7 +352,7 @@ fn doctor_finds_orphan_store_item() {
 
 #[test]
 fn doctor_empty_repo_is_clean() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
@@ -399,22 +373,14 @@ fn doctor_empty_repo_is_clean() {
 
 #[test]
 fn add_tracked_file_returns_error() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Create, stage and commit a file so it is tracked by Git.
     let file_path = repo_dir.path().join("tracked.txt");
     std::fs::write(&file_path, "contents").unwrap();
-    StdCommand::new("git")
-        .args(["add", "tracked.txt"])
-        .current_dir(repo_dir.path())
-        .output()
-        .unwrap();
-    StdCommand::new("git")
-        .args(["commit", "-m", "add tracked file"])
-        .current_dir(repo_dir.path())
-        .output()
-        .unwrap();
+    common::run_git(repo_dir.path(), &["add", "tracked.txt"]);
+    common::run_git(repo_dir.path(), &["commit", "-m", "add tracked file"]);
 
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = SymlinkStrategy;
@@ -429,7 +395,7 @@ fn add_tracked_file_returns_error() {
 
 #[test]
 fn add_git_dir_path_returns_error() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Target a file inside .git/ (e.g. .git/config, which always exists).
@@ -448,7 +414,7 @@ fn add_git_dir_path_returns_error() {
 
 #[test]
 fn add_existing_symlink_returns_error() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Create a symlink that is not managed by shelfbox.
@@ -472,7 +438,7 @@ fn add_existing_symlink_returns_error() {
 
 #[test]
 fn doctor_reports_error_for_dangling_symlink() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("secrets.txt");
@@ -499,7 +465,7 @@ fn doctor_reports_error_for_dangling_symlink() {
 
 #[test]
 fn doctor_reports_warn_for_missing_exclude_entry() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("private.txt");
@@ -531,7 +497,7 @@ fn doctor_reports_warn_for_missing_exclude_entry() {
 
 #[test]
 fn repair_recreates_missing_symlink() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("secret.env");
@@ -569,7 +535,7 @@ fn repair_rejects_wrong_target_symlink_without_force() {
     // A symlink that points outside the managed store must NOT be silently
     // overwritten.  repair() must return RepairSymlinkTargetMismatch so the
     // user can investigate before running with --force.
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("cfg.toml");
@@ -610,7 +576,7 @@ fn repair_rejects_wrong_target_symlink_without_force() {
 fn repair_force_relinks_wrong_target_symlink() {
     // With --force, repair must overwrite a wrong-target symlink and restore
     // the correct link to the managed store item.
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("cfg.toml");
@@ -635,7 +601,7 @@ fn repair_force_relinks_wrong_target_symlink() {
 
 #[test]
 fn repair_already_healthy_returns_no_op() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("healthy.txt");
@@ -653,7 +619,7 @@ fn repair_already_healthy_returns_no_op() {
 
 #[test]
 fn repair_returns_store_missing_when_store_item_gone() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("secrets.txt");
@@ -681,7 +647,7 @@ fn repair_returns_store_missing_when_store_item_gone() {
 
 #[test]
 fn repair_returns_not_managed_for_unknown_path() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let unmanaged = repo_dir.path().join("unmanaged.txt");
@@ -696,7 +662,7 @@ fn repair_returns_not_managed_for_unknown_path() {
 
 #[test]
 fn repair_refuses_to_overwrite_regular_file() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("data.txt");
@@ -735,7 +701,7 @@ fn repair_refuses_to_overwrite_regular_file() {
 
 #[test]
 fn repair_dry_run_makes_no_changes() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("dryrun.txt");
@@ -759,7 +725,7 @@ fn repair_dry_run_makes_no_changes() {
 
 #[test]
 fn doctor_fix_repairs_missing_exclude_entry() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("fix_exclude.env");
@@ -809,7 +775,7 @@ fn doctor_fix_repairs_missing_exclude_entry() {
 
 #[test]
 fn doctor_fix_repairs_missing_symlink() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("fix_link.txt");
@@ -846,7 +812,7 @@ fn doctor_fix_repairs_missing_symlink() {
 
 #[test]
 fn doctor_fix_records_cannot_fix_for_store_missing() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("lost.txt");
@@ -880,7 +846,7 @@ fn doctor_fix_records_cannot_fix_for_store_missing() {
 fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
     // A store item with no repo-side symlink is a "true orphan".
     // Without --yes, doctor --fix reports NeedsConfirmation and leaves the file.
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
@@ -917,7 +883,7 @@ fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
 fn doctor_fix_true_orphan_deleted_with_yes() {
     // A store item with no repo-side symlink is a "true orphan".
     // With --yes, doctor --fix deletes it.
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
@@ -943,7 +909,7 @@ fn doctor_fix_true_orphan_deleted_with_yes() {
 
 #[test]
 fn doctor_fix_dry_run_makes_no_changes() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("dryrun_fix.txt");
@@ -989,7 +955,7 @@ fn doctor_fix_dry_run_makes_no_changes() {
 
 #[test]
 fn doctor_fix_rebuilds_manifest_when_missing() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Add two files so the store has content.
@@ -1048,7 +1014,7 @@ fn doctor_fix_rebuilds_manifest_when_missing() {
 
 #[test]
 fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("status_after_rebuild.txt");
@@ -1087,7 +1053,7 @@ fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
 
 #[test]
 fn doctor_fix_rebuilds_only_missing_items_when_partial() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Add two files normally.
@@ -1139,7 +1105,7 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
     // another has no symlink (true orphan).  Without --yes, doctor --fix must
     // report NeedsConfirmation for both and not modify the manifest or delete
     // any store item.
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Shelve a file normally (creates symlink + manifest + exclude).
@@ -1196,7 +1162,7 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
 
 #[test]
 fn doctor_fix_rebuild_dry_run_does_not_persist() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("rebuild_dry.txt");
@@ -1251,7 +1217,7 @@ fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
     // A symlink at the expected repo-relative path that points to the WRONG
     // store location must NOT be absorbed as a rebuild candidate.  Only a
     // symlink whose target matches `<repo_store>/items/<path>` is valid.
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
     let other_dir = TempDir::new().unwrap();
 
@@ -1298,7 +1264,7 @@ fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
 
 #[test]
 fn move_item_renames_store_and_updates_symlink() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let old_path = repo_dir.path().join("old.txt");
@@ -1368,7 +1334,7 @@ fn move_item_renames_store_and_updates_symlink() {
 
 #[test]
 fn move_item_rejects_directory_kind() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     // Create a directory with content and shelve it.
@@ -1400,7 +1366,7 @@ fn move_item_rejects_directory_kind() {
 
 #[test]
 fn move_item_rejects_when_destination_exists() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let old_path = repo_dir.path().join("source.txt");
@@ -1433,7 +1399,7 @@ fn move_item_rejects_when_destination_exists() {
 
 #[test]
 fn move_item_rejects_when_new_path_already_managed() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_a = repo_dir.path().join("a.txt");
@@ -1463,7 +1429,7 @@ fn move_item_rejects_when_new_path_already_managed() {
 
 #[test]
 fn move_item_rejects_when_symlink_mismatch() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let file_path = repo_dir.path().join("secret.txt");
@@ -1496,7 +1462,7 @@ fn move_item_rejects_when_symlink_mismatch() {
 
 #[test]
 fn move_item_dry_run_makes_no_changes() {
-    let repo_dir = init_git_repo();
+    let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
     let old_path = repo_dir.path().join("original.txt");

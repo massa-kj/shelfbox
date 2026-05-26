@@ -1,0 +1,192 @@
+/// End-to-end scenario tests covering realistic user workflows.
+///
+/// These tests exercise multi-step operations that span context lifecycle,
+/// file system changes, and concurrency, verifying that shelfbox behaves
+/// correctly across common real-world sequences.
+///
+/// See `docs/failure-matrix.md` for the failure modes each scenario targets.
+use std::collections::HashSet;
+
+use tempfile::TempDir;
+
+use shelfbox_core::{context, ignore::GitInfoExclude, link::SymlinkStrategy, ops};
+
+mod common;
+
+// ── Scenario 1: re-clone ──────────────────────────────────────────────────────
+
+/// Deleting and re-cloning a repository must assign a *new* ULID while leaving
+/// the original store directory untouched.
+///
+/// Failure matrix: #4 (repo moved / re-cloned).
+#[test]
+fn reclone_starts_fresh_while_preserving_old_store() {
+    let original_repo = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Shelve a file in the original clone.
+    let secret = original_repo.path().join("secret.txt");
+    std::fs::write(&secret, "sensitive data").unwrap();
+
+    let mut ctx = context::build(original_repo.path(), Some(store_dir.path()), true).unwrap();
+    let original_id = ctx.repo_id.clone();
+    let original_store = ctx.repo_store.clone();
+    ops::add::add(&mut ctx, &secret, false, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    drop(ctx);
+
+    // Verify the store item exists on disk.
+    assert!(
+        original_store.join("items").join("secret.txt").exists(),
+        "shelved file must be in store"
+    );
+
+    // Simulate a re-clone by creating a brand-new repository (new git_common_dir).
+    let recloned_repo = common::init_git_repo();
+    let ctx_reclone = context::build(recloned_repo.path(), Some(store_dir.path()), false).unwrap();
+
+    assert_ne!(
+        ctx_reclone.repo_id, original_id,
+        "re-cloned repo must receive a new ULID"
+    );
+
+    // The manifest for the new clone must be empty.
+    let manifest = ops::status::status(&ctx_reclone, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    assert!(
+        manifest.is_empty(),
+        "re-cloned repo must start with empty manifest"
+    );
+
+    // The original store directory must still exist.
+    assert!(
+        original_store.join("items").join("secret.txt").exists(),
+        "original store must be preserved after re-clone"
+    );
+}
+
+// ── Scenario 2: repo rename ───────────────────────────────────────────────────
+
+/// Renaming a repository directory on disk must be detected as a new
+/// repository (both `root` and `git_common_dir` change), leaving the original
+/// store intact.
+///
+/// Failure matrix: #4 (repo moved — full rename, not just root update).
+#[test]
+fn repo_rename_creates_new_index_entry_and_preserves_store() {
+    // Use a base TempDir and manage subdirectories manually so we can rename.
+    let base_dir = TempDir::new().unwrap();
+    let api_path = base_dir.path().join("api");
+    std::fs::create_dir(&api_path).unwrap();
+    common::init_git_repo_at(&api_path);
+
+    let store_dir = TempDir::new().unwrap();
+
+    // Shelve a file in the original directory.
+    let secret = api_path.join("secret.txt");
+    std::fs::write(&secret, "api secret").unwrap();
+
+    let mut ctx = context::build(&api_path, Some(store_dir.path()), true).unwrap();
+    let original_id = ctx.repo_id.clone();
+    let original_store = ctx.repo_store.clone();
+    ops::add::add(&mut ctx, &secret, false, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    drop(ctx);
+
+    // Rename the repository directory.
+    let renamed_path = base_dir.path().join("api-renamed");
+    std::fs::rename(&api_path, &renamed_path).unwrap();
+
+    // Building a context from the renamed path yields a new ULID because both
+    // `root` and `git_common_dir` changed.
+    let ctx_renamed = context::build(&renamed_path, Some(store_dir.path()), false).unwrap();
+
+    assert_ne!(
+        ctx_renamed.repo_id, original_id,
+        "renamed repo must receive a new ULID"
+    );
+
+    // The renamed repo has an empty manifest.
+    let manifest = ops::status::status(&ctx_renamed, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    assert!(
+        manifest.is_empty(),
+        "renamed repo must start with empty manifest"
+    );
+
+    // The original store items must still exist.
+    assert!(
+        original_store.join("items").join("secret.txt").exists(),
+        "original store must be preserved after rename"
+    );
+}
+
+// ── Scenario 3: concurrent adds ───────────────────────────────────────────────
+
+/// Two threads each shelve one file into the same repository concurrently.
+/// The advisory write lock ensures the operations are serialised and both
+/// items appear in the final manifest.
+///
+/// Failure matrix: #8 (concurrent access).
+#[test]
+fn concurrent_adds_serialize_via_lock() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    // Prepare two files before acquiring any context.
+    let file1 = repo_dir.path().join("secret1.txt");
+    let file2 = repo_dir.path().join("secret2.txt");
+    std::fs::write(&file1, "data 1").unwrap();
+    std::fs::write(&file2, "data 2").unwrap();
+
+    // Initialize the store once (creates meta.json and index.json) so that
+    // concurrent builds below do not race on first-time store creation.
+    {
+        let _ctx = context::build(repo_dir.path(), Some(store_dir.path()), false).unwrap();
+    }
+
+    // Clone paths for the background thread.
+    let repo_path = repo_dir.path().to_path_buf();
+    let store_path = store_dir.path().to_path_buf();
+    let file2_path = file2.clone();
+
+    let handle = std::thread::spawn(move || {
+        let mut ctx = context::build(&repo_path, Some(&store_path), true).unwrap();
+        ops::add::add(
+            &mut ctx,
+            &file2_path,
+            false,
+            &SymlinkStrategy,
+            &GitInfoExclude,
+        )
+        .unwrap();
+    });
+
+    // Main thread shelves the first file (may block briefly while the other
+    // thread holds the exclusive lock).
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    ops::add::add(&mut ctx, &file1, false, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    drop(ctx);
+
+    handle.join().expect("background thread must not panic");
+
+    // Both files must appear in the final manifest.
+    let ctx_read = context::build(repo_dir.path(), Some(store_dir.path()), false).unwrap();
+    let manifest = ops::status::status(&ctx_read, &SymlinkStrategy, &GitInfoExclude).unwrap();
+
+    let names: HashSet<String> = manifest
+        .iter()
+        .map(|e| {
+            std::path::Path::new(&e.path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+
+    assert!(
+        names.contains("secret1.txt"),
+        "secret1.txt must be in manifest"
+    );
+    assert!(
+        names.contains("secret2.txt"),
+        "secret2.txt must be in manifest"
+    );
+}
