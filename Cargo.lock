@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "shelfbox"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "shelfbox-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dirs",
  "fd-lock",
