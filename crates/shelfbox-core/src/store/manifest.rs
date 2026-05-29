@@ -37,6 +37,27 @@ pub struct GitInfo {
     pub was_tracked: bool,
 }
 
+/// Ownership state of a shelved item.
+///
+/// Transitions are governed by the rules in `docs/ownership-model.md`.
+/// Only `repo adopt` may transfer ownership; `repair` must never mutate state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnershipState {
+    /// Active owner; symlink valid (or repairable).  Default on creation.
+    Attached,
+    /// Intentionally unlinked via `restore --keep-store`; store item retained.
+    Detached,
+    /// Owner repository can no longer be resolved (deleted, path gone).
+    Unreachable,
+    /// Ownership superseded by a newer repository identity (reclone, move).
+    Stale,
+    /// Ownership transferred to a new repository identity via `repo adopt`.
+    Adopted,
+    /// No deterministic claimant; eligible for GC after confirmation.
+    Orphaned,
+}
+
 /// A single shelved item recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
@@ -66,6 +87,11 @@ pub struct Item {
 
     /// Git metadata at the time of shelving.
     pub git: GitInfo,
+
+    /// Current ownership state.  Set to [`OwnershipState::Attached`] on creation.
+    /// Must only be mutated through the transitions defined in
+    /// `docs/ownership-model.md`.
+    pub ownership_state: OwnershipState,
 
     /// ISO-8601 creation timestamp.
     pub created_at: String,
@@ -139,6 +165,26 @@ impl Manifest {
         let before = self.items.len();
         self.items.retain(|i| i.path != path);
         self.items.len() < before
+    }
+
+    /// Sets the ownership state of the item at `path`, updating `updated_at`.
+    /// Returns `true` if the item was found.
+    ///
+    /// Only allowed transitions are defined in `docs/ownership-model.md`;
+    /// callers are responsible for enforcing the correct transition.
+    pub fn set_ownership_state(
+        &mut self,
+        path: &str,
+        state: OwnershipState,
+        updated_at: &str,
+    ) -> bool {
+        if let Some(item) = self.items.iter_mut().find(|i| i.path == path) {
+            item.ownership_state = state;
+            item.updated_at = updated_at.to_string();
+            true
+        } else {
+            false
+        }
     }
 
     /// Renames a manifest item in-place.
@@ -254,6 +300,7 @@ mod tests {
                 link_type: LinkType::Symlink,
             },
             git: GitInfo { was_tracked: false },
+            ownership_state: OwnershipState::Attached,
             created_at: "2026-04-29T00:00:00Z".into(),
             updated_at: "2026-04-29T00:00:00Z".into(),
         }

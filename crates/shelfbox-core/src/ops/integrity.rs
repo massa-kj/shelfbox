@@ -287,6 +287,7 @@ fn rebuild_manifest_from_store(
                 link_type: manifest::LinkType::Symlink,
             },
             git: manifest::GitInfo { was_tracked: false },
+            ownership_state: manifest::OwnershipState::Attached,
             created_at: now.clone(),
             updated_at: now.clone(),
         });

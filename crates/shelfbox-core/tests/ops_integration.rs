@@ -12,6 +12,7 @@ use shelfbox_core::{
     link::{LinkStrategy, SymlinkStrategy},
     ops,
     ops::integrity::FixResult,
+    store,
 };
 
 mod common;
@@ -297,16 +298,23 @@ fn restore_keep_store_leaves_symlink_and_store_item() {
     let store_path = ctx.repo_store.join("items/keep.txt");
     assert!(store_path.exists(), "store item must exist after add");
 
-    // Restore with keep_store=true: manifest entry removed, but symlink and
-    // store item must remain intact.
+    // Restore with keep_store=true: item transitions to Detached state.
+    // The manifest entry is retained for ownership tracking; symlink and
+    // store item remain intact.
     ops::restore::restore(&mut ctx, &file_path, false, false, true, &link, &ignore).unwrap();
 
-    // Manifest must be empty.
-    assert!(
-        ctx.manifest.items.is_empty(),
-        "manifest must be empty after keep_store restore"
+    // Item must still be in the manifest, but in Detached state.
+    assert_eq!(
+        ctx.manifest.items.len(),
+        1,
+        "manifest must retain the detached item"
     );
-    // Store item must still exist (it is now an orphan).
+    assert_eq!(
+        ctx.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Detached,
+        "item must be in Detached state after keep_store restore"
+    );
+    // Store item must still exist.
     assert!(
         store_path.exists(),
         "store item must still exist after keep_store restore"

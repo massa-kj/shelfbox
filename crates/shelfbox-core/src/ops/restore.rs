@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use crate::{
-    context::RepoContext,
+    context::{self, RepoContext},
     error::{AppError, Result},
     ignore::IgnoreBackend,
     link::LinkStrategy,
-    store::manifest,
+    store::manifest::{self, OwnershipState},
 };
 
 /// Restores `abs_path` from the store: removes the symlink and moves the item
@@ -47,7 +47,10 @@ pub fn restore(
     let rel_str = rel_path.to_string_lossy().into_owned();
 
     // ── keep_store fast path ─────────────────────────────────────────────────
-    // Only remove the manifest entry; leave the symlink and store item intact.
+    // Transition the item to Detached: preserve the manifest entry for
+    // ownership tracking while leaving the symlink and store item intact.
+    // The item will NOT be auto-collected by `repo gc`; the user must
+    // explicitly confirm GC for detached items.
     if keep_store {
         if !ctx.manifest.contains(&rel_str) {
             return Err(AppError::NotManagedLink {
@@ -57,15 +60,17 @@ pub fn restore(
 
         if dry_run {
             println!("[dry-run] restore --keep-store '{rel_str}'");
-            println!("  remove from manifest: {rel_str}");
-            println!("  (symlink and store item left in place — orphan for `repo gc`)");
+            println!("  ownership_state: attached -> detached");
+            println!("  (symlink and store item left in place)");
             if !keep_ignore {
                 println!("  remove from exclude: {rel_str}");
             }
             return Ok(());
         }
 
-        ctx.manifest.remove(&rel_str);
+        let now = context::now_iso8601();
+        ctx.manifest
+            .set_ownership_state(&rel_str, OwnershipState::Detached, &now);
         manifest::save(&ctx.repo_store, &ctx.manifest)?;
 
         if !keep_ignore {

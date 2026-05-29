@@ -8,7 +8,7 @@ use crate::{
     git,
     ignore::IgnoreBackend,
     link::LinkStrategy,
-    store::manifest::{self, GitInfo, Item, ItemKind, LinkInfo, LinkType},
+    store::manifest::{self, GitInfo, Item, ItemKind, LinkInfo, LinkType, OwnershipState},
 };
 
 /// Shelves `abs_path` into the store, leaving a symlink in its place.
@@ -137,6 +137,7 @@ pub fn add(
             link_type: LinkType::Symlink,
         },
         git: GitInfo { was_tracked: false },
+        ownership_state: OwnershipState::Attached,
         created_at: now.clone(),
         updated_at: now,
     };
