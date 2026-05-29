@@ -158,3 +158,100 @@ pub fn restore(
 
     Ok(())
 }
+
+// ── Directory namespace restore ───────────────────────────────────────────────
+
+/// Outcome for a single item during [`restore_namespace`].
+#[derive(Debug)]
+pub enum NsRestoreItemOutcome {
+    /// Item was successfully restored.
+    Restored,
+    /// Item would be restored (dry-run mode).
+    WouldRestore,
+    /// Restore failed.
+    Failed(String),
+}
+
+/// Summary of a [`restore_namespace`] operation.
+#[derive(Debug)]
+pub struct NamespaceRestoreResult {
+    /// The namespace path that was operated on.
+    pub ns_path: String,
+    /// Per-item outcomes.
+    pub results: Vec<(String, NsRestoreItemOutcome)>,
+    /// Whether the namespace entry was removed from the manifest after restoring.
+    pub namespace_removed: bool,
+}
+
+/// Restores all items that belong to the directory namespace at `ns_path`.
+///
+/// `ns_path` must be a repo-relative directory path ending with `/`, matching
+/// the form used when the namespace was registered (e.g. `"secrets/"`).
+///
+/// After all members are successfully restored the namespace entry is removed
+/// from the manifest automatically.
+///
+/// # Dry-run
+/// When `dry_run` is `true`, prints what would happen without making changes.
+pub fn restore_namespace(
+    ctx: &mut RepoContext,
+    ns_path: &str,
+    dry_run: bool,
+    keep_ignore: bool,
+    keep_store: bool,
+    link: &dyn LinkStrategy,
+    ignore: &dyn IgnoreBackend,
+) -> Result<NamespaceRestoreResult> {
+    // Verify the namespace is registered.
+    if !ctx.manifest.namespaces.iter().any(|n| n.path == ns_path) {
+        return Err(AppError::NamespaceNotFound {
+            path: ns_path.to_owned(),
+        });
+    }
+
+    // Collect member paths (clone to release the borrow on ctx.manifest).
+    let member_paths: Vec<String> = ctx
+        .manifest
+        .namespace_members(ns_path)
+        .map(|i| i.path.clone())
+        .collect();
+
+    let mut results: Vec<(String, NsRestoreItemOutcome)> = Vec::new();
+
+    if dry_run {
+        for member_path in &member_paths {
+            results.push((member_path.clone(), NsRestoreItemOutcome::WouldRestore));
+        }
+        return Ok(NamespaceRestoreResult {
+            ns_path: ns_path.to_owned(),
+            results,
+            namespace_removed: false,
+        });
+    }
+
+    // Restore each member individually.
+    for member_path in &member_paths {
+        let abs_path = ctx.repo_root.join(member_path);
+        match restore(ctx, &abs_path, false, keep_ignore, keep_store, link, ignore) {
+            Ok(()) => results.push((member_path.clone(), NsRestoreItemOutcome::Restored)),
+            Err(e) => results.push((
+                member_path.clone(),
+                NsRestoreItemOutcome::Failed(e.to_string()),
+            )),
+        }
+    }
+
+    // Remove namespace entry if no members remain.
+    let namespace_removed = if ctx.manifest.remove_namespace_if_empty(ns_path) {
+        manifest::save(&ctx.repo_store, &ctx.manifest)?;
+        true
+    } else {
+        false
+    };
+
+    Ok(NamespaceRestoreResult {
+        ns_path: ns_path.to_owned(),
+        results,
+        namespace_removed,
+    })
+}

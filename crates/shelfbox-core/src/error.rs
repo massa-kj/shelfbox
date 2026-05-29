@@ -94,6 +94,22 @@ pub enum AppError {
     #[error("store item not found for '{path}': expected at '{store_path}'")]
     StoreMissing { path: PathBuf, store_path: PathBuf },
 
+    // ── directory namespaces ──────────────────────────────────────────────────
+    /// A nested Git repository was detected inside the directory being shelved.
+    /// Directory shelving does not cross git repository boundaries.
+    #[error(
+        "nested git repository found at '{path}'\n\
+         hint: shelve individual files instead, or remove the nested repository first"
+    )]
+    NestedGitRepo { path: PathBuf },
+
+    /// The specified directory namespace is not registered in the manifest.
+    #[error(
+        "no namespace registered for '{path}'\n\
+         hint: run 'shelfbox item add {path}' to shelve the directory first"
+    )]
+    NamespaceNotFound { path: String },
+
     // ── repo adopt ────────────────────────────────────────────────────────────
     /// Cannot adopt items from the current repository.
     #[error("cannot adopt from self (repo id: '{repo_id}')")]

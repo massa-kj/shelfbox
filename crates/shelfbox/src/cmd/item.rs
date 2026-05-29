@@ -9,7 +9,12 @@ use shelfbox_core::{
     ignore::GitInfoExclude,
     link::SymlinkStrategy,
     ops,
-    ops::{info::ItemInfo, status::ItemStatus},
+    ops::{
+        add::{DirItemOutcome, SkipReason},
+        info::ItemInfo,
+        restore::NsRestoreItemOutcome,
+        status::ItemStatus,
+    },
     store::manifest::{Item, ItemKind},
 };
 
@@ -184,30 +189,107 @@ fn cmd_add(
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        match ops::add::add(&mut ctx, &abs, dry_run, &link, &ignore) {
-            Ok(()) => {}
-            // Special-case: give the user an actionable hint for tracked files.
-            Err(AppError::PathIsTracked { path: ref p }) => {
-                let rel = p
-                    .strip_prefix(cwd)
-                    .unwrap_or(p.as_path())
-                    .display()
-                    .to_string();
-                eprintln!("error: '{rel}' is tracked by git");
-                eprintln!("hint: remove it from the index first:");
-                eprintln!("  git rm --cached {rel}");
-                eprintln!("then re-run: shelfbox add {rel}");
-                return Err(anyhow::anyhow!("add '{rel}' failed"));
+
+        if abs.is_dir() {
+            // Directory namespace add: shelve all eligible files inside.
+            let result = ops::add::add_directory(&mut ctx, &abs, dry_run, &link, &ignore)
+                .with_context(|| format!("add '{}' failed", path.display()))?;
+            print_dir_add_result(&result);
+        } else {
+            // Single-file add.
+            match ops::add::add(&mut ctx, &abs, dry_run, &link, &ignore) {
+                Ok(()) => {}
+                // Special-case: give the user an actionable hint for tracked files.
+                Err(AppError::PathIsTracked { path: ref p }) => {
+                    let rel = p
+                        .strip_prefix(cwd)
+                        .unwrap_or(p.as_path())
+                        .display()
+                        .to_string();
+                    eprintln!("error: '{rel}' is tracked by git");
+                    eprintln!("hint: remove it from the index first:");
+                    eprintln!("  git rm --cached {rel}");
+                    eprintln!("then re-run: shelfbox add {rel}");
+                    return Err(anyhow::anyhow!("add '{rel}' failed"));
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| format!("add '{}' failed", path.display()));
+                }
             }
-            Err(e) => {
-                return Err(e).with_context(|| format!("add '{}' failed", path.display()));
+            if !dry_run {
+                println!("shelved: {}", path.display());
             }
-        }
-        if !dry_run {
-            println!("shelved: {}", path.display());
         }
     }
     Ok(())
+}
+
+/// Prints a human-readable summary of a directory add operation.
+fn print_dir_add_result(result: &ops::add::DirectoryAddResult) {
+    let added: Vec<&str> = result
+        .results
+        .iter()
+        .filter(|(_, o)| matches!(o, DirItemOutcome::Added | DirItemOutcome::WouldAdd))
+        .map(|(p, _)| p.as_str())
+        .collect();
+    let skipped: Vec<(&str, &SkipReason)> = result
+        .results
+        .iter()
+        .filter_map(|(p, o)| {
+            if let DirItemOutcome::Skipped(reason) = o {
+                Some((p.as_str(), reason))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let nested: Vec<&str> = result
+        .results
+        .iter()
+        .filter(|(_, o)| matches!(o, DirItemOutcome::NestedGitRepo))
+        .map(|(p, _)| p.as_str())
+        .collect();
+    let failed: Vec<(&str, &str)> = result
+        .results
+        .iter()
+        .filter_map(|(p, o)| {
+            if let DirItemOutcome::Failed(msg) = o {
+                Some((p.as_str(), msg.as_str()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let is_dry_run = result
+        .results
+        .iter()
+        .any(|(_, o)| matches!(o, DirItemOutcome::WouldAdd));
+    let prefix = if is_dry_run { "[dry-run] " } else { "" };
+
+    println!(
+        "{}namespace '{}': {} added, {} skipped, {} failed",
+        prefix,
+        result.ns_path,
+        added.len(),
+        skipped.len(),
+        failed.len() + nested.len()
+    );
+    for path in &added {
+        println!("  {}shelved: {path}", prefix);
+    }
+    for (path, reason) in &skipped {
+        println!("  skip: {path} ({reason})");
+    }
+    for path in &nested {
+        eprintln!("  skip: {path} (nested git repository — not crossed)");
+    }
+    for (path, msg) in &failed {
+        eprintln!("  fail: {path}: {msg}");
+    }
+    if result.namespace_created {
+        println!("namespace registered: {}", result.ns_path);
+    }
 }
 
 fn cmd_restore(
@@ -225,21 +307,90 @@ fn cmd_restore(
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        ops::restore::restore(
-            &mut ctx,
-            &abs,
-            dry_run,
-            keep_ignore,
-            keep_store,
-            &link,
-            &ignore,
-        )
-        .with_context(|| format!("restore '{}' failed", path.display()))?;
-        if !dry_run {
-            println!("restored: {}", path.display());
+
+        // Detect namespace restore: path ends with "/" or abs path is a directory.
+        let path_str = path.to_string_lossy();
+        let is_namespace = path_str.ends_with('/') || abs.is_dir();
+
+        if is_namespace {
+            let rel = abs
+                .strip_prefix(&ctx.repo_root)
+                .map(|r| r.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path_str.trim_end_matches('/').to_owned());
+            let ns_path = if rel.ends_with('/') {
+                rel
+            } else {
+                format!("{rel}/")
+            };
+
+            let result = ops::restore::restore_namespace(
+                &mut ctx,
+                &ns_path,
+                dry_run,
+                keep_ignore,
+                keep_store,
+                &link,
+                &ignore,
+            )
+            .with_context(|| format!("restore namespace '{}' failed", ns_path))?;
+            print_ns_restore_result(&result);
+        } else {
+            ops::restore::restore(
+                &mut ctx,
+                &abs,
+                dry_run,
+                keep_ignore,
+                keep_store,
+                &link,
+                &ignore,
+            )
+            .with_context(|| format!("restore '{}' failed", path.display()))?;
+            if !dry_run {
+                println!("restored: {}", path.display());
+            }
         }
     }
     Ok(())
+}
+
+/// Prints a human-readable summary of a namespace restore operation.
+fn print_ns_restore_result(result: &ops::restore::NamespaceRestoreResult) {
+    let is_dry_run = result
+        .results
+        .iter()
+        .any(|(_, o)| matches!(o, NsRestoreItemOutcome::WouldRestore));
+    let prefix = if is_dry_run { "[dry-run] " } else { "" };
+
+    let restored = result
+        .results
+        .iter()
+        .filter(|(_, o)| {
+            matches!(
+                o,
+                NsRestoreItemOutcome::Restored | NsRestoreItemOutcome::WouldRestore
+            )
+        })
+        .count();
+    let failed = result
+        .results
+        .iter()
+        .filter(|(_, o)| matches!(o, NsRestoreItemOutcome::Failed(_)))
+        .count();
+
+    println!(
+        "{}namespace '{}': {} restored, {} failed",
+        prefix, result.ns_path, restored, failed
+    );
+    for (path, outcome) in &result.results {
+        match outcome {
+            NsRestoreItemOutcome::Restored => println!("  {}restored: {path}", prefix),
+            NsRestoreItemOutcome::WouldRestore => println!("  {}restore: {path}", prefix),
+            NsRestoreItemOutcome::Failed(msg) => eprintln!("  fail: {path}: {msg}"),
+        }
+    }
+    if result.namespace_removed {
+        println!("namespace removed: {}", result.ns_path);
+    }
 }
 
 fn cmd_list(

@@ -100,6 +100,27 @@ pub struct Item {
     pub updated_at: String,
 }
 
+/// A directory namespace registration grouping shelved items under a common path.
+///
+/// A namespace is a query filter only — it does not own items.  Membership is
+/// derived dynamically: an item belongs to a namespace if and only if
+/// `item.path.starts_with(&namespace.path)`.
+///
+/// # Path convention
+///
+/// `path` MUST always end with `/`.  The trailing slash acts as a
+/// path-component boundary: `"secrets/"` matches `"secrets/api_key"` but
+/// never `"secrets2/file"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamespaceEntry {
+    /// Repo-relative directory path.  Always ends with `/`.
+    pub path: String,
+    /// ISO-8601 creation timestamp.
+    pub created_at: String,
+    /// ISO-8601 last-updated timestamp.
+    pub updated_at: String,
+}
+
 /// Repo metadata embedded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoMeta {
@@ -124,6 +145,14 @@ pub struct Manifest {
 
     /// All currently shelved items.
     pub items: Vec<Item>,
+
+    /// Directory namespace registrations.
+    ///
+    /// Defaults to an empty vec for manifests created before namespace support
+    /// was added.  Namespace entries are NOT recovered during manifest rebuild;
+    /// users must re-declare them via `item add <dir>/`.
+    #[serde(default)]
+    pub namespaces: Vec<NamespaceEntry>,
 }
 
 impl Manifest {
@@ -135,6 +164,7 @@ impl Manifest {
             version: Self::CURRENT_VERSION,
             repo: meta,
             items: Vec::new(),
+            namespaces: Vec::new(),
         }
     }
 
@@ -185,6 +215,42 @@ impl Manifest {
         } else {
             false
         }
+    }
+
+    /// Returns an iterator over all items that belong to the namespace at
+    /// `ns_path`.
+    ///
+    /// Membership is determined by path-component prefix: an item belongs if
+    /// `item.path.starts_with(ns_path)`.  `ns_path` must end with `/`.
+    pub fn namespace_members<'a>(
+        &'a self,
+        ns_path: &'a str,
+    ) -> impl Iterator<Item = &'a Item> + 'a {
+        debug_assert!(ns_path.ends_with('/'), "ns_path must end with '/'");
+        self.items
+            .iter()
+            .filter(move |i| i.path.starts_with(ns_path))
+    }
+
+    /// Registers a new namespace entry.  Does nothing if a namespace with the
+    /// same path is already registered.
+    pub fn add_namespace(&mut self, entry: NamespaceEntry) {
+        if !self.namespaces.iter().any(|n| n.path == entry.path) {
+            self.namespaces.push(entry);
+        }
+    }
+
+    /// Removes the namespace entry for `ns_path` if no items remain under it.
+    ///
+    /// Returns `true` if the entry was removed.
+    pub fn remove_namespace_if_empty(&mut self, ns_path: &str) -> bool {
+        let has_members = self.items.iter().any(|i| i.path.starts_with(ns_path));
+        if !has_members {
+            let before = self.namespaces.len();
+            self.namespaces.retain(|n| n.path != ns_path);
+            return self.namespaces.len() < before;
+        }
+        false
     }
 
     /// Renames a manifest item in-place.
