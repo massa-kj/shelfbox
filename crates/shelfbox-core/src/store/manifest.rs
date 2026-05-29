@@ -40,6 +40,17 @@ pub struct GitInfo {
 /// A single shelved item recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
+    /// Immutable ULID assigned when this item is first shelved.
+    ///
+    /// This is ownership identity only — it does not encode content.
+    /// Must never be regenerated for an existing item.
+    pub item_id: String,
+
+    /// ULID of the repository that originally shelved this item
+    /// (`RepoMeta::id`).  Immutable.  Used by `repo adopt` and `repo gc`
+    /// to establish ownership lineage.
+    pub origin_repo_id: String,
+
     /// Path relative to the repository root (forward slashes, no leading `/`).
     pub path: String,
 
@@ -90,7 +101,7 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    const CURRENT_VERSION: u32 = 1;
+    const CURRENT_VERSION: u32 = 2;
 
     /// Creates a new, empty manifest for the given repository.
     pub fn new(meta: RepoMeta) -> Self {
@@ -163,10 +174,27 @@ pub fn manifest_path(repo_store: &Path) -> PathBuf {
 }
 
 /// Reads and parses the manifest from disk.
+///
+/// Returns [`AppError::ManifestVersionMismatch`] if the on-disk format version
+/// does not match [`Manifest::CURRENT_VERSION`].
 pub fn load(repo_store: &Path) -> Result<Manifest> {
     let path = manifest_path(repo_store);
     let s = std::fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
-    serde_json::from_str(&s).map_err(|e| AppError::json(path, e))
+
+    // Two-phase: extract version before full deserialization so we can
+    // emit a clear error instead of a confusing serde parse failure.
+    let raw: serde_json::Value =
+        serde_json::from_str(&s).map_err(|e| AppError::json(path.clone(), e))?;
+    let found_version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    if found_version != Manifest::CURRENT_VERSION {
+        return Err(AppError::ManifestVersionMismatch {
+            path,
+            found: found_version,
+            expected: Manifest::CURRENT_VERSION,
+        });
+    }
+
+    serde_json::from_value(raw).map_err(|e| AppError::json(path, e))
 }
 
 /// Serialises and atomically writes the manifest to disk.
@@ -205,6 +233,7 @@ pub fn save(repo_store: &Path, manifest: &Manifest) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use ulid::Ulid;
 
     fn sample_meta(id: &str) -> RepoMeta {
         RepoMeta {
@@ -216,6 +245,8 @@ mod tests {
 
     fn sample_item(path: &str) -> Item {
         Item {
+            item_id: Ulid::new().to_string(),
+            origin_repo_id: "01JWPQ3VKGE93V9BDHAENVXFA5".into(),
             path: path.to_string(),
             store_path: format!("items/{path}"),
             kind: ItemKind::File,

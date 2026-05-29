@@ -94,6 +94,19 @@ pub enum AppError {
     #[error("store item not found for '{path}': expected at '{store_path}'")]
     StoreMissing { path: PathBuf, store_path: PathBuf },
 
+    // ── Store format ─────────────────────────────────────────────────────────
+    /// The manifest file uses an incompatible format version and cannot be
+    /// loaded.  The store was written by a different version of shelfbox.
+    #[error(
+        "manifest at '{path}' has version {found}, expected {expected}\n\
+         hint: re-shelve your items to migrate to the new format"
+    )]
+    ManifestVersionMismatch {
+        path: PathBuf,
+        found: u32,
+        expected: u32,
+    },
+
     // ── I/O and data ──────────────────────────────────────────────────────
     /// A generic I/O error, annotated with the path that caused it.
     #[error("I/O error on '{path}': {source}")]
