@@ -4,6 +4,7 @@ use std::{
 };
 
 use serde::Serialize;
+use ulid::Ulid;
 
 use crate::{
     context::{self, RepoContext},
@@ -277,6 +278,8 @@ fn rebuild_manifest_from_store(
         };
 
         ctx.manifest.add(manifest::Item {
+            item_id: Ulid::new().to_string(),
+            origin_repo_id: ctx.repo_id.clone(),
             path: orphan.clone(),
             store_path: format!("items/{orphan}"),
             kind,

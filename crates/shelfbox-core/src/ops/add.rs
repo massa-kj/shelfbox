@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use ulid::Ulid;
+
 use crate::{
     context::{self, RepoContext},
     error::{AppError, Result},
@@ -126,6 +128,8 @@ pub fn add(
     // Record the item in the manifest.
     let now = context::now_iso8601();
     let item = Item {
+        item_id: Ulid::new().to_string(),
+        origin_repo_id: ctx.repo_id.clone(),
         path: rel_str.clone(),
         store_path: store_path_rel,
         kind,
