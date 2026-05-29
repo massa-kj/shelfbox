@@ -1,4 +1,5 @@
 pub mod add;
+pub mod adopt;
 pub mod info;
 pub mod integrity;
 pub mod list;

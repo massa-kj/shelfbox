@@ -10,7 +10,10 @@ use shelfbox_core::{
     ignore::GitInfoExclude,
     link::SymlinkStrategy,
     ops,
-    ops::integrity::{FixResult, IntegrityReport},
+    ops::{
+        adopt::AdoptOutcome,
+        integrity::{FixResult, IntegrityReport},
+    },
     store::{index, manifest},
 };
 
@@ -60,9 +63,20 @@ pub enum RepoCommand {
         yes: bool,
     },
 
-    /// Re-associate a repository after a reclone or path change (not yet implemented).
-    #[command(hide = true)]
-    Relink,
+    /// Adopt shelved items from another repository into the current one.
+    ///
+    /// Use this after a reclone or repository rename to reclaim shelved items
+    /// from the old identity.  Specify the source repository by its ID as
+    /// shown by `shelfbox repo list --verbose`.
+    Adopt {
+        /// Source repository ID to adopt items from.
+        #[arg(long)]
+        from: String,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// Migrate the manifest schema to the current version (not yet implemented).
     #[command(hide = true)]
@@ -92,7 +106,11 @@ pub fn run_repo(
             cmd_repo_gc(cwd, store_override, dry_run, yes)?;
             Ok(ExitCode::SUCCESS)
         }
-        RepoCommand::Relink | RepoCommand::Migrate => {
+        RepoCommand::Adopt { from, dry_run } => {
+            cmd_repo_adopt(cwd, store_override, &from, dry_run)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        RepoCommand::Migrate => {
             anyhow::bail!("not yet implemented")
         }
     }
@@ -293,6 +311,49 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
             Err(e) => eprintln!("error: failed to delete '{orphan}': {e}"),
         }
     }
+    Ok(())
+}
+
+fn cmd_repo_adopt(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    from_repo_id: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let mut ctx = context::build(cwd, store_override, !dry_run)
+        .context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+
+    let result = ops::adopt::adopt(&mut ctx, from_repo_id, dry_run, &link)?;
+
+    if result.items.is_empty() {
+        println!("no eligible items found in repository '{from_repo_id}'");
+        return Ok(());
+    }
+
+    for item in &result.items {
+        match item.outcome {
+            AdoptOutcome::Adopted => println!("adopted:         {}", item.path),
+            AdoptOutcome::AdoptedLinkFailed => {
+                println!("adopted (no link): {}", item.path);
+                eprintln!(
+                    "warning: symlink update failed for '{}'; run 'shelfbox item repair {}' to fix",
+                    item.path, item.path
+                );
+            }
+            AdoptOutcome::WouldAdopt => println!("would adopt:     {}", item.path),
+            AdoptOutcome::Conflict => println!("skipped (conflict):      {}", item.path),
+            AdoptOutcome::StoreMissing => println!("skipped (store missing): {}", item.path),
+        }
+    }
+
+    let count = result.adopted_count();
+    if dry_run {
+        println!("\n{count} item(s) would be adopted (dry run)");
+    } else {
+        println!("\n{count} item(s) adopted from '{from_repo_id}'");
+    }
+
     Ok(())
 }
 

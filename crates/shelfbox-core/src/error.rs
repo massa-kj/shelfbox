@@ -94,6 +94,18 @@ pub enum AppError {
     #[error("store item not found for '{path}': expected at '{store_path}'")]
     StoreMissing { path: PathBuf, store_path: PathBuf },
 
+    // ── repo adopt ────────────────────────────────────────────────────────────
+    /// Cannot adopt items from the current repository.
+    #[error("cannot adopt from self (repo id: '{repo_id}')")]
+    AdoptFromSelf { repo_id: String },
+
+    /// The specified source repository is not registered in the store index.
+    #[error(
+        "no store entry found for repo id '{repo_id}'\n\
+         hint: run 'shelfbox repo list' to see known repositories"
+    )]
+    AdoptSourceNotFound { repo_id: String },
+
     // ── Store format ─────────────────────────────────────────────────────────
     /// The manifest file uses an incompatible format version and cannot be
     /// loaded.  The store was written by a different version of shelfbox.
