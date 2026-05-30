@@ -1,11 +1,5 @@
 # Ownership State Machine Specification
 
-Status: Draft
-Target: `shelfbox-core` ownership semantics
-Last updated: 2026-05-28
-
----
-
 # 1. Purpose
 
 This document defines the formal ownership model for `shelfbox`.
@@ -24,8 +18,8 @@ This specification is the authoritative source for ownership semantics across:
 * `restore`
 * `repo repair`
 * `repo gc`
-* future `repo adopt`
-* future directory namespaces
+* `repo adopt`
+* directory namespace shelving
 * future provenance and snapshot systems
 
 ---

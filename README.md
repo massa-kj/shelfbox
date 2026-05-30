@@ -86,6 +86,13 @@ shelfbox item status
 shelfbox item restore ai-context.local.md
 ```
 
+## More features
+
+- **Directory namespace shelving** — shelve all files in a directory as a group and restore them together: [`item add <dir>/`](docs/user-guide.md#item-add-path)
+- **Ownership transfer after reclone** — reclaim shelved items from the old repository identity: [`repo adopt`](docs/user-guide.md#repo-adopt)
+
+See [docs/user-guide.md](docs/user-guide.md) for the full command reference.
+
 ## Configuration
 
 Optional config file at `$XDG_CONFIG_HOME/shelfbox/config.toml`

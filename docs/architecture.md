@@ -37,12 +37,14 @@ src/
     manifest.rs   # Manifest, Item, ItemKind, LinkInfo, GitInfo
   ops/
     mod.rs
-    add.rs        # add() — shelve a path
-    restore.rs    # restore() — unshelve a path
+    add.rs        # add() / add_directory() — shelve a file or directory namespace
+    restore.rs    # restore() / restore_namespace() — unshelve a file or namespace
+    adopt.rs      # adopt() — transfer items from another repo identity
     list.rs       # list() — read manifest items
     status.rs     # status() — per-item health check
     integrity.rs  # check() / fix() — integrity report and repair
     repair.rs     # repair() — single-file symlink repair
+    move_item.rs  # move_item() — rename a tracked path
     info.rs       # info() — single-item diagnostic metadata
 ```
 
@@ -54,8 +56,8 @@ src/
   cli.rs            # Cli struct, Command enum (5 groups + hidden Doctor alias), run() dispatcher
   cmd/
     mod.rs          # re-exports all cmd modules
-    item.rs         # item subcommand logic (add, restore, repair, list, status, info)
-    repo.rs         # repo subcommand logic (list, status, repair, gc)
+    item.rs         # item subcommand logic (add, restore, repair, list, status, move, info)
+    repo.rs         # repo subcommand logic (list, status, repair, gc, adopt)
     store.rs        # store subcommand logic (info, verify, gc)
     config.rs       # config subcommand logic (get, set, path)
     internal.rs     # internal subcommand logic (debug with path masking, completions)
@@ -102,7 +104,7 @@ Stored at `<store>/repos/<sanitized-name>-<ULID>/manifest.json`.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "repo": {
     "id": "01JTARXXXXXXXXXXXXXXXX",
     "name": "myapp",
@@ -110,13 +112,23 @@ Stored at `<store>/repos/<sanitized-name>-<ULID>/manifest.json`.
   },
   "items": [
     {
+      "item_id": "01JTBRXXXXXXXXXXXXXXXX",
+      "origin_repo_id": "01JTARXXXXXXXXXXXXXXXX",
       "path": ".env",
       "store_path": "items/.env",
-      "kind": "File",
-      "link": { "link_type": "Symlink" },
+      "kind": "file",
+      "link": { "type": "symlink" },
       "git": { "was_tracked": false },
+      "ownership_state": "attached",
       "created_at": "2026-04-29T12:00:00Z",
       "updated_at": "2026-04-29T12:00:00Z"
+    }
+  ],
+  "namespaces": [
+    {
+      "path": "secrets/",
+      "created_at": "2026-04-29T12:02:00Z",
+      "updated_at": "2026-04-29T12:02:00Z"
     }
   ]
 }
@@ -241,6 +253,13 @@ cmd::item::run_item()
 | **`doctor` as a hidden alias** | `shelfbox doctor` is registered as a hidden `Command::Doctor` variant that delegates to `run_repo(RepoCommand::Status { format })`. It is invisible in `--help` but fully functional, following the `brew doctor` / `flutter doctor` convention. |
 | **No multi-machine sync support** | shelfbox deliberately does not support synchronising the store across machines. Correct distributed sync requires conflict resolution, merge semantics, operation logs, and crash recovery — effectively a mini distributed database — which is out of scope. The store layout is instead designed to be **resilient to single-machine partial failures**: atomic writes prevent mid-write corruption, and `repo repair` can fully reconstruct the manifest from the deterministic `items/` layout. Users who place the store in a synced folder (e.g. Dropbox) are advised to do so on one machine at a time; `repo repair` is the recovery path if a sync collision occurs. |
 | **`repo repair` rebuild candidate requires exact symlink target** | A store item without a manifest entry is treated as a rebuild candidate only if the symlink at the expected repo-relative path points **exactly** to `<repo_store>/items/<path>`. A symlink with a different target (e.g. from a re-clone pointing to an old store, or an unrelated tool's symlink) is treated as an orphan and not absorbed. This guards against incorrect manifest reconstruction caused by stale or coincidental symlinks. |
+| **`item_id` is ownership identity, not content identity** | Each item receives a fresh ULID at shelve time. The same file shelved twice (after an intermediate restore) gets a different `item_id`. This keeps the identity stable across renames and repository moves (`origin_repo_id` is immutable), without requiring content hashing. |
+| **`origin_repo_id` is immutable** | It records the repo that first shelved the item and is never changed — not even by `repo adopt`. After adoption, the new manifest entry carries the original `origin_repo_id`, making item provenance always traceable. |
+| **Manifest version 2: ownership fields** | `item_id`, `origin_repo_id`, and `ownership_state` were added in version 2. Reading a v1 manifest is rejected at load time with `UnsupportedManifestVersion`. |
+| **`namespaces` uses `#[serde(default)]`** | The `namespaces` array was added in v2 with `#[serde(default)]`. Existing v2 manifests without the key deserialize to `namespaces: []` without error — no version bump was needed. |
+| **Namespace membership is derived, not stored** | A manifest item belongs to a namespace if `item.path.starts_with(&namespace.path)`. There is no stored member list. Membership queries are O(items × namespaces) but both are expected to be small. |
+| **Namespace entries are not recovered by `repo repair`** | `rebuild_manifest_from_store` reconstructs `items` from store files but sets `namespaces: []`. Users re-register namespaces by re-running `item add <dir>/` (the files are already managed; only the grouping entry is recreated). Storing membership would require a separate truth source to reconstruct, adding complexity for limited benefit. |
+| **`repo adopt` copies, does not move, store files** | Adoption copies the store file into the current repo's store directory and updates both manifests atomically. The source manifest marks the item `adopted`. The physical copy means the source item remains intact for auditability and in case of adoption rollback. |
 
 ## Repair policy
 

@@ -111,10 +111,44 @@ shelfbox item add secrets/notes/local.md
 **Rollback:** if symlink creation fails after the move, the file is moved back
 automatically.
 
-> **Caution: directory shelving**
-> `item add` accepts directories, but shelving a directory that contains
-> Git-tracked files or nested repositories is **not tested and not recommended**.
-> Stick to shelving individual files.
+**Directory shelving:**
+
+Pass a directory path to shelve all files inside it as a named **namespace**:
+
+```sh
+shelfbox item add secrets/
+```
+
+Each file under `secrets/` is shelved individually using the same rules as
+single-file add:
+
+- Git-tracked files, existing symlinks, and already-managed files are skipped
+  with a reason.
+- Nested git repositories are not entered — their contents are excluded and
+  reported as errors.
+- Partial success is allowed: if at least one file is shelved a namespace entry
+  is created.
+
+A summary is printed on completion:
+
+```
+namespace 'secrets/': 2 added, 0 skipped, 0 failed
+  shelved: secrets/api_key.txt
+  shelved: secrets/db_pass.txt
+namespace registered: secrets/
+```
+
+**Namespace rules:**
+
+- A namespace groups items in `item list` output but does not own them — each
+  file remains independently repairable.
+- Single-file `item add` for a file inside a namespace directory does **not**
+  create a new namespace entry.
+- After all files in a namespace are restored, the namespace entry is removed
+  automatically.
+- Namespace entries are not recovered by `repo repair`. Re-register by
+  re-running `item add <dir>/` (the files are still managed; only the grouping
+  entry is recreated).
 
 ---
 
@@ -151,6 +185,35 @@ shelfbox item restore secrets/ notes/local.md
 | `not a shelfbox managed symlink` | The path is not a symlink pointing into the shelfbox store. |
 | `restore destination already exists as a regular file or directory` | A non-symlink entry exists at the path. Move or rename it first. |
 | `store item not found` | The store-side copy is missing (dangling link). |
+
+**Namespace restore:**
+
+Pass a directory path (with or without a trailing `/`) to restore all files in a
+namespace at once:
+
+```sh
+shelfbox item restore secrets/
+```
+
+1. Finds all manifest items whose path starts with `secrets/`.
+2. Restores each one individually (same semantics as single-file restore).
+3. Removes the `secrets/` namespace entry automatically after the last member
+   is restored.
+
+A summary is printed on completion:
+
+```
+namespace 'secrets/': 2 restored, 0 failed
+  restored: secrets/api_key.txt
+  restored: secrets/db_pass.txt
+namespace removed: secrets/
+```
+
+**Additional error:**
+
+| Error | Meaning |
+|---|---|
+| `no namespace registered for 'secrets/'` | The path is not registered as a namespace. Run `item add secrets/` first. |
 
 ---
 
@@ -260,7 +323,12 @@ shelfbox item list --verbose
   PATH                                          KIND  CREATED
   .env                                          file  2026-04-29T12:00:00Z
   secrets/api_key.txt                           file  2026-04-29T12:01:00Z
+  secrets/db_pass.txt                           file  2026-04-29T12:01:00Z
 ```
+
+Items that belong to a namespace are listed at their normal path alongside
+non-namespace items.  Use `--format json` to see the raw `namespaces` array
+from the manifest.
 
 **Flags:**
 
@@ -347,6 +415,9 @@ symlink_ok  true
 tracked     true
 in_exclude  true
 ```
+
+Ownership metadata (`item_id`, `origin_repo_id`, `ownership_state`) is
+available via `item list --format json`.
 
 **Flags:**
 
@@ -462,6 +533,61 @@ shelfbox repo gc --yes
 |---|---|
 | `--dry-run` | Print what would be deleted without making any changes. |
 | `--yes` | Skip confirmation and perform deletions immediately. |
+
+---
+
+### `repo adopt`
+
+Transfers ownership of shelved items from a previous repository identity into
+the current one.
+
+Use this after a reclone, repository move, or path migration where the old
+store entry is no longer reachable under the new repository identity.
+
+```sh
+# Find the old repository ID
+shelfbox repo list --verbose
+
+# Transfer its items to the current repo
+shelfbox repo adopt --from 01JTARXXXXXXXXXXXXXXXX
+shelfbox repo adopt --from 01JTARXXXXXXXXXXXXXXXX --dry-run
+```
+
+**What happens:**
+
+1. Locates the source repository by its ID in the store index.
+2. For each eligible item in the source manifest:
+   - Copies the store file into the current repository's store directory.
+   - Creates a symlink at the repo-relative path.
+   - Records the item in the current manifest with `ownership_state: adopted`.
+3. Marks the transferred items in the source manifest with `ownership_state: adopted`.
+4. Saves both manifests atomically.
+
+Items that conflict with an existing path in the current manifest are skipped.
+Items whose store file is missing are also skipped.
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--from <REPO_ID>` | Source repository ID to adopt items from. Required. |
+| `--dry-run` | Print what would happen without making any changes. |
+
+**Outcomes per item:**
+
+| Outcome | Meaning |
+|---|---|
+| `adopted` | Item transferred and symlink created. |
+| `adopted (no link)` | Item transferred but symlink creation failed. Run `item repair` to fix. |
+| `skipped (conflict)` | Current manifest already contains an item at this path. |
+| `skipped (store missing)` | Source store file not found. |
+
+**Errors:**
+
+| Error | Meaning |
+|---|---|
+| `cannot adopt from self` | `--from` refers to the current repository. |
+| `no store entry found for repo id` | The ID is not in the store. Run `repo list --verbose` to see known IDs. |
 
 ---
 
