@@ -120,6 +120,11 @@ pub struct RepoContext {
     /// (`<config.store>/repos/<repo_id>/`).
     pub repo_store: PathBuf,
 
+    /// Absolute path to the git-common-dir (output of `git rev-parse
+    /// --git-common-dir`).  Stable across linked worktrees; used for
+    /// cross-manifest stale detection and reclaim heuristics.
+    pub git_common_dir: PathBuf,
+
     /// Parsed manifest for this repository.
     pub manifest: Manifest,
 
@@ -183,12 +188,13 @@ pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<R
     // Phase 3 will fill in git::find_repo_root(); we call it via crate::git.
     let repo_root = crate::git::find_repo_root(cwd)?;
 
-    let (repo_id, repo_store, manifest) = resolve_repo(&repo_root, &config, cwd)?;
+    let (repo_id, repo_store, git_common_dir, manifest) = resolve_repo(&repo_root, &config, cwd)?;
 
     Ok(RepoContext {
         repo_root,
         repo_id,
         repo_store,
+        git_common_dir,
         manifest,
         config,
         _store_lock: Some(store_lock),
@@ -199,12 +205,12 @@ pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<R
 
 /// Resolves (or creates) the repo ID and loads (or initialises) the manifest.
 ///
-/// Returns `(repo_id, repo_store, manifest)`.
+/// Returns `(repo_id, repo_store, git_common_dir, manifest)`.
 fn resolve_repo(
     repo_root: &Path,
     config: &Config,
     cwd: &Path,
-) -> Result<(String, PathBuf, Manifest)> {
+) -> Result<(String, PathBuf, PathBuf, Manifest)> {
     let store_root = &config.store;
     let mut index = index::load(store_root)?;
 
@@ -256,7 +262,7 @@ fn resolve_repo(
         let entry = RepoEntry {
             root: repo_root.to_path_buf(),
             git_dir,
-            git_common_dir: common_dir,
+            git_common_dir: common_dir.clone(),
             store_dir: dir.clone(),
             last_seen_at: now_iso8601(),
         };
@@ -273,7 +279,7 @@ fn resolve_repo(
 
     let manifest = load_or_init_manifest(&repo_store, &repo_id, &repo_name, cwd)?;
 
-    Ok((repo_id, repo_store, manifest))
+    Ok((repo_id, repo_store, common_dir, manifest))
 }
 
 fn update_last_seen(store_root: &Path, index: &mut Index, repo_id: &str) -> Result<()> {
@@ -396,6 +402,7 @@ mod tests {
             repo_root: PathBuf::from("/repo"),
             repo_id: "TESTID".into(),
             repo_store: repo_store.clone(),
+            git_common_dir: PathBuf::from("/repo/.git"),
             manifest: Manifest::new(RepoMeta {
                 id: "TESTID".into(),
                 name: "repo".into(),
