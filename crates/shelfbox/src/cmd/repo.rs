@@ -14,7 +14,7 @@ use shelfbox_core::{
         adopt::AdoptOutcome,
         integrity::{FixResult, IntegrityReport},
     },
-    store::{index, manifest},
+    store::{index, manifest, manifest::OwnershipState},
 };
 
 use crate::cmd::format::OutputFormat;
@@ -275,6 +275,43 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
 
     // Use check() to collect orphan store items.
     let report = ops::integrity::check(&ctx, &link, &ignore)?;
+
+    // Inform the user about items protected from GC by their ownership state.
+    // These are in the manifest and will never appear as FS orphans, but it is
+    // useful to surface them so the user knows what `gc` is not collecting.
+    let detached_count = ctx
+        .manifest
+        .items
+        .iter()
+        .filter(|i| i.ownership_state == OwnershipState::Detached)
+        .count();
+    let stale_count = ctx
+        .manifest
+        .items
+        .iter()
+        .filter(|i| i.ownership_state == OwnershipState::Stale)
+        .count();
+    let unreachable_count = ctx
+        .manifest
+        .items
+        .iter()
+        .filter(|i| i.ownership_state == OwnershipState::Unreachable)
+        .count();
+
+    if detached_count > 0 || stale_count > 0 || unreachable_count > 0 {
+        println!("ownership-protected items (not collected by gc):");
+        if detached_count > 0 {
+            println!(
+                "  {detached_count} detached — run 'shelfbox item relink <PATH>' to re-attach"
+            );
+        }
+        if stale_count > 0 {
+            println!("  {stale_count} stale    — run 'shelfbox repo adopt --from <OLD-REPO-ID>' to reclaim");
+        }
+        if unreachable_count > 0 {
+            println!("  {unreachable_count} unreachable — run 'shelfbox repo adopt --from <OLD-REPO-ID>' or 'shelfbox repo repair' to recover");
+        }
+    }
 
     if report.orphan_store_items.is_empty() {
         println!("no orphan store items found");

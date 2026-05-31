@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use shelfbox_core::{
     config::Config,
-    store::{index, manifest, meta},
+    store::{index, manifest, manifest::OwnershipState, meta},
 };
 
 // ── store subcommands ──────────────────────────────────────────────────────────────────────────
@@ -188,8 +188,19 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
     }
 
     println!("Stale entries ({}):", stale.len());
-    for (_, root, store_dir) in &stale {
-        println!("  {} ({})", root.display(), store_dir);
+    for (id, root, store_dir) in &stale {
+        let repo_store = cfg.store.join("repos").join(store_dir);
+        let reclaimable = count_reclaimable_items(&repo_store);
+        if reclaimable > 0 {
+            println!(
+                "  {} [{}] — {} reclaimable item(s), protected from GC",
+                root.display(),
+                id,
+                reclaimable
+            );
+        } else {
+            println!("  {} [{}]", root.display(), id);
+        }
     }
 
     if dry_run {
@@ -198,23 +209,68 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
     }
 
     if !yes {
-        println!("Run with --yes to remove these entries.");
+        println!("Run with --yes to remove eligible entries.");
+        println!("note: repos with reclaimable items are always skipped — run 'shelfbox repo adopt --from <ID>' first.");
         return Ok(());
     }
 
     // Remove store data and index entries.
+    // Repos with reclaimable items are skipped regardless of --yes (spec §7.5 / §9.2).
+    let mut removed = 0;
+    let mut skipped = 0;
     for (id, root, store_dir) in &stale {
         let repo_store = cfg.store.join("repos").join(store_dir);
+        let reclaimable = count_reclaimable_items(&repo_store);
+        if reclaimable > 0 {
+            eprintln!(
+                "warning: skipping '{}' [{}]: {} reclaimable item(s) \
+                 — run 'shelfbox repo adopt --from {}' to transfer them first",
+                root.display(),
+                id,
+                reclaimable,
+                id
+            );
+            skipped += 1;
+            continue;
+        }
         if repo_store.exists() {
             std::fs::remove_dir_all(&repo_store)
                 .map_err(|e| anyhow::anyhow!("failed to remove {}: {e}", repo_store.display()))?;
         }
         idx.remove(id);
         println!("Removed: {}", root.display());
+        removed += 1;
     }
 
-    index::save(&cfg.store, &idx)?;
-    println!("Done.");
+    if removed > 0 {
+        index::save(&cfg.store, &idx)?;
+    }
+
+    println!("Done. {removed} removed, {skipped} skipped (reclaimable).");
 
     Ok(())
+}
+
+/// Returns the number of items in `repo_store`'s manifest that are protected
+/// from GC — i.e., in a state other than `Orphaned` or `Adopted` (terminal).
+///
+/// `Attached`, `Detached`, `Stale`, and `Unreachable` items are reclaimable
+/// and must not be deleted by `store gc` (spec §7.5, §9.1, §9.2).
+fn count_reclaimable_items(repo_store: &std::path::Path) -> usize {
+    if !repo_store.exists() {
+        return 0;
+    }
+    manifest::load(repo_store)
+        .map(|mf| {
+            mf.items
+                .iter()
+                .filter(|i| {
+                    !matches!(
+                        i.ownership_state,
+                        OwnershipState::Orphaned | OwnershipState::Adopted
+                    )
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
