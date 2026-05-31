@@ -21,12 +21,37 @@ pub struct StoreMeta {
 
     /// ISO-8601 timestamp when this store was initialised.
     pub created_at: String,
+
+    /// Hostname of the machine that created this store.
+    ///
+    /// Recorded for provenance display only.  This field MUST NOT be used as
+    /// an identity source, index key, or in any ownership or lookup logic.
+    /// Hostnames are mutable (rename), ambiguous (container, WSL, CI, machine
+    /// copy), and unstable across environments.  An empty string means the
+    /// hostname could not be determined at creation time.
+    #[serde(default)]
+    pub hostname: String,
 }
 
 // ── Path helper ───────────────────────────────────────────────────────────────
 
 fn meta_path(store_root: &Path) -> PathBuf {
     store_root.join("meta.json")
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Returns the machine hostname for provenance recording only.
+///
+/// Falls back to an empty string on failure.  The return value MUST NOT be
+/// used as an identity source or lookup key — see `StoreMeta::hostname`.
+fn get_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default()
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -44,6 +69,7 @@ pub fn ensure_store_meta(store_root: &Path) -> Result<()> {
     let meta = StoreMeta {
         store_id: Ulid::new().to_string(),
         created_at: now_iso8601(),
+        hostname: get_hostname(),
     };
 
     let json = serde_json::to_string_pretty(&meta).map_err(|e| AppError::json(path.clone(), e))?;
@@ -73,6 +99,19 @@ pub fn ensure_store_meta(store_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Loads `<store>/meta.json`.
+///
+/// Returns `Ok(None)` if the file does not yet exist.
+pub fn load_store_meta(store_root: &Path) -> Result<Option<StoreMeta>> {
+    let path = meta_path(store_root);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+    let meta = serde_json::from_str(&contents).map_err(|e| AppError::json(path, e))?;
+    Ok(Some(meta))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +130,8 @@ mod tests {
         let meta: StoreMeta = serde_json::from_str(&contents).unwrap();
         assert!(!meta.store_id.is_empty());
         assert!(!meta.created_at.is_empty());
+        // hostname may be empty in sandboxed CI; just check the field is present
+        let _ = meta.hostname;
     }
 
     #[test]
@@ -113,5 +154,41 @@ mod tests {
         .store_id;
 
         assert_eq!(id_first, id_second, "store_id must not change on re-call");
+    }
+
+    #[test]
+    fn load_store_meta_returns_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_store_meta(dir.path()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_store_meta_roundtrips_after_ensure() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_root = dir.path();
+
+        ensure_store_meta(store_root).unwrap();
+        let meta = load_store_meta(store_root).unwrap().unwrap();
+
+        assert!(!meta.store_id.is_empty());
+        assert!(!meta.created_at.is_empty());
+    }
+
+    #[test]
+    fn deserialises_legacy_meta_without_hostname() {
+        // Old meta.json files (written before P6) have no hostname field.
+        // #[serde(default)] must produce an empty string, not an error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.json");
+        std::fs::write(
+            &path,
+            r#"{"store_id":"01JTARXXXXXXXXXXXXXXXX","created_at":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let meta = load_store_meta(dir.path()).unwrap().unwrap();
+        assert_eq!(meta.store_id, "01JTARXXXXXXXXXXXXXXXX");
+        assert_eq!(meta.hostname, "");
     }
 }

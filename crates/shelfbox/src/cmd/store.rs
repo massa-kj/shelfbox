@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use shelfbox_core::{
     config::Config,
-    store::{index, manifest},
+    store::{index, manifest, meta},
 };
 
 // ── store subcommands ──────────────────────────────────────────────────────────────────────────
@@ -97,6 +97,7 @@ fn human_bytes(bytes: u64) -> String {
 fn cmd_store_info(store_override: Option<&Path>) -> Result<()> {
     let cfg = Config::load(store_override)?;
     let idx = index::load(&cfg.store)?;
+    let store_meta = meta::load_store_meta(&cfg.store)?;
 
     let mut total_items: usize = 0;
     let mut repo_count: usize = 0;
@@ -111,6 +112,15 @@ fn cmd_store_info(store_override: Option<&Path>) -> Result<()> {
     let disk_bytes = dir_size(&cfg.store);
 
     println!("Store path  : {}", cfg.store.display());
+    if let Some(ref m) = store_meta {
+        println!("Store ID    : {}", m.store_id);
+        let host = if m.hostname.is_empty() {
+            "unknown"
+        } else {
+            &m.hostname
+        };
+        println!("Hostname    : {host}");
+    }
     println!("Repositories: {repo_count}");
     println!("Total items : {total_items}");
     println!("Disk usage  : {}", human_bytes(disk_bytes));

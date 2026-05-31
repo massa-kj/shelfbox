@@ -605,6 +605,8 @@ shelfbox store info
 
 ```
 Store path  : /home/user/.local/share/shelfbox
+Store ID    : 01JTARXXXXXXXXXXXXXXXX
+Hostname    : my-workstation
 Repositories: 3
 Total items : 7
 Disk usage  : 12.3 KiB
@@ -789,7 +791,7 @@ Priority (highest → lowest):
 
 ```
 ~/.local/share/shelfbox/
-  meta.json                         # store identity (store_id ULID, created_at)
+  meta.json                         # store identity (store_id ULID, created_at, hostname)
   index.json                        # maps ULID → repo metadata (root path, etc.)
   repos/
     api-server-01JTAR…/             # <sanitized-repo-name>-<ULID>
