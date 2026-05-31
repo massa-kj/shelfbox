@@ -73,6 +73,21 @@ pub enum ItemCommand {
         force: bool,
     },
 
+    /// Re-attach a detached item by recreating its symlink.
+    ///
+    /// A detached item is one whose ownership was intentionally unlinked via
+    /// `item restore --keep-store`.  `relink` transitions the item from
+    /// `detached` back to `attached` and recreates the symlink if needed.
+    Relink {
+        /// Files to relink (relative to repo root).
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+
+        /// Print what would happen without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// List all shelved files for the current repository.
     List {
         /// Output format.
@@ -152,6 +167,10 @@ pub fn run_item(
             force,
         } => {
             cmd_repair(cwd, store_override, &paths, dry_run, force)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ItemCommand::Relink { paths, dry_run } => {
+            cmd_relink(cwd, store_override, &paths, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::List { format, verbose } => {
@@ -467,6 +486,33 @@ fn cmd_repair(
             ops::repair::RepairOutcome::NotManaged => {
                 eprintln!("error: '{}' is not managed by shelfbox", path.display());
             }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_relink(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    paths: &[PathBuf],
+    dry_run: bool,
+) -> Result<()> {
+    let mut ctx =
+        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
+    let link = SymlinkStrategy;
+
+    for path in paths {
+        let abs = resolve_path(cwd, path);
+        match ops::relink::relink(&mut ctx, &abs, dry_run, &link)
+            .with_context(|| format!("relink '{}' failed", path.display()))?
+        {
+            ops::relink::RelinkOutcome::Relinked => {
+                println!("relinked: {}", path.display());
+            }
+            ops::relink::RelinkOutcome::StateUpdated => {
+                println!("relinked (symlink already correct): {}", path.display());
+            }
+            ops::relink::RelinkOutcome::WouldRelink => {}
         }
     }
     Ok(())

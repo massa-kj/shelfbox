@@ -15,11 +15,17 @@ use crate::{
 /// The outcome for a single item processed by [`adopt`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum AdoptOutcome {
-    /// Item adopted: store file copied and symlink updated.
+    /// Item adopted (transfer): store file copied and symlink updated.
+    /// Source item transitions to `Adopted`.
     Adopted,
-    /// Item adopted but the symlink could not be updated (non-fatal).
+    /// Item adopted (transfer) but the symlink could not be updated (non-fatal).
     AdoptedLinkFailed,
-    /// Dry-run: item would be adopted.
+    /// Item reclaimed (same logical repo): store file copied and symlink updated.
+    /// Source item transitions back to `Attached` (spec §6.1: `unreachable → attached`).
+    Reclaimed,
+    /// Item reclaimed but the symlink could not be updated (non-fatal).
+    ReclaimedLinkFailed,
+    /// Dry-run: item would be adopted or reclaimed.
     WouldAdopt,
     /// Item skipped: a matching path is already managed by the current repo.
     Conflict,
@@ -45,7 +51,7 @@ pub struct AdoptResult {
 }
 
 impl AdoptResult {
-    /// Number of items that were (or in dry-run, would be) adopted.
+    /// Number of items that were (or in dry-run, would be) adopted or reclaimed.
     pub fn adopted_count(&self) -> usize {
         self.items
             .iter()
@@ -54,6 +60,8 @@ impl AdoptResult {
                     i.outcome,
                     AdoptOutcome::Adopted
                         | AdoptOutcome::AdoptedLinkFailed
+                        | AdoptOutcome::Reclaimed
+                        | AdoptOutcome::ReclaimedLinkFailed
                         | AdoptOutcome::WouldAdopt
                 )
             })
@@ -102,6 +110,8 @@ pub fn adopt(
             repo_id: from_repo_id.to_owned(),
         })?;
     let src_store = ctx.config.store.join("repos").join(&src_entry.store_dir);
+    // Clone before `src_entry` borrow ends; needed for reclaim heuristic below.
+    let src_git_common_dir = src_entry.git_common_dir.clone();
 
     let mut src_manifest = manifest::load(&src_store)?;
 
@@ -177,15 +187,41 @@ pub fn adopt(
             updated_at: now.clone(),
         });
 
-        // Mark source item as Adopted.
-        src_manifest.set_ownership_state(&src_item.path, OwnershipState::Adopted, &now);
+        // Determine whether this is a reclaim (same logical repo) or a transfer.
+        //
+        // Current reclaim heuristic: same git_common_dir implies same logical repo.
+        // Future ownership metadata (e.g. stable item lineage) may replace this.
+        //
+        // Spec §6.1:
+        //   unreachable -> attached  (reclaim: same identity)
+        //   unreachable -> adopted   (transfer: different identity)
+        //   stale       -> adopted   (always transfer)
+        let is_reclaim = src_git_common_dir == ctx.git_common_dir
+            && src_item.ownership_state == OwnershipState::Unreachable;
+
+        let (src_new_state, outcome_ok, outcome_link_fail) = if is_reclaim {
+            (
+                OwnershipState::Attached,
+                AdoptOutcome::Reclaimed,
+                AdoptOutcome::ReclaimedLinkFailed,
+            )
+        } else {
+            (
+                OwnershipState::Adopted,
+                AdoptOutcome::Adopted,
+                AdoptOutcome::AdoptedLinkFailed,
+            )
+        };
+
+        // Mark source item with the appropriate post-adopt state.
+        src_manifest.set_ownership_state(&src_item.path, src_new_state, &now);
 
         // Recreate symlink at the repo path pointing to the new store location.
         let abs_link = ctx.repo_root.join(&src_item.path);
         let outcome = if update_symlink(&abs_link, &dst_file, link).is_ok() {
-            AdoptOutcome::Adopted
+            outcome_ok
         } else {
-            AdoptOutcome::AdoptedLinkFailed
+            outcome_link_fail
         };
 
         result.items.push(AdoptedItem {

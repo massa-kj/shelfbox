@@ -341,6 +341,14 @@ fn cmd_repo_adopt(
                     item.path, item.path
                 );
             }
+            AdoptOutcome::Reclaimed => println!("reclaimed:       {}", item.path),
+            AdoptOutcome::ReclaimedLinkFailed => {
+                println!("reclaimed (no link): {}", item.path);
+                eprintln!(
+                    "warning: symlink update failed for '{}'; run 'shelfbox item repair {}' to fix",
+                    item.path, item.path
+                );
+            }
             AdoptOutcome::WouldAdopt => println!("would adopt:     {}", item.path),
             AdoptOutcome::Conflict => println!("skipped (conflict):      {}", item.path),
             AdoptOutcome::StoreMissing => println!("skipped (store missing): {}", item.path),

@@ -115,6 +115,15 @@ pub enum AppError {
     #[error("cannot adopt from self (repo id: '{repo_id}')")]
     AdoptFromSelf { repo_id: String },
 
+    // ── item relink ───────────────────────────────────────────────────────────
+    /// The item exists in the manifest but is not in `Detached` state.
+    #[error(
+        "'{path}' is not detached (current state: {actual_state})\n\
+         hint: 'item relink' only applies to items in 'detached' state\n\
+         hint: use 'item repair' to fix symlinks for attached items"
+    )]
+    RelinkNotDetached { path: PathBuf, actual_state: String },
+
     /// The specified source repository is not registered in the store index.
     #[error(
         "no store entry found for repo id '{repo_id}'\n\
