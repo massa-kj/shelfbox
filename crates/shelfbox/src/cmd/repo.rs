@@ -241,6 +241,20 @@ fn cmd_repo_status(
     let ignore = GitInfoExclude;
     let report = ops::integrity::check(&ctx, &link, &ignore)?;
 
+    // Read-only scan: surface pending ownership transitions without writing.
+    // Actual transitions happen in `repo repair` to keep status side-effect-free.
+    let pending = ops::detect_transitions::scan(&ctx, &ctx.config.clone()).unwrap_or_default();
+    if !pending.is_empty() {
+        eprintln!(
+            "hint: {} item(s) in {} repo(s) may need ownership transition \
+             (stale: {}, unreachable: {}) — run 'shelfbox repo repair' to apply",
+            pending.stale + pending.unreachable,
+            pending.affected_repos.len(),
+            pending.stale,
+            pending.unreachable,
+        );
+    }
+
     match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
         OutputFormat::Plain => print_repo_status_plain(&report),
@@ -254,6 +268,21 @@ fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> 
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
+
+    // Detect and apply ownership state transitions across all other repos in
+    // the store (Attached -> Stale / Unreachable).  Runs before integrity fix
+    // so that status checks reflect up-to-date ownership information.
+    if !dry_run {
+        let tr = ops::detect_transitions::run(&ctx, &ctx.config.clone())?;
+        if !tr.is_empty() {
+            println!(
+                "ownership transitions applied: {} stale, {} unreachable (across {} repo(s))",
+                tr.stale,
+                tr.unreachable,
+                tr.affected_repos.len()
+            );
+        }
+    }
 
     // yes=false: safe fixes only; orphan deletion requires explicit `repo gc`.
     let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, dry_run)?;

@@ -1,5 +1,6 @@
 pub mod add;
 pub mod adopt;
+pub mod detect_transitions;
 pub mod info;
 pub mod integrity;
 pub mod list;
