@@ -267,6 +267,45 @@ shelfbox item repair --force .env
 
 ---
 
+### `item relink <PATH>...`
+
+Re-attaches a `detached` item by recreating its symlink and transitioning the
+manifest state from `detached` to `attached`.
+
+```sh
+shelfbox item relink .env
+shelfbox item relink secrets/api_key.txt .env.local
+```
+
+A `detached` item is created by `item restore --keep-store`: the store file is
+preserved and the manifest entry is updated to `ownership_state: detached`.
+`item relink` reverses this without requiring a full `item restore → item add`
+cycle.
+
+**What happens:**
+
+1. Looks up the item in the manifest and verifies `ownership_state == detached`.
+2. Verifies the store file exists.
+3. Checks that no regular file exists at the repo path (refuses to overwrite).
+4. Recreates the symlink at the repo path if not already present and correct.
+5. Transitions `ownership_state: detached → attached` and saves the manifest.
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print what would happen without making any changes. |
+
+**Errors:**
+
+| Error | Meaning |
+|---|---|
+| `not a detached item` | The item's `ownership_state` is not `detached`. Use `item repair` for broken symlinks on `attached` items. |
+| `store item not found` | The store-side copy is missing — run `item restore` and `item add` instead. |
+| `path is occupied by a regular file` | A non-symlink file exists at the repo path. Move it first. |
+
+---
+
 ### `item move <OLD> <NEW>`
 
 Renames a shelved item's tracked path without restoring and re-shelving it.
@@ -488,6 +527,18 @@ shelfbox repo status --verbose
 | `1` | Warnings only (e.g. missing exclude entry). |
 | `2` | Errors present (broken symlink, missing store item, git-tracked item). |
 
+**Ownership transition hint:**
+
+If other repositories in the same store have `attached` items that would be
+affected by the current repo's presence (e.g. same `git_common_dir` after a
+reclone), `repo status` prints a hint to `stderr`:
+
+```
+hint: N item(s) in M repo(s) may need ownership transition — run 'shelfbox repo repair' to apply
+```
+
+This check is read-only: no manifests are modified by `repo status`.
+
 ---
 
 ### `repo repair`
@@ -508,6 +559,24 @@ shelfbox repo repair --dry-run
 | Missing `.git/info/exclude` entries | Re-adds paths from manifest |
 | Missing or broken symlinks | Recreates symlink |
 | Store item missing | Reports WARN — cannot auto-fix |
+| `attached` items in other repos superseded by this repo | Transitions to `stale` or `unreachable` (see below) |
+
+**Ownership state detection:**
+
+`repo repair` automatically scans all other repos in the store and transitions
+`attached` items that are no longer current:
+
+- **`attached → stale`**: another repo entry shares the same `git_common_dir`
+  as the current repo (e.g. after a reclone that generated a new ULID). Old
+  items become reclaimable via `repo adopt --from <OLD-ID>`.
+- **`attached → unreachable`**: a repo's root directory no longer exists on
+  disk (repo deleted or moved without re-registering).
+
+Only `attached` items are ever auto-transitioned. Items already in `detached`,
+`stale`, `unreachable`, `adopted`, or `orphaned` state are left unchanged.
+
+This detection runs before the integrity fix pass so that subsequent status
+checks reflect up-to-date ownership information.  It is skipped in dry-run mode.
 
 **Flags:**
 
@@ -533,6 +602,19 @@ shelfbox repo gc --yes
 |---|---|
 | `--dry-run` | Print what would be deleted without making any changes. |
 | `--yes` | Skip confirmation and perform deletions immediately. |
+
+**Ownership-protected items:**
+
+Before listing FS orphan candidates, `repo gc` checks the current repo's
+manifest for items in `detached`, `stale`, or `unreachable` state. These items
+are not FS orphans (they remain in the manifest) but are reported separately:
+
+```
+ownership-protected items (not collected by gc):
+  2 detached    — run 'shelfbox item relink <PATH>' to re-attach
+  1 stale       — run 'shelfbox repo adopt --from <OLD-REPO-ID>' to reclaim
+  1 unreachable — run 'shelfbox repo adopt --from <OLD-REPO-ID>' or 'shelfbox repo repair' to recover
+```
 
 ---
 
@@ -579,6 +661,8 @@ Items whose store file is missing are also skipped.
 |---|---|
 | `adopted` | Item transferred and symlink created. |
 | `adopted (no link)` | Item transferred but symlink creation failed. Run `item repair` to fix. |
+| `reclaimed` | The source item was `unreachable` and shares the same `git_common_dir` as the current repo — treated as a reclaim (same logical repo, new identity). The source item transitions to `attached` rather than `adopted`. |
+| `reclaimed (no link)` | Same as `reclaimed` but symlink creation failed. Run `item repair` to fix. |
 | `skipped (conflict)` | Current manifest already contains an item at this path. |
 | `skipped (store missing)` | Source store file not found. |
 
@@ -652,6 +736,25 @@ shelfbox store gc --yes
 |---|---|
 | `--dry-run` | Print what would be deleted without making any changes. |
 | `--yes` | Skip confirmation and perform deletions immediately. |
+
+**Reclaimable items:**
+
+Before deleting a repo's store directory, `store gc` loads its manifest and
+checks for items in `attached`, `detached`, `stale`, or `unreachable` state.
+If any exist, deletion is skipped even with `--yes`:
+
+```
+warning: skipping '<id>' [<name>]: 3 reclaimable item(s) — run 'shelfbox repo adopt --from <ID>' first
+```
+
+At the end of the run, skipped repos are counted separately:
+
+```
+Done. 2 removed, 1 skipped (reclaimable).
+```
+
+This guard is unconditional: `store gc` never force-deletes store files that
+can still be recovered via `repo adopt`.
 
 ---
 

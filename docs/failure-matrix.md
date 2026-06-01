@@ -25,7 +25,7 @@ Recovery must be deterministic
 | 2 | **Store item deleted** (data loss) | Store file gone; symlink dangling | `item status` / `repo status` → `store_exists: false` | Manual recovery (data gone) | `repair` returns `CannotFix`; data_loss_warnings emitted |
 | 3 | **Manifest lost** (`manifest.json` deleted) | No items listed; store files still exist | `repo status` → 0 items, orphan store items | `repo repair --yes` | Deterministic rebuild from `items/` layout |
 | 4 | **Index lost** (`index.json` deleted) | New ULID generated; old store dir becomes unreachable | Fresh `repo status` → 0 items, but symlinks still in repo | `repo repair --yes` in each repo | Old repo store dir is orphaned under `repos/`; symlinks still point to old store |
-| 5 | **Repo moved** (entire `mv ~/src/api ~/work/api`) | Both `root` and `git_common_dir` change; new ULID created; old shelf inaccessible | Fresh `repo status` → 0 items | `repo repair --yes` (rebuild from store after re-adding) | `shelfbox repo adopt --from <old-repo-id>` re-binds items from old identity |
+| 5 | **Repo moved** (entire `mv ~/src/api ~/work/api`) | Both `root` and `git_common_dir` change; new ULID created; old shelf inaccessible | Fresh `repo status` → 0 items; next `repo repair` in any repo with a matching `git_common_dir` marks old items `stale` automatically | `repo repair` applies `Attached → Stale`; then `repo adopt --from <old-id>` to reclaim | `detect_transitions::run()` handles the transition automatically on next `repo repair` |
 | 6 | **Repo accessed via linked worktree** | Different `root` but same `git_common_dir`; two-stage lookup resolves to same ULID | Transparent (no warning) | None needed | Automatic via `git_common_dir` lookup |
 | 7 | **Interrupted write — manifest** | `manifest.json.tmp` written but `rename(2)` not called | Startup: `manifest.json` unchanged (temp file is a sibling) | None needed | Atomic `rename(2)` guarantees `manifest.json` is never half-written |
 | 8 | **Interrupted write — move phase** | File moved to store but manifest not yet saved | `repo status` → orphan store item (no manifest entry) | `repo repair --yes` | Rebuild candidate if repo-side symlink exists and target matches |
@@ -35,6 +35,7 @@ Recovery must be deterministic
 | 12 | **Regular file at repo path** (user placed file) | File exists at path where symlink should be | `item status` → `link_exists: true`, `link_valid: false` | Investigate; `item restore` if desired | `repair` returns `PathIsRegularFile`; refuses to overwrite |
 | 13 | **Exclude entry missing** | File visible to `git status` (but only cosmetically) | `repo status` → `in_exclude: false` | `repo repair` | Safe; exclude block is rewritten atomically |
 | 14 | **Store relocated** (store moved to new path) | All absolute paths in index wrong; `config.store` must be updated | Every command fails with path errors | Update `config.toml` or `$SHELFBOX_STORE` then `repo repair` | `store_path` in manifest is repo-store-relative; only `index.json` roots need fixing |
+| 15 | **Premature `store gc` on reclaimable items** | Repo root gone; items in `Stale`, `Unreachable`, or `Detached` state; user attempts `store gc --yes` | `store gc` loads each repo's manifest and counts reclaimable items before deletion | Automatic — deletion is skipped even with `--yes`; no recovery needed | `Orphaned` and `Adopted` items are the only ones `store gc` will delete |
 
 ---
 
@@ -52,6 +53,9 @@ Recovery must be deterministic
 | Store partially copied | **No** (for missing items) | Copy missing files from source |
 | Repo moved (same git_common_dir) | Yes, automatic | `context::build` updates root via two-stage lookup |
 | Repo moved (new clone, different git_common_dir) | Partial | `shelfbox repo adopt --from <old-repo-id>` |
+| Items in `Stale` or `Unreachable` state | Yes | `repo adopt --from <old-id>` (run `repo repair` first to detect) |
+| Items in `Detached` state | Yes | `item relink <PATH>` |
+| Store dir with reclaimable items (gc attempted) | Prevented | `store gc` always skips repos with reclaimable items |
 
 ---
 

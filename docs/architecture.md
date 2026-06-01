@@ -37,15 +37,17 @@ src/
     manifest.rs   # Manifest, Item, ItemKind, LinkInfo, GitInfo
   ops/
     mod.rs
-    add.rs        # add() / add_directory() — shelve a file or directory namespace
-    restore.rs    # restore() / restore_namespace() — unshelve a file or namespace
-    adopt.rs      # adopt() — transfer items from another repo identity
-    list.rs       # list() — read manifest items
-    status.rs     # status() — per-item health check
-    integrity.rs  # check() / fix() — integrity report and repair
-    repair.rs     # repair() — single-file symlink repair
-    move_item.rs  # move_item() — rename a tracked path
-    info.rs       # info() — single-item diagnostic metadata
+    add.rs                # add() / add_directory() — shelve a file or directory namespace
+    restore.rs            # restore() / restore_namespace() — unshelve a file or namespace
+    adopt.rs              # adopt() — transfer items from another repo identity
+    relink.rs             # relink() — re-attach a detached item (detached → attached)
+    list.rs               # list() — read manifest items
+    status.rs             # status() — per-item health check
+    integrity.rs          # check() / fix() — integrity report and repair
+    repair.rs             # repair() — single-file symlink repair
+    move_item.rs          # move_item() — rename a tracked path
+    info.rs               # info() — single-item diagnostic metadata
+    detect_transitions.rs # run() / scan() — automatic Attached→Stale/Unreachable detection
 ```
 
 ### `shelfbox` (binary)
@@ -199,6 +201,7 @@ cmd::repo::run_repo()
 ```
 cmd::repo::run_repo()
   ├─ context::build(cwd, store_override, write=true)
+  ├─ ops::detect_transitions::run(ctx, config)       // Attached→Stale/Unreachable in other repos
   ├─ ops::integrity::fix(ctx, link, ignore, yes=false, dry_run)
   |    ├─ fix_root_mismatch()                        // update index root
   |    ├─ rebuild_manifest_from_store()              // absorb orphans into manifest
@@ -260,6 +263,10 @@ cmd::item::run_item()
 | **Namespace membership is derived, not stored** | A manifest item belongs to a namespace if `item.path.starts_with(&namespace.path)`. There is no stored member list. Membership queries are O(items × namespaces) but both are expected to be small. |
 | **Namespace entries are not recovered by `repo repair`** | `rebuild_manifest_from_store` reconstructs `items` from store files but sets `namespaces: []`. Users re-register namespaces by re-running `item add <dir>/` (the files are already managed; only the grouping entry is recreated). Storing membership would require a separate truth source to reconstruct, adding complexity for limited benefit. |
 | **`repo adopt` copies, does not move, store files** | Adoption copies the store file into the current repo's store directory and updates both manifests atomically. The source manifest marks the item `adopted`. The physical copy means the source item remains intact for auditability and in case of adoption rollback. |
+| **Automatic `Attached → Stale/Unreachable` transitions target `Attached` items only** | Only items in `Attached` state are candidates for automatic ownership transition by `detect_transitions::run()`. Items already in `Detached`, `Stale`, `Unreachable`, `Adopted`, or `Orphaned` state are left unchanged. This prevents re-transitioning already-resolved items if, for example, index corruption creates a duplicate `git_common_dir` entry for an already-adopted repo. |
+| **Ownership state transitions are written in `repo repair`, not `repo status`** | `repo status` is a read-only command; writing to manifests inside a status call would violate Unix CLI conventions (scripts and CI pipelines assume status = read-only). `detect_transitions::run()` (write) is called from `repo repair`; `detect_transitions::scan()` (read-only) is called from `repo status` to surface a hint without side effects. |
+| **Reclaim vs. transfer in `repo adopt`** | When `adopt` encounters an `Unreachable` item whose source repo shares the same `git_common_dir` as the current repo, it is treated as a **reclaim** (same logical repo, new identity) and the source item transitions to `Attached`. All other cases are **transfers**: the source item transitions to `Adopted`. Current heuristic: `git_common_dir` equality. Future ownership metadata (e.g. stable item lineage) may replace or refine this. |
+| **`item relink` targets `Detached` items only** | `item relink` reverses `item restore --keep-store`. It verifies `ownership_state == Detached` before proceeding and transitions to `Attached`. It is not a substitute for `item repair`: `item repair` is ownership-neutral (fixes broken symlinks on `Attached` items without touching `ownership_state`); `item relink` changes ownership state and is only valid for `Detached` items. |
 
 ## Repair policy
 
