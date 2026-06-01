@@ -1,51 +1,88 @@
 # shelfbox
 
-Keep per-developer AI context, personal notes, and local configs **outside Git**, while keeping them visible in your editor.
+Keep AI context files, personal configs, and local secrets **visible in your editor** but **invisible to Git** — surviving reclones, worktrees, and index resets.
 
-Useful for AI context files, editor configs, local notes, secrets — anything that belongs in your repo tree on this machine but must never be committed.
+> **Linux / macOS only.** Windows support is planned for a future release.
 
-## Typical use cases
+## The problem
 
-- `CLAUDE.local.md`, `ai-context.local.md` — per-developer AI context that should not be shared with the team
-- `.cursor/rules/local.mdc` — personal AI editor rules
-- `.env` — local secrets and credentials
-- `notes/scratch.md` — personal development notes
-- `config/local.yml` — machine-specific config overrides
+Some files need to live in your repo tree so your editor and tools can find them — but they must never be committed:
+
+```
+CLAUDE.local.md          # personal AI assistant instructions
+.env                     # local secrets and credentials
+config/local.yml         # machine-specific config overrides
+```
+
+**The usual approaches silently fail:**
+
+- **`.gitignore`** — only works for files Git has never seen. Once a file is tracked, adding it to `.gitignore` does nothing. And `.gitignore` itself gets committed, so your teammates see your personal entries.
+- **`git update-index --skip-worktree`** — breaks silently after `git clone`, `git worktree add`, or any index reset. The flag disappears without warning, and the file reappears as staged or modified.
+
+**Real accidents:**
+
+- You ran `git add .` before adding `.env` to `.gitignore`. Now it's in your commit history.
+- Your personal `AGENTS.md` ended up visible in a PR diff.
+- You recloned after a disk issue and lost all your AI context files.
 
 ## How it works
 
-```
-shelfbox item add ai-context.local.md
-```
-
-1. Moves the file into a plain store directory (`~/.local/share/shelfbox/…`).
-2. Leaves a symlink at the original path — your editor still sees the file.
-3. Adds the path to `.git/info/exclude` so Git ignores it silently.
-
-```
-shelfbox item restore ai-context.local.md
+```sh
+shelfbox item add CLAUDE.local.md
 ```
 
-Reverses the process: removes the symlink, moves the file back, and cleans the exclude entry.
+1. Moves the file into a plain store directory (`~/.local/share/shelfbox/`)
+2. Creates a symlink at the original path — your editor and AI tools see the file as normal
+3. Adds the path to `.git/info/exclude` — Git ignores it silently, nothing gets committed
 
-The store is a regular directory of plain files, shared across all your repositories.
-Each repo's files are organized under their own directory, identified by the repository root.
-If anything ever goes wrong, open `~/.local/share/shelfbox/` and sort it out by hand.
+```sh
+shelfbox item restore CLAUDE.local.md
+```
 
-## Why not `.gitignore` or `git update-index`?
+Reverses the process. The file moves back in place, the symlink is removed, and the exclude entry is cleaned up.
 
-`.gitignore` only affects untracked files. Files already known to Git will still appear in `git status` regardless. It also requires committing the entry, which means your teammates see it too.
-
-`git update-index --skip-worktree` only affects the local Git index. It breaks silently across reclones, worktrees, and index resets — leaving files accidentally staged or exposed.
-
-shelfbox physically moves the file outside the repository, so it survives:
+The store is a regular directory of plain files. It survives:
 
 - `git clone` / reclones
 - `git worktree add`
 - repository moves and renames
-- index resets
+- `git reset` and index resets
 
-Your editor still sees the file at its original path via symlink.
+## Why not just a symlink?
+
+Anyone can move a file and create a symlink manually. What shelfbox adds is **tracked ownership** and structured recovery. It can detect and fix:
+
+- broken or missing symlinks
+- missing `.git/info/exclude` entries
+- stale records left after a reclone
+- store entries with no corresponding repository
+
+Run `shelfbox repo repair` to repair the current repository's shelf, or `shelfbox repo adopt` to reclaim files after cloning a repository to a new path.
+
+## Quick start
+
+```sh
+# Shelve a file
+shelfbox item add CLAUDE.local.md
+
+# List shelved items
+shelfbox item list
+
+# Check health (exits 0 ok / 1 warn / 2 error)
+shelfbox item status
+
+# Restore (undo shelving)
+shelfbox item restore CLAUDE.local.md
+```
+
+## Typical use cases
+
+| File | Why shelve it |
+|---|---|
+| `CLAUDE.local.md`, `AGENTS.md`, etc. | Personal AI assistant instructions |
+| `.env` | Local secrets and credentials |
+| `notes/scratch.md` | Personal development notes |
+| `config/local.yml` | Machine-specific config overrides |
 
 ## Installation
 
@@ -68,49 +105,25 @@ curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh |
 cargo install --path crates/shelfbox
 ```
 
-Requires Rust 1.75+ and Git. Linux / macOS only (symlinks required).
-
-## Quick start
-
-```sh
-# Shelve a file
-shelfbox item add ai-context.local.md
-
-# List shelved items
-shelfbox item list
-
-# Check health (exits 0 ok / 1 warn / 2 error)
-shelfbox item status
-
-# Restore (undo shelving)
-shelfbox item restore ai-context.local.md
-```
+Requires Rust 1.75+ and Git.
 
 ## More features
 
-- **Directory namespace shelving** — shelve all files in a directory as a group and restore them together: [`item add <dir>/`](docs/user-guide.md#item-add-path)
-- **Ownership transfer after reclone** — reclaim shelved items from the old repository identity: [`repo adopt`](docs/user-guide.md#repo-adopt)
+- **Group shelving** — shelve all files in a directory together and restore as a group: [`item add <dir>/`](docs/user-guide.md#item-add-path)
+- **Recovery after reclone** — reclaim shelved items after the repository is re-cloned to a new path: [`repo adopt`](docs/user-guide.md#repo-adopt)
 
 See [docs/user-guide.md](docs/user-guide.md) for the full command reference.
 
 ## Configuration
 
-Optional config file at `$XDG_CONFIG_HOME/shelfbox/config.toml`
-(default: `~/.config/shelfbox/config.toml`):
+Optional config at `~/.config/shelfbox/config.toml` (respects `$XDG_CONFIG_HOME`):
 
 ```toml
-# Root directory for the global shelfbox store.
-# Default: ~/.local/share/shelfbox
-# store = "/mnt/data/shelfbox-store"
-
-# Default output format for list/status commands.
-# Valid values: table (default), plain, json
-# default_format = "table"
+# store = "/mnt/data/shelfbox-store"   # default: ~/.local/share/shelfbox
+# default_format = "table"             # table | plain | json
 ```
 
 The `--store <PATH>` global flag overrides config at runtime.
-
-Inspect the current configuration:
 
 ```sh
 shelfbox config list
@@ -119,9 +132,7 @@ shelfbox config explain store
 
 ## Non-goals
 
-shelfbox is a **single-machine local storage** tool.
-
-Placing the store on Dropbox, iCloud, OneDrive, or NFS may work, but is not officially supported. Sync conflicts or partial writes may leave items in an inconsistent state; run `shelfbox repo repair` to recover.
+shelfbox is a **single-machine** tool. Placing the store on external or network-synced storage is not officially supported — sync conflicts may leave items in an inconsistent state.
 
 Multi-machine sync, secret encryption, and team-shared files are out of scope.
 
