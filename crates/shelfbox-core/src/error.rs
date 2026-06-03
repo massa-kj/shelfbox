@@ -34,6 +34,12 @@ pub enum AppError {
     #[error("'{path}' is already a symlink; shelving symlinks is not supported in this version")]
     PathIsSymlink { path: PathBuf },
 
+    /// The supplied path is a directory; use `add_directory` for namespace shelving.
+    #[error(
+        "'{path}' is a directory; use 'shelfbox item add {path}' to shelve all files inside it"
+    )]
+    PathIsDirectory { path: PathBuf },
+
     /// The supplied path is already managed by shelfbox.
     #[error("'{path}' is already managed by shelfbox")]
     AlreadyManaged { path: PathBuf },

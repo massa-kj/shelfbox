@@ -59,6 +59,15 @@ pub fn add(
         });
     }
 
+    // Directories must be shelved via add_directory(), which handles each file
+    // individually.  Passing a directory to add() would create a directory
+    // symlink, which is not supported.
+    if meta.is_dir() {
+        return Err(AppError::PathIsDirectory {
+            path: abs_path.to_path_buf(),
+        });
+    }
+
     // Must not be tracked by Git.
     if git::is_tracked(&ctx.repo_root, abs_path)? {
         return Err(AppError::PathIsTracked {
@@ -81,11 +90,7 @@ pub fn add(
         });
     }
 
-    let kind = if meta.is_dir() {
-        ItemKind::Directory
-    } else {
-        ItemKind::File
-    };
+    let kind = ItemKind::File;
 
     // Store-relative path (relative to repo_store): "items/<rel>".
     let store_path_rel = format!("items/{rel_str}");

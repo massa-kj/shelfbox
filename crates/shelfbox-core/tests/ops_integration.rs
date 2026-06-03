@@ -1342,24 +1342,38 @@ fn move_item_renames_store_and_updates_symlink() {
 
 #[test]
 fn move_item_rejects_directory_kind() {
+    use shelfbox_core::store::manifest::{
+        GitInfo, Item, ItemKind, LinkInfo, LinkType, OwnershipState,
+    };
+    use ulid::Ulid;
+
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
-
-    // Create a directory with content and shelve it.
-    let dir_path = repo_dir.path().join("mydir");
-    std::fs::create_dir(&dir_path).unwrap();
-    std::fs::write(dir_path.join("file.txt"), "contents").unwrap();
 
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = SymlinkStrategy;
     let ignore = GitInfoExclude;
 
-    ops::add::add(&mut ctx, &dir_path, false, &link, &ignore).unwrap();
-    assert_eq!(
-        ctx.manifest.get("mydir").unwrap().kind,
-        shelfbox_core::store::manifest::ItemKind::Directory
-    );
+    // Inject a Directory-kind item directly into the manifest to simulate a
+    // legacy or externally-created entry.  add() no longer accepts directories.
+    let now = shelfbox_core::context::now_iso8601();
+    ctx.manifest.add(Item {
+        item_id: Ulid::new().to_string(),
+        origin_repo_id: ctx.repo_id.clone(),
+        path: "mydir".to_string(),
+        store_path: "items/mydir".to_string(),
+        kind: ItemKind::Directory,
+        link: LinkInfo {
+            link_type: LinkType::Symlink,
+        },
+        git: GitInfo { was_tracked: false },
+        ownership_state: OwnershipState::Attached,
+        created_at: now.clone(),
+        updated_at: now,
+    });
+    assert_eq!(ctx.manifest.get("mydir").unwrap().kind, ItemKind::Directory);
 
+    let dir_path = repo_dir.path().join("mydir");
     let new_path = repo_dir.path().join("mydir_renamed");
     let err = ops::move_item::move_item(&mut ctx, &dir_path, &new_path, false, &link, &ignore)
         .unwrap_err();
