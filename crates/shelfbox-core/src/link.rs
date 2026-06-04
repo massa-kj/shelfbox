@@ -101,6 +101,135 @@ impl LinkStrategy for SymlinkStrategy {
     }
 }
 
+// ── UnixSymlinkStrategy ───────────────────────────────────────────────────────
+
+/// [`LinkStrategy`] that uses Unix symbolic links.
+///
+/// Supported on Linux and macOS. Prefer [`DefaultLinkStrategy`] at call-sites
+/// to remain platform-agnostic.
+#[cfg(unix)]
+pub struct UnixSymlinkStrategy;
+
+#[cfg(unix)]
+impl LinkStrategy for UnixSymlinkStrategy {
+    fn create(&self, target: &Path, link_path: &Path) -> Result<()> {
+        if let Some(parent) = link_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+        }
+        std::os::unix::fs::symlink(target, link_path).map_err(|e| AppError::io(link_path, e))
+    }
+
+    fn remove(&self, link_path: &Path) -> Result<()> {
+        std::fs::remove_file(link_path).map_err(|e| AppError::io(link_path, e))
+    }
+
+    fn is_managed_link(&self, link_path: &Path, store_root: &Path) -> bool {
+        let meta = match std::fs::symlink_metadata(link_path) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        if !meta.file_type().is_symlink() {
+            return false;
+        }
+
+        let target = match std::fs::read_link(link_path) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+
+        let abs_target = if target.is_absolute() {
+            target
+        } else {
+            match link_path.parent() {
+                Some(parent) => parent.join(&target),
+                None => target,
+            }
+        };
+
+        let abs_target = abs_target.canonicalize().unwrap_or(abs_target);
+        let store_root = store_root
+            .canonicalize()
+            .unwrap_or_else(|_| store_root.to_path_buf());
+
+        abs_target.starts_with(&store_root)
+    }
+}
+
+// ── WindowsSymlinkStrategy ────────────────────────────────────────────────────
+
+/// [`LinkStrategy`] that uses Windows symbolic links.
+///
+/// Requires Developer Mode or an elevated shell. Prefer [`DefaultLinkStrategy`]
+/// at call-sites to remain platform-agnostic. Full implementation is provided
+/// in T3.
+#[cfg(windows)]
+pub struct WindowsSymlinkStrategy;
+
+#[cfg(windows)]
+impl LinkStrategy for WindowsSymlinkStrategy {
+    fn create(&self, target: &Path, link_path: &Path) -> Result<()> {
+        use std::os::windows::fs;
+
+        if let Some(parent) = link_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+        }
+
+        if target.is_dir() {
+            fs::symlink_dir(target, link_path)
+        } else {
+            fs::symlink_file(target, link_path)
+        }
+        .map_err(|e| AppError::io(link_path, e))
+    }
+
+    fn remove(&self, link_path: &Path) -> Result<()> {
+        std::fs::remove_file(link_path).map_err(|e| AppError::io(link_path, e))
+    }
+
+    fn is_managed_link(&self, link_path: &Path, store_root: &Path) -> bool {
+        let meta = match std::fs::symlink_metadata(link_path) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        if !meta.file_type().is_symlink() {
+            return false;
+        }
+
+        let target = match std::fs::read_link(link_path) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+
+        let abs_target = if target.is_absolute() {
+            target
+        } else {
+            match link_path.parent() {
+                Some(parent) => parent.join(&target),
+                None => target,
+            }
+        };
+
+        let abs_target = abs_target.canonicalize().unwrap_or(abs_target);
+        let store_root = store_root
+            .canonicalize()
+            .unwrap_or_else(|_| store_root.to_path_buf());
+
+        abs_target.starts_with(&store_root)
+    }
+}
+
+// ── DefaultLinkStrategy ───────────────────────────────────────────────────────
+
+/// Platform-appropriate link strategy selected at compile time.
+///
+/// Callers should use this alias rather than naming a concrete type.
+/// All platform dispatch lives here; binary call-sites stay `#[cfg]`-free.
+#[cfg(unix)]
+pub type DefaultLinkStrategy = UnixSymlinkStrategy;
+
+#[cfg(windows)]
+pub type DefaultLinkStrategy = WindowsSymlinkStrategy;
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
