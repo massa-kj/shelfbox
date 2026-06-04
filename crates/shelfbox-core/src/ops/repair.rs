@@ -71,12 +71,12 @@ pub fn repair(
     // ── Safety: refuse to overwrite a regular file ────────────────────────
     // A non-symlink entry at the repo path means the user may have placed
     // their own file there.  Overwriting it silently would cause data loss.
-    if let Ok(meta) = abs_path.symlink_metadata() {
-        if !meta.file_type().is_symlink() {
-            return Err(AppError::PathIsRegularFile {
-                path: abs_path.to_path_buf(),
-            });
-        }
+    // `abs_path.exists()` follows symlinks, so dangling symlinks (correctly
+    // identified as links by `is_link()`) are not caught here.
+    if !link.is_link(abs_path) && abs_path.exists() {
+        return Err(AppError::PathIsRegularFile {
+            path: abs_path.to_path_buf(),
+        });
     }
 
     // ── Safety: refuse to silently overwrite a wrong-target symlink ───────
@@ -85,7 +85,7 @@ pub fn repair(
     // a copied repo.  Overwriting it silently would mask those situations.
     // Require --force to proceed.
     if !force {
-        if let Ok(actual_target) = std::fs::read_link(abs_path) {
+        if let Ok(actual_target) = link.read_target(abs_path) {
             // Resolve relative symlinks against the link's parent directory.
             let abs_actual = if actual_target.is_absolute() {
                 actual_target.clone()
@@ -116,7 +116,9 @@ pub fn repair(
 
     // ── Execute ───────────────────────────────────────────────────────────
     // Remove a stale/invalid symlink if one exists at the repo path.
-    if abs_path.symlink_metadata().is_ok() {
+    // By this point any non-symlink obstruction has already been rejected
+    // above, so `is_link()` is the correct predicate here.
+    if link.is_link(abs_path) {
         link.remove(abs_path)?;
     }
 

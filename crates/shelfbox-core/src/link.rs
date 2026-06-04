@@ -26,6 +26,19 @@ pub trait LinkStrategy {
     /// "Managed" means: it is a link of the expected kind whose target
     /// falls inside `store_root`.
     fn is_managed_link(&self, link_path: &Path, store_root: &Path) -> bool;
+
+    /// Returns `true` if `path` is a link of the kind this strategy manages
+    /// (i.e. a symlink on both Unix and Windows).
+    ///
+    /// Unlike [`is_managed_link`], this does **not** verify that the target
+    /// falls inside the shelfbox store.
+    fn is_link(&self, path: &Path) -> bool;
+
+    /// Returns the immediate target of the link at `path`.
+    ///
+    /// Analogous to [`std::fs::read_link`] but routed through the strategy
+    /// so that platform-specific quirks are handled in one place.
+    fn read_target(&self, path: &Path) -> Result<std::path::PathBuf>;
 }
 
 // ── SymlinkStrategy ───────────────────────────────────────────────────────────
@@ -99,6 +112,16 @@ impl LinkStrategy for SymlinkStrategy {
 
         abs_target.starts_with(&store_root)
     }
+
+    fn is_link(&self, path: &Path) -> bool {
+        path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    fn read_target(&self, path: &Path) -> Result<std::path::PathBuf> {
+        std::fs::read_link(path).map_err(|e| AppError::io(path, e))
+    }
 }
 
 // ── UnixSymlinkStrategy ───────────────────────────────────────────────────────
@@ -152,6 +175,16 @@ impl LinkStrategy for UnixSymlinkStrategy {
             .unwrap_or_else(|_| store_root.to_path_buf());
 
         abs_target.starts_with(&store_root)
+    }
+
+    fn is_link(&self, path: &Path) -> bool {
+        path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    fn read_target(&self, path: &Path) -> Result<std::path::PathBuf> {
+        std::fs::read_link(path).map_err(|e| AppError::io(path, e))
     }
 }
 
@@ -232,6 +265,16 @@ impl LinkStrategy for WindowsSymlinkStrategy {
             .unwrap_or_else(|_| store_root.to_path_buf());
 
         abs_target.starts_with(&store_root)
+    }
+
+    fn is_link(&self, path: &Path) -> bool {
+        path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    fn read_target(&self, path: &Path) -> Result<std::path::PathBuf> {
+        std::fs::read_link(path).map_err(|e| AppError::io(path, e))
     }
 }
 
@@ -319,6 +362,28 @@ impl LinkStrategy for DefaultLinkStrategy {
         #[cfg(windows)]
         {
             WindowsSymlinkStrategy.is_managed_link(link_path, store_root)
+        }
+    }
+
+    fn is_link(&self, path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            UnixSymlinkStrategy.is_link(path)
+        }
+        #[cfg(windows)]
+        {
+            WindowsSymlinkStrategy.is_link(path)
+        }
+    }
+
+    fn read_target(&self, path: &Path) -> Result<std::path::PathBuf> {
+        #[cfg(unix)]
+        {
+            UnixSymlinkStrategy.read_target(path)
+        }
+        #[cfg(windows)]
+        {
+            WindowsSymlinkStrategy.read_target(path)
         }
     }
 }

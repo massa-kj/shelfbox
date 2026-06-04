@@ -47,8 +47,8 @@ fn check_item(
     let abs_path = ctx.repo_root.join(&item.path);
     let store_path = ctx.repo_store.join(&item.store_path);
 
-    // Does any filesystem entry exist at the repo-side path?
-    let link_exists = abs_path.symlink_metadata().is_ok();
+    // Does a symlink exist at the repo-side path (via the link strategy)?
+    let link_exists = link.is_link(&abs_path);
     // Is it specifically a managed symlink pointing into the store?
     let link_valid = link.is_managed_link(&abs_path, &ctx.config.store);
     // Does the store-side copy exist?
