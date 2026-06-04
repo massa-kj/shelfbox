@@ -8,7 +8,7 @@ use shelfbox_core::{
     config::Config,
     context,
     ignore::GitInfoExclude,
-    link::SymlinkStrategy,
+    link::DefaultLinkStrategy,
     ops,
     ops::{
         adopt::AdoptOutcome,
@@ -237,7 +237,7 @@ fn cmd_repo_status(
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     let report = ops::integrity::check(&ctx, &link, &ignore)?;
 
@@ -266,7 +266,7 @@ fn cmd_repo_status(
 fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> Result<()> {
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
     // Detect and apply ownership state transitions across all other repos in
@@ -299,7 +299,7 @@ fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> 
 fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
     // Use check() to collect orphan store items.
@@ -388,7 +388,7 @@ fn cmd_repo_adopt(
 ) -> Result<()> {
     let mut ctx = context::build(cwd, store_override, !dry_run)
         .context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
 
     let result = ops::adopt::adopt(&mut ctx, from_repo_id, dry_run, &link)?;
 

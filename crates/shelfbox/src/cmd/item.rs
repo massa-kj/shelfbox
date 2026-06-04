@@ -7,7 +7,7 @@ use shelfbox_core::{
     context,
     error::AppError,
     ignore::GitInfoExclude,
-    link::SymlinkStrategy,
+    link::DefaultLinkStrategy,
     ops,
     ops::{
         add::{DirItemOutcome, SkipReason},
@@ -203,7 +203,7 @@ fn cmd_add(
 ) -> Result<()> {
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
     for path in paths {
@@ -321,7 +321,7 @@ fn cmd_restore(
 ) -> Result<()> {
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
     for path in paths {
@@ -440,7 +440,7 @@ fn cmd_status(
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     let statuses = ops::status::status(&ctx, &link, &ignore)?;
 
@@ -461,7 +461,7 @@ fn cmd_repair(
 ) -> Result<()> {
     let ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
@@ -499,7 +499,7 @@ fn cmd_relink(
 ) -> Result<()> {
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
@@ -529,7 +529,7 @@ fn cmd_move(
     let new_abs = resolve_path(cwd, new_path);
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     ops::move_item::move_item(&mut ctx, &old_abs, &new_abs, dry_run, &link, &ignore)
         .with_context(|| format!("move '{}' → '{}' failed", old.display(), new_path.display()))?;
@@ -684,7 +684,7 @@ fn cmd_info(
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     let abs = resolve_path(cwd, path);
     let item_info = ops::info::info(&ctx, &abs, &link, &ignore)?;

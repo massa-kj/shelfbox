@@ -222,13 +222,44 @@ impl LinkStrategy for WindowsSymlinkStrategy {
 
 /// Platform-appropriate link strategy selected at compile time.
 ///
-/// Callers should use this alias rather than naming a concrete type.
-/// All platform dispatch lives here; binary call-sites stay `#[cfg]`-free.
-#[cfg(unix)]
-pub type DefaultLinkStrategy = UnixSymlinkStrategy;
+/// Use this type at all call-sites. All `#[cfg]` dispatch is contained
+/// inside this implementation; binary call-sites stay `#[cfg]`-free.
+pub struct DefaultLinkStrategy;
 
-#[cfg(windows)]
-pub type DefaultLinkStrategy = WindowsSymlinkStrategy;
+impl LinkStrategy for DefaultLinkStrategy {
+    fn create(&self, target: &Path, link_path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            UnixSymlinkStrategy.create(target, link_path)
+        }
+        #[cfg(windows)]
+        {
+            WindowsSymlinkStrategy.create(target, link_path)
+        }
+    }
+
+    fn remove(&self, link_path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            UnixSymlinkStrategy.remove(link_path)
+        }
+        #[cfg(windows)]
+        {
+            WindowsSymlinkStrategy.remove(link_path)
+        }
+    }
+
+    fn is_managed_link(&self, link_path: &Path, store_root: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            UnixSymlinkStrategy.is_managed_link(link_path, store_root)
+        }
+        #[cfg(windows)]
+        {
+            WindowsSymlinkStrategy.is_managed_link(link_path, store_root)
+        }
+    }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
