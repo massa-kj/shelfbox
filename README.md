@@ -2,7 +2,7 @@
 
 Keep AI context files, personal configs, and local secrets **visible in your editor** but **invisible to Git** — surviving reclones, worktrees, and index resets.
 
-> **Linux / macOS only.** Windows support is planned for a future release.
+> Supported on **Linux**, **macOS**, and **Windows**. On Windows, symlink creation requires Developer Mode or an elevated shell.
 
 ## The problem
 

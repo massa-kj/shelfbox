@@ -30,7 +30,7 @@ src/
   context.rs      # RepoContext + context::build()
   git.rs          # Git plumbing (std::process::Command only)
   ignore.rs       # IgnoreBackend trait + GitInfoExclude impl
-  link.rs         # LinkStrategy trait + SymlinkStrategy impl
+  link.rs         # LinkStrategy trait + UnixSymlinkStrategy / WindowsSymlinkStrategy / DefaultLinkStrategy + can_create_symlink()
   store/
     mod.rs
     index.rs      # Index (ULID → RepoEntry), atomic JSON save
@@ -176,7 +176,7 @@ CLI parse (clap)
        └─ ops::add::add(ctx, path, dry_run, link, ignore)
             ├─ validate — 7 checks (see user guide)
             ├─ move file → store
-            ├─ link.create(original, store_dest)      // SymlinkStrategy::create
+            ├─ link.create(original, store_dest)      // DefaultLinkStrategy::create
             ├─ manifest.items.push(item)
             ├─ manifest::save(store, manifest)
             ├─ ignore.add_entries([rel_path])         // GitInfoExclude
@@ -244,7 +244,7 @@ cmd::item::run_item()
 | **`repair` refuses to overwrite regular files** | If a non-symlink file exists at the target path, `repair` returns `Err(PathIsRegularFile)` rather than silently overwriting user data. |
 | **`repair` requires `--force` for wrong-target symlinks** | If a symlink exists at the repo path but points to an unexpected target (outside the managed store), `repair` returns `Err(RepairSymlinkTargetMismatch)` unless `force = true`. This is consistent with `move_item`'s `MoveSourceSymlinkMismatch` guard and with `rebuild_manifest_from_store`'s exact-target requirement. Silent overwrite would mask stale links from reclones, store relocations, or copied repos — situations the user should investigate before proceeding. `integrity::fix` always passes `force = false`, keeping automated repair conservative. |
 | **`# BEGIN shelfbox` block in exclude** | All shelfbox entries are wrapped in a named block so other tools can safely edit the file without conflict. The block is rewritten atomically; existing content outside the block is preserved. |
-| **`LinkStrategy` abstraction** | All filesystem linking is dispatched through the `LinkStrategy` trait. Today only `SymlinkStrategy` (Unix symlinks) is shipped. Future implementations (hardlink, bind mount, copy mode) can be added without touching `ops/`. |
+| **`LinkStrategy` abstraction** | All filesystem linking is dispatched through the `LinkStrategy` trait. `UnixSymlinkStrategy` (Linux / macOS) and `WindowsSymlinkStrategy` (Windows) are the concrete implementations; call-sites use `DefaultLinkStrategy`, which resolves to the correct type at compile time with no `#[cfg]` at call-sites. Alternative strategies (hardlink, bind mount, copy mode) can be added without touching `ops/`. |
 | **Worktree-aware repo identity** | `RepoEntry` stores both `git_dir` and `git_common_dir` (output of `git rev-parse --git-common-dir`). Repo lookup uses a two-stage strategy: exact `root` match first, then `git_common_dir` match. This ensures that accessing a repository via a linked worktree reuses the same ULID rather than creating a duplicate entry. `exclude_file_path` is also resolved via `git rev-parse --git-path info/exclude` so the correct `.git/info/exclude` is targeted in worktree environments. |
 | **`<name>-<ULID>` repo store directories** | Per-repo store directories are named `<sanitized-repo-name>-<ULID>` (e.g. `my-project-01JTAR…`). The human-readable prefix makes the store legible with `ls` while the ULID suffix guarantees global uniqueness. Non-alphanumeric characters in the repo name are replaced with `-`. The `store_dir` field is persisted in `index.json` so the directory name never changes after first creation. |
 | **Store identity via `meta.json`** | `<store>/meta.json` is written on first use. It contains a ULID `store_id`, `created_at` timestamp, and `hostname` (the creating machine's hostname recorded for provenance display only — never used as an identity source). The write is idempotent: subsequent runs leave the file unchanged. Old stores without `hostname` deserialise cleanly via `#[serde(default)]`. |

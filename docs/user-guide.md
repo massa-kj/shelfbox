@@ -18,7 +18,7 @@ appears to be in its original location.
 cargo install --path crates/shelfbox
 ```
 
-Requirements: Rust 1.75+, Git, Linux or macOS (symlinks required).
+Requirements: Rust 1.75+, Git. Supported on Linux, macOS, and Windows (Windows requires Developer Mode or an elevated shell for symlink creation).
 
 ---
 
