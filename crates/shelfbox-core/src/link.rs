@@ -41,89 +41,6 @@ pub trait LinkStrategy {
     fn read_target(&self, path: &Path) -> Result<std::path::PathBuf>;
 }
 
-// ── SymlinkStrategy ───────────────────────────────────────────────────────────
-
-/// [`LinkStrategy`] that uses Unix symbolic links.
-///
-/// Supported on Linux and macOS.  Not available on Windows without Developer
-/// Mode, which is why Windows support is deferred to a later milestone.
-pub struct SymlinkStrategy;
-
-impl LinkStrategy for SymlinkStrategy {
-    fn create(&self, target: &Path, link_path: &Path) -> Result<()> {
-        // Ensure the parent directory of the link exists.
-        if let Some(parent) = link_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-        }
-
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(target, link_path).map_err(|e| AppError::io(link_path, e))
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = (target, link_path);
-            Err(AppError::Internal(
-                "SymlinkStrategy is only supported on Unix platforms".into(),
-            ))
-        }
-    }
-
-    fn remove(&self, link_path: &Path) -> Result<()> {
-        // `remove_file` works on both symlinks-to-files and
-        // symlinks-to-directories on Unix (unlike `remove_dir`).
-        std::fs::remove_file(link_path).map_err(|e| AppError::io(link_path, e))
-    }
-
-    fn is_managed_link(&self, link_path: &Path, store_root: &Path) -> bool {
-        // 1. Must be a symlink (not a regular file).
-        let meta = match std::fs::symlink_metadata(link_path) {
-            Ok(m) => m,
-            Err(_) => return false,
-        };
-        if !meta.file_type().is_symlink() {
-            return false;
-        }
-
-        // 2. The resolved target must live inside the shelfbox store.
-        let target = match std::fs::read_link(link_path) {
-            Ok(t) => t,
-            Err(_) => return false,
-        };
-
-        // Resolve relative symlinks against the directory containing the link.
-        let abs_target = if target.is_absolute() {
-            target
-        } else {
-            match link_path.parent() {
-                Some(parent) => parent.join(&target),
-                None => target,
-            }
-        };
-
-        // Canonicalise both paths to collapse `..` before comparing, but fall
-        // back to the raw absolute path if canonicalization fails (e.g. the
-        // target is dangling — still owned by us if prefix matches).
-        let abs_target = abs_target.canonicalize().unwrap_or(abs_target);
-        let store_root = store_root
-            .canonicalize()
-            .unwrap_or_else(|_| store_root.to_path_buf());
-
-        abs_target.starts_with(&store_root)
-    }
-
-    fn is_link(&self, path: &Path) -> bool {
-        path.symlink_metadata()
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-    }
-
-    fn read_target(&self, path: &Path) -> Result<std::path::PathBuf> {
-        std::fs::read_link(path).map_err(|e| AppError::io(path, e))
-    }
-}
-
 // ── UnixSymlinkStrategy ───────────────────────────────────────────────────────
 
 /// [`LinkStrategy`] that uses Unix symbolic links.
@@ -395,8 +312,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn strategy() -> SymlinkStrategy {
-        SymlinkStrategy
+    fn strategy() -> DefaultLinkStrategy {
+        DefaultLinkStrategy
     }
 
     // ── create ────────────────────────────────────────────────────────────────

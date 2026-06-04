@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use tempfile::TempDir;
 
-use shelfbox_core::{context, ignore::GitInfoExclude, link::SymlinkStrategy, ops};
+use shelfbox_core::{context, ignore::GitInfoExclude, link::DefaultLinkStrategy, ops};
 
 mod common;
 
@@ -31,7 +31,14 @@ fn reclone_starts_fresh_while_preserving_old_store() {
     let mut ctx = context::build(original_repo.path(), Some(store_dir.path()), true).unwrap();
     let original_id = ctx.repo_id.clone();
     let original_store = ctx.repo_store.clone();
-    ops::add::add(&mut ctx, &secret, false, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    ops::add::add(
+        &mut ctx,
+        &secret,
+        false,
+        &DefaultLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
     drop(ctx);
 
     // Verify the store item exists on disk.
@@ -50,7 +57,8 @@ fn reclone_starts_fresh_while_preserving_old_store() {
     );
 
     // The manifest for the new clone must be empty.
-    let manifest = ops::status::status(&ctx_reclone, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    let manifest =
+        ops::status::status(&ctx_reclone, &DefaultLinkStrategy, &GitInfoExclude).unwrap();
     assert!(
         manifest.is_empty(),
         "re-cloned repo must start with empty manifest"
@@ -87,7 +95,14 @@ fn repo_rename_creates_new_index_entry_and_preserves_store() {
     let mut ctx = context::build(&api_path, Some(store_dir.path()), true).unwrap();
     let original_id = ctx.repo_id.clone();
     let original_store = ctx.repo_store.clone();
-    ops::add::add(&mut ctx, &secret, false, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    ops::add::add(
+        &mut ctx,
+        &secret,
+        false,
+        &DefaultLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
     drop(ctx);
 
     // Rename the repository directory.
@@ -104,7 +119,8 @@ fn repo_rename_creates_new_index_entry_and_preserves_store() {
     );
 
     // The renamed repo has an empty manifest.
-    let manifest = ops::status::status(&ctx_renamed, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    let manifest =
+        ops::status::status(&ctx_renamed, &DefaultLinkStrategy, &GitInfoExclude).unwrap();
     assert!(
         manifest.is_empty(),
         "renamed repo must start with empty manifest"
@@ -152,7 +168,7 @@ fn concurrent_adds_serialize_via_lock() {
             &mut ctx,
             &file2_path,
             false,
-            &SymlinkStrategy,
+            &DefaultLinkStrategy,
             &GitInfoExclude,
         )
         .unwrap();
@@ -161,14 +177,21 @@ fn concurrent_adds_serialize_via_lock() {
     // Main thread shelves the first file (may block briefly while the other
     // thread holds the exclusive lock).
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
-    ops::add::add(&mut ctx, &file1, false, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    ops::add::add(
+        &mut ctx,
+        &file1,
+        false,
+        &DefaultLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
     drop(ctx);
 
     handle.join().expect("background thread must not panic");
 
     // Both files must appear in the final manifest.
     let ctx_read = context::build(repo_dir.path(), Some(store_dir.path()), false).unwrap();
-    let manifest = ops::status::status(&ctx_read, &SymlinkStrategy, &GitInfoExclude).unwrap();
+    let manifest = ops::status::status(&ctx_read, &DefaultLinkStrategy, &GitInfoExclude).unwrap();
 
     let names: HashSet<String> = manifest
         .iter()

@@ -12,7 +12,7 @@ use std::process::Command as StdCommand;
 use tempfile::TempDir;
 
 use shelfbox_core::{
-    context, ignore::GitInfoExclude, link::SymlinkStrategy, ops, ops::integrity::FixResult,
+    context, ignore::GitInfoExclude, link::DefaultLinkStrategy, ops, ops::integrity::FixResult,
 };
 
 mod common;
@@ -62,7 +62,7 @@ fn worktree_add_reuses_repo_ulid() {
 fn worktree_shelved_items_visible_from_linked_worktree() {
     let main_dir = common::init_git_repo_with_commit();
     let store_dir = TempDir::new().unwrap();
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
     // Shelve a file from the main clone.
@@ -107,7 +107,7 @@ fn worktree_shelved_items_visible_from_linked_worktree() {
 fn index_deleted_creates_fresh_context_with_empty_manifest() {
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
     // Shelve a file to populate the store.
@@ -193,7 +193,7 @@ fn concurrent_read_locks_are_shared() {
 fn partial_store_corruption_shows_mixed_status() {
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
-    let link = SymlinkStrategy;
+    let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
     // Shelve three files.
