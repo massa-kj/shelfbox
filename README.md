@@ -136,13 +136,38 @@ shelfbox is a **single-machine** tool. Placing the store on external or network-
 
 Multi-machine sync, secret encryption, and team-shared files are out of scope.
 
-## Documentation
+## [Documentation](docs/index.md)
 
-| Document | Contents |
+### New users
+
+| Document | Description |
 |---|---|
-| [docs/user-guide.md](docs/user-guide.md) | All commands, flags, and common workflows |
-| [docs/architecture.md](docs/architecture.md) | Crate layout, data model, and design decisions |
-| [docs/failure-matrix.md](docs/failure-matrix.md) | Failure modes, detection, and recovery strategies |
+| [Getting Started](docs/getting-started.md) | Installation, basic concepts, and first-time usage |
+| [Workflows](docs/workflows.md) | Common tasks and recovery procedures |
+
+### Command Reference
+
+| Document | Description |
+|---|---|
+| [Item Commands](docs/reference/item-commands.md) | Item management commands |
+| [Repository Commands](docs/reference/repo-commands.md) | Repository management commands |
+| [Store Commands](docs/reference/store-commands.md) | Store management commands |
+| [Configuration Commands](docs/reference/config-commands.md) | Configuration commands |
+
+### Architecture
+
+| Document | Description |
+|---|---|
+| [Architecture Overview](docs/architecture/architecture-overview.md) | System architecture and component boundaries |
+| [Data Model](docs/architecture/data-model.md) | Store layout, manifests, and persistent data |
+| [Design Decisions](docs/architecture/design-decisions.md) | Design rationale and implementation choices |
+
+### Specifications
+
+| Document | Description |
+|---|---|
+| [Ownership Model](docs/spec/ownership-model.md) | Ownership state machine and transition rules |
+| [Failure Matrix](docs/spec/failure-matrix.md) | Failure modes, recoverability, and recovery guarantees |
 
 ## License
 
