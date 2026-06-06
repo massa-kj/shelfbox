@@ -429,7 +429,7 @@ fn add_existing_symlink_returns_error() {
     let target = repo_dir.path().join("target_file.txt");
     std::fs::write(&target, "target").unwrap();
     let link_path = repo_dir.path().join("my_link");
-    std::os::unix::fs::symlink(&target, &link_path).unwrap();
+    common::create_file_symlink(&target, &link_path);
 
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = DefaultLinkStrategy;
@@ -557,7 +557,8 @@ fn repair_rejects_wrong_target_symlink_without_force() {
 
     // Replace managed symlink with one pointing elsewhere (hand-modified).
     std::fs::remove_file(&file_path).unwrap();
-    std::os::unix::fs::symlink("/tmp/nonexistent", &file_path).unwrap();
+    let bogus_target = repo_dir.path().join("missing-target-for-repair-test-1");
+    common::create_file_symlink(&bogus_target, &file_path);
     assert!(
         !link.is_managed_link(&file_path, &ctx.config.store),
         "symlink must not be managed before the test"
@@ -598,7 +599,8 @@ fn repair_force_relinks_wrong_target_symlink() {
 
     // Replace managed symlink with one pointing elsewhere.
     std::fs::remove_file(&file_path).unwrap();
-    std::os::unix::fs::symlink("/tmp/nonexistent", &file_path).unwrap();
+    let bogus_target = repo_dir.path().join("missing-target-for-repair-test-2");
+    common::create_file_symlink(&bogus_target, &file_path);
 
     let outcome = ops::repair::repair(&ctx, &file_path, &link, false, true).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
@@ -1252,7 +1254,7 @@ fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
     std::fs::remove_file(&file_path).unwrap();
     let decoy_target = other_dir.path().join("decoy.txt");
     std::fs::write(&decoy_target, "unrelated").unwrap();
-    std::os::unix::fs::symlink(&decoy_target, &file_path).unwrap();
+    common::create_file_symlink(&decoy_target, &file_path);
 
     // doctor --fix --yes: the store item has no manifest entry AND no correct
     // symlink, so it must be treated as an orphan, not a rebuild candidate.
@@ -1465,7 +1467,8 @@ fn move_item_rejects_when_symlink_mismatch() {
 
     // Replace the managed symlink with one pointing elsewhere.
     std::fs::remove_file(&file_path).unwrap();
-    std::os::unix::fs::symlink("/tmp/nonexistent_target_for_shelfbox_test", &file_path).unwrap();
+    let bogus_target = repo_dir.path().join("missing-target-for-move-item-test");
+    common::create_file_symlink(&bogus_target, &file_path);
 
     let new_path = repo_dir.path().join("secret_renamed.txt");
     let err = ops::move_item::move_item(&mut ctx, &file_path, &new_path, false, &link, &ignore)

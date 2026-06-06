@@ -60,3 +60,29 @@ pub fn run_git(cwd: &Path, args: &[&str]) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// Creates a file symlink in a platform-aware way for integration tests.
+#[allow(dead_code)]
+pub fn create_file_symlink(target: &Path, link_path: &Path) {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to create symlink {} -> {}: {e}",
+                link_path.display(),
+                target.display()
+            )
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to create symlink {} -> {}: {e}",
+                link_path.display(),
+                target.display()
+            )
+        });
+    }
+}
