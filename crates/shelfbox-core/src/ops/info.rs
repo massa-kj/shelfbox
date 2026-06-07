@@ -3,14 +3,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::{
-    context::RepoContext,
-    error::{AppError, Result},
-    ignore::IgnoreBackend,
-    link::LinkStrategy,
-};
+use crate::{context::RepoContext, error::Result, ignore::IgnoreBackend, link::LinkStrategy};
 
-use super::path::repo_relative_path;
+use super::path::repo_relative_string;
 
 /// Diagnostic metadata for a single shelved item.
 ///
@@ -62,13 +57,7 @@ pub fn info(
     ignore: &dyn IgnoreBackend,
 ) -> Result<ItemInfo> {
     // Convert abs_path → repo-relative string (forward slashes).
-    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
-    let rel_str = rel_path
-        .to_str()
-        .ok_or_else(|| AppError::PathOutsideRepo {
-            path: abs_path.to_path_buf(),
-        })?
-        .replace('\\', "/");
+    let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
 
     // Look up the manifest entry.
     let manifest_item = ctx.manifest.items.iter().find(|item| item.path == rel_str);

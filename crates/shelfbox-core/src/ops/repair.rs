@@ -6,7 +6,7 @@ use crate::{
     link::LinkStrategy,
 };
 
-use super::path::repo_relative_path;
+use super::path::repo_relative_string;
 
 /// The outcome of a single repair attempt.
 #[derive(Debug, PartialEq, Eq)]
@@ -45,8 +45,7 @@ pub fn repair(
     force: bool,
 ) -> Result<RepairOutcome> {
     // ── Resolve repo-relative path ────────────────────────────────────────
-    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
-    let rel_str = rel_path.to_string_lossy().into_owned();
+    let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
 
     // ── Must be in the manifest ───────────────────────────────────────────
     let item = match ctx.manifest.get(&rel_str) {

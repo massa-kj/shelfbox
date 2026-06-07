@@ -8,7 +8,7 @@ use crate::{
     store::manifest::{self, OwnershipState},
 };
 
-use super::path::repo_relative_path;
+use super::path::repo_relative_string;
 
 /// Restores `abs_path` from the store: removes the symlink and moves the item
 /// back to its original location in the repository.
@@ -40,8 +40,7 @@ pub fn restore(
 ) -> Result<()> {
     // ── Validation ───────────────────────────────────────────────────────────
     // Must be within the repository root.
-    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
-    let rel_str = rel_path.to_string_lossy().into_owned();
+    let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
 
     // ── keep_store fast path ─────────────────────────────────────────────────
     // Transition the item to Detached: preserve the manifest entry for

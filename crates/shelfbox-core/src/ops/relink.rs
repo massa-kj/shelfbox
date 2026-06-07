@@ -7,7 +7,7 @@ use crate::{
     store::manifest::{self, OwnershipState},
 };
 
-use super::path::repo_relative_path;
+use super::path::repo_relative_string;
 
 /// Outcome of a [`relink`] operation.
 #[derive(Debug, PartialEq, Eq)]
@@ -48,8 +48,7 @@ pub fn relink(
     link: &dyn LinkStrategy,
 ) -> Result<RelinkOutcome> {
     // ── Resolve repo-relative path ────────────────────────────────────────
-    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
-    let rel_str = rel_path.to_string_lossy().into_owned();
+    let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
 
     // ── Must be in the manifest ───────────────────────────────────────────
     let item = ctx

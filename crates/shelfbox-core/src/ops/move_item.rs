@@ -9,7 +9,7 @@ use crate::{
     store::manifest::{self, ItemKind},
 };
 
-use super::path::repo_relative_path;
+use super::path::{normalize_repo_relative, repo_relative_path};
 
 // ── Store-level rename helper ─────────────────────────────────────────────────
 
@@ -75,8 +75,8 @@ pub fn move_item(
     let old_rel = repo_relative_path(&ctx.repo_root, old_abs)?;
     let new_rel = repo_relative_path(&ctx.repo_root, new_abs)?;
 
-    let old_rel_str = old_rel.to_string_lossy().into_owned();
-    let new_rel_str = new_rel.to_string_lossy().into_owned();
+    let old_rel_str = normalize_repo_relative(&old_rel);
+    let new_rel_str = normalize_repo_relative(&new_rel);
 
     // Source must be managed.
     let item = ctx

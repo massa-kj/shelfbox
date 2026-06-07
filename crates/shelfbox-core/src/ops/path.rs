@@ -27,6 +27,16 @@ pub(crate) fn repo_relative_path(repo_root: &Path, abs_path: &Path) -> Result<Pa
     })
 }
 
+/// Converts an absolute path to a repo-relative string using forward slashes.
+pub(crate) fn repo_relative_string(repo_root: &Path, abs_path: &Path) -> Result<String> {
+    repo_relative_path(repo_root, abs_path).map(|rel| normalize_repo_relative(&rel))
+}
+
+/// Normalizes a repo-relative path for manifest and ignore file usage.
+pub(crate) fn normalize_repo_relative(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
     if let Ok(meta) = fs::symlink_metadata(path) {
         if !meta.file_type().is_symlink() {

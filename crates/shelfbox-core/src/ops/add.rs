@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use ulid::Ulid;
 
-use super::path::repo_relative_path;
+use super::path::{normalize_repo_relative, repo_relative_path, repo_relative_string};
 use crate::{
     context::{self, RepoContext},
     error::{AppError, Result},
@@ -33,7 +33,7 @@ pub fn add(
     // ── Path validation ──────────────────────────────────────────────────────
     // Must be within the repository root.
     let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
-    let rel_str = rel_path.to_string_lossy().into_owned();
+    let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
 
     // Must not be inside .git/.
     if rel_path.starts_with(".git") {
@@ -230,9 +230,9 @@ pub fn add_directory(
 ) -> Result<DirectoryAddResult> {
     // ── Validate the directory ───────────────────────────────────────────────
     let rel_dir = repo_relative_path(&ctx.repo_root, abs_dir)?;
-    let rel_str = rel_dir.to_string_lossy().into_owned();
+    let rel_str = repo_relative_string(&ctx.repo_root, abs_dir)?;
 
-    if rel_str.starts_with(".git") {
+    if rel_dir.starts_with(".git") {
         return Err(AppError::PathInsideGitDir {
             path: abs_dir.to_path_buf(),
         });
@@ -257,10 +257,7 @@ pub fn add_directory(
         let rel_buf =
             repo_relative_path(&ctx.repo_root, nested).unwrap_or_else(|_| nested.to_path_buf());
         let rel = rel_buf.as_path();
-        results.push((
-            rel.to_string_lossy().into_owned(),
-            DirItemOutcome::NestedGitRepo,
-        ));
+        results.push((normalize_repo_relative(rel), DirItemOutcome::NestedGitRepo));
     }
 
     // ── Process each candidate ───────────────────────────────────────────────
@@ -268,7 +265,7 @@ pub fn add_directory(
 
     for candidate in candidates {
         let rel_cand = repo_relative_path(&ctx.repo_root, &candidate)?;
-        let rel_cand_str = rel_cand.to_string_lossy().into_owned();
+        let rel_cand_str = normalize_repo_relative(&rel_cand);
 
         if ctx.manifest.contains(&rel_cand_str) {
             results.push((
