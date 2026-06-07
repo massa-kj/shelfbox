@@ -226,4 +226,3 @@ fn concurrent_adds_serialize_via_lock() {
         "secret2.txt must be in manifest"
     );
 }
-

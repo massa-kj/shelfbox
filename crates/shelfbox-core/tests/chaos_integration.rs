@@ -277,4 +277,3 @@ fn partial_store_corruption_shows_mixed_status() {
         "gamma.txt must still be readable"
     );
 }
-

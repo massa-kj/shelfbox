@@ -13,6 +13,27 @@ use crate::{
     },
 };
 
+fn repo_relative_path(repo_root: &Path, abs_path: &Path) -> Result<PathBuf> {
+    if let Ok(rel) = abs_path.strip_prefix(repo_root) {
+        return Ok(rel.to_path_buf());
+    }
+
+    // On some platforms, the same location may be represented with different
+    // absolute prefixes (e.g. /var vs /private/var on macOS).
+    let canon_repo = std::fs::canonicalize(repo_root).ok();
+    let canon_path = std::fs::canonicalize(abs_path).ok();
+
+    if let (Some(canon_repo), Some(canon_path)) = (canon_repo, canon_path) {
+        if let Ok(rel) = canon_path.strip_prefix(canon_repo) {
+            return Ok(rel.to_path_buf());
+        }
+    }
+
+    Err(AppError::PathOutsideRepo {
+        path: abs_path.to_path_buf(),
+    })
+}
+
 /// Shelves `abs_path` into the store, leaving a symlink in its place.
 ///
 /// # Dry-run
@@ -31,12 +52,7 @@ pub fn add(
 ) -> Result<()> {
     // ── Path validation ──────────────────────────────────────────────────────
     // Must be within the repository root.
-    let rel_path =
-        abs_path
-            .strip_prefix(&ctx.repo_root)
-            .map_err(|_| AppError::PathOutsideRepo {
-                path: abs_path.to_path_buf(),
-            })?;
+    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
     let rel_str = rel_path.to_string_lossy().into_owned();
 
     // Must not be inside .git/.
@@ -233,11 +249,7 @@ pub fn add_directory(
     ignore: &dyn IgnoreBackend,
 ) -> Result<DirectoryAddResult> {
     // ── Validate the directory ───────────────────────────────────────────────
-    let rel_dir = abs_dir
-        .strip_prefix(&ctx.repo_root)
-        .map_err(|_| AppError::PathOutsideRepo {
-            path: abs_dir.to_path_buf(),
-        })?;
+    let rel_dir = repo_relative_path(&ctx.repo_root, abs_dir)?;
     let rel_str = rel_dir.to_string_lossy().into_owned();
 
     if rel_str.starts_with(".git") {
@@ -262,9 +274,9 @@ pub fn add_directory(
 
     // Report nested git repos as non-fatal blocking entries.
     for nested in &nested_repos {
-        let rel = nested
-            .strip_prefix(&ctx.repo_root)
-            .unwrap_or(nested.as_path());
+        let rel_buf =
+            repo_relative_path(&ctx.repo_root, nested).unwrap_or_else(|_| nested.to_path_buf());
+        let rel = rel_buf.as_path();
         results.push((
             rel.to_string_lossy().into_owned(),
             DirItemOutcome::NestedGitRepo,
@@ -275,9 +287,7 @@ pub fn add_directory(
     let mut to_shelve: Vec<(String, PathBuf, String)> = Vec::new(); // (rel, abs, store_path_rel)
 
     for candidate in candidates {
-        let rel_cand = candidate
-            .strip_prefix(&ctx.repo_root)
-            .expect("candidate must be within repo_root");
+        let rel_cand = repo_relative_path(&ctx.repo_root, &candidate)?;
         let rel_cand_str = rel_cand.to_string_lossy().into_owned();
 
         if ctx.manifest.contains(&rel_cand_str) {

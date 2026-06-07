@@ -1632,4 +1632,3 @@ fn move_item_dry_run_makes_no_changes() {
     assert!(ctx.manifest.contains("original.txt"));
     assert!(!ctx.manifest.contains("renamed.txt"));
 }
-
