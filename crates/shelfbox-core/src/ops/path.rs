@@ -28,8 +28,12 @@ pub(crate) fn repo_relative_path(repo_root: &Path, abs_path: &Path) -> Result<Pa
 }
 
 fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
-    if let Ok(canon) = fs::canonicalize(path) {
-        return Some(canon);
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if !meta.file_type().is_symlink() {
+            if let Ok(canon) = fs::canonicalize(path) {
+                return Some(canon);
+            }
+        }
     }
 
     let mut tail: Vec<OsString> = Vec::new();
