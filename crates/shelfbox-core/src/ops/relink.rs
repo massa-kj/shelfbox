@@ -7,6 +7,8 @@ use crate::{
     store::manifest::{self, OwnershipState},
 };
 
+use super::path::repo_relative_path;
+
 /// Outcome of a [`relink`] operation.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RelinkOutcome {
@@ -46,12 +48,7 @@ pub fn relink(
     link: &dyn LinkStrategy,
 ) -> Result<RelinkOutcome> {
     // ── Resolve repo-relative path ────────────────────────────────────────
-    let rel_path =
-        abs_path
-            .strip_prefix(&ctx.repo_root)
-            .map_err(|_| AppError::PathOutsideRepo {
-                path: abs_path.to_path_buf(),
-            })?;
+    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
     let rel_str = rel_path.to_string_lossy().into_owned();
 
     // ── Must be in the manifest ───────────────────────────────────────────

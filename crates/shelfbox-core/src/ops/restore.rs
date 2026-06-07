@@ -8,6 +8,8 @@ use crate::{
     store::manifest::{self, OwnershipState},
 };
 
+use super::path::repo_relative_path;
+
 /// Restores `abs_path` from the store: removes the symlink and moves the item
 /// back to its original location in the repository.
 ///
@@ -38,12 +40,7 @@ pub fn restore(
 ) -> Result<()> {
     // ── Validation ───────────────────────────────────────────────────────────
     // Must be within the repository root.
-    let rel_path =
-        abs_path
-            .strip_prefix(&ctx.repo_root)
-            .map_err(|_| AppError::PathOutsideRepo {
-                path: abs_path.to_path_buf(),
-            })?;
+    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
     let rel_str = rel_path.to_string_lossy().into_owned();
 
     // ── keep_store fast path ─────────────────────────────────────────────────

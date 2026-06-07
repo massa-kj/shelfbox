@@ -9,6 +9,8 @@ use crate::{
     store::manifest::{self, ItemKind},
 };
 
+use super::path::repo_relative_path;
+
 // ── Store-level rename helper ─────────────────────────────────────────────────
 
 /// Moves `src` to `dst` atomically when both paths reside on the same
@@ -70,16 +72,8 @@ pub fn move_item(
     // ── Phase 1: validate ─────────────────────────────────────────────────
 
     // Both paths must reside inside the repository root.
-    let old_rel = old_abs
-        .strip_prefix(&ctx.repo_root)
-        .map_err(|_| AppError::PathOutsideRepo {
-            path: old_abs.to_path_buf(),
-        })?;
-    let new_rel = new_abs
-        .strip_prefix(&ctx.repo_root)
-        .map_err(|_| AppError::PathOutsideRepo {
-            path: new_abs.to_path_buf(),
-        })?;
+    let old_rel = repo_relative_path(&ctx.repo_root, old_abs)?;
+    let new_rel = repo_relative_path(&ctx.repo_root, new_abs)?;
 
     let old_rel_str = old_rel.to_string_lossy().into_owned();
     let new_rel_str = new_rel.to_string_lossy().into_owned();

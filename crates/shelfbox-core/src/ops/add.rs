@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use ulid::Ulid;
 
+use super::path::repo_relative_path;
 use crate::{
     context::{self, RepoContext},
     error::{AppError, Result},
@@ -12,27 +13,6 @@ use crate::{
         self, GitInfo, Item, ItemKind, LinkInfo, LinkType, NamespaceEntry, OwnershipState,
     },
 };
-
-fn repo_relative_path(repo_root: &Path, abs_path: &Path) -> Result<PathBuf> {
-    if let Ok(rel) = abs_path.strip_prefix(repo_root) {
-        return Ok(rel.to_path_buf());
-    }
-
-    // On some platforms, the same location may be represented with different
-    // absolute prefixes (e.g. /var vs /private/var on macOS).
-    let canon_repo = std::fs::canonicalize(repo_root).ok();
-    let canon_path = std::fs::canonicalize(abs_path).ok();
-
-    if let (Some(canon_repo), Some(canon_path)) = (canon_repo, canon_path) {
-        if let Ok(rel) = canon_path.strip_prefix(canon_repo) {
-            return Ok(rel.to_path_buf());
-        }
-    }
-
-    Err(AppError::PathOutsideRepo {
-        path: abs_path.to_path_buf(),
-    })
-}
 
 /// Shelves `abs_path` into the store, leaving a symlink in its place.
 ///

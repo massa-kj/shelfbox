@@ -6,6 +6,8 @@ use crate::{
     link::LinkStrategy,
 };
 
+use super::path::repo_relative_path;
+
 /// The outcome of a single repair attempt.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RepairOutcome {
@@ -43,12 +45,7 @@ pub fn repair(
     force: bool,
 ) -> Result<RepairOutcome> {
     // ── Resolve repo-relative path ────────────────────────────────────────
-    let rel_path =
-        abs_path
-            .strip_prefix(&ctx.repo_root)
-            .map_err(|_| AppError::PathOutsideRepo {
-                path: abs_path.to_path_buf(),
-            })?;
+    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
     let rel_str = rel_path.to_string_lossy().into_owned();
 
     // ── Must be in the manifest ───────────────────────────────────────────

@@ -10,6 +10,8 @@ use crate::{
     link::LinkStrategy,
 };
 
+use super::path::repo_relative_path;
+
 /// Diagnostic metadata for a single shelved item.
 ///
 /// Returned by [`info`] and intended for use as a debugging / scripting API.
@@ -60,12 +62,7 @@ pub fn info(
     ignore: &dyn IgnoreBackend,
 ) -> Result<ItemInfo> {
     // Convert abs_path → repo-relative string (forward slashes).
-    let rel_path =
-        abs_path
-            .strip_prefix(&ctx.repo_root)
-            .map_err(|_| AppError::PathOutsideRepo {
-                path: abs_path.to_path_buf(),
-            })?;
+    let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
     let rel_str = rel_path
         .to_str()
         .ok_or_else(|| AppError::PathOutsideRepo {

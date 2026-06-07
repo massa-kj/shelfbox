@@ -5,6 +5,7 @@ pub mod info;
 pub mod integrity;
 pub mod list;
 pub mod move_item;
+pub(crate) mod path;
 pub mod relink;
 pub mod repair;
 pub mod restore;
