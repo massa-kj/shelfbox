@@ -83,13 +83,13 @@ fn acquire_store_lock(lock_path: &Path, write: bool) -> Result<StoreLock> {
     let guard = if write {
         let g = lock_ref.write().map_err(|e| AppError::StoreLocked {
             lock_path: lock_path.to_path_buf(),
-            source: e,
+            source: Box::new(e),
         })?;
         StoreLockGuard::Write(ManuallyDrop::new(g))
     } else {
         let g = lock_ref.read().map_err(|e| AppError::StoreLocked {
             lock_path: lock_path.to_path_buf(),
-            source: e,
+            source: Box::new(e),
         })?;
         StoreLockGuard::Read(ManuallyDrop::new(g))
     };

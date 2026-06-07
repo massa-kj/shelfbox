@@ -13,6 +13,10 @@ use shelfbox_core::{context, ignore::GitInfoExclude, link::DefaultLinkStrategy, 
 
 mod common;
 
+fn require_symlink_support() -> bool {
+    common::require_symlink_support()
+}
+
 // ── Scenario 1: re-clone ──────────────────────────────────────────────────────
 
 /// Deleting and re-cloning a repository must assign a *new* ULID while leaving
@@ -21,6 +25,9 @@ mod common;
 /// Failure matrix: #4 (repo moved / re-cloned).
 #[test]
 fn reclone_starts_fresh_while_preserving_old_store() {
+    if !require_symlink_support() {
+        return;
+    }
     let original_repo = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -80,6 +87,9 @@ fn reclone_starts_fresh_while_preserving_old_store() {
 /// Failure matrix: #4 (repo moved — full rename, not just root update).
 #[test]
 fn repo_rename_creates_new_index_entry_and_preserves_store() {
+    if !require_symlink_support() {
+        return;
+    }
     // Use a base TempDir and manage subdirectories manually so we can rename.
     let base_dir = TempDir::new().unwrap();
     let api_path = base_dir.path().join("api");
@@ -142,6 +152,9 @@ fn repo_rename_creates_new_index_entry_and_preserves_store() {
 /// Failure matrix: #8 (concurrent access).
 #[test]
 fn concurrent_adds_serialize_via_lock() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -213,3 +226,4 @@ fn concurrent_adds_serialize_via_lock() {
         "secret2.txt must be in manifest"
     );
 }
+

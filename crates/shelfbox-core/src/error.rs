@@ -156,7 +156,7 @@ pub enum AppError {
     Io {
         path: PathBuf,
         #[source]
-        source: std::io::Error,
+        source: Box<std::io::Error>,
     },
 
     /// Failed to parse or serialize JSON (index / manifest).
@@ -164,7 +164,7 @@ pub enum AppError {
     Json {
         path: PathBuf,
         #[source]
-        source: serde_json::Error,
+        source: Box<serde_json::Error>,
     },
 
     /// Failed to parse TOML config.
@@ -172,7 +172,7 @@ pub enum AppError {
     TomlParse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 
     // ── Git subprocess ─────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ pub enum AppError {
     StoreLocked {
         lock_path: PathBuf,
         #[source]
-        source: std::io::Error,
+        source: Box<std::io::Error>,
     },
 
     // ── Internal / unexpected ─────────────────────────────────────────────
@@ -204,7 +204,7 @@ impl AppError {
     pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
-            source,
+            source: Box::new(source),
         }
     }
 
@@ -212,7 +212,7 @@ impl AppError {
     pub fn json(path: impl Into<PathBuf>, source: serde_json::Error) -> Self {
         Self::Json {
             path: path.into(),
-            source,
+            source: Box::new(source),
         }
     }
 
@@ -220,7 +220,7 @@ impl AppError {
     pub fn toml_parse(path: impl Into<PathBuf>, source: toml::de::Error) -> Self {
         Self::TomlParse {
             path: path.into(),
-            source,
+            source: Box::new(source),
         }
     }
 

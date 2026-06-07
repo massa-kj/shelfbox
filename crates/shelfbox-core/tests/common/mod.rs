@@ -5,6 +5,7 @@
 /// `chaos_integration.rs`, and `scenario_integration.rs`.
 use std::path::Path;
 use std::process::Command as StdCommand;
+use std::sync::OnceLock;
 
 use tempfile::TempDir;
 
@@ -61,28 +62,59 @@ pub fn run_git(cwd: &Path, args: &[&str]) {
     );
 }
 
-/// Creates a file symlink in a platform-aware way for integration tests.
-#[allow(dead_code)]
-pub fn create_file_symlink(target: &Path, link_path: &Path) {
+fn try_create_file_symlink(target: &Path, link_path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(target, link_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to create symlink {} -> {}: {e}",
-                link_path.display(),
-                target.display()
-            )
-        });
+        std::os::unix::fs::symlink(target, link_path)
     }
 
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_file(target, link_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to create symlink {} -> {}: {e}",
-                link_path.display(),
-                target.display()
-            )
-        });
+        std::os::windows::fs::symlink_file(target, link_path)
     }
+}
+
+/// Returns `true` when the current environment can create file symlinks.
+#[allow(dead_code)]
+pub fn require_symlink_support() -> bool {
+    static SYMLINK_SUPPORT_ERROR: OnceLock<Option<String>> = OnceLock::new();
+
+    let unsupported_reason = SYMLINK_SUPPORT_ERROR.get_or_init(|| {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("symlink-target.txt");
+        let link_path = dir.path().join("symlink-link.txt");
+        std::fs::write(&target, "probe").unwrap();
+
+        match try_create_file_symlink(&target, &link_path) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&link_path);
+                None
+            }
+            Err(err) => Some(format!(
+                "skipping symlink-dependent integration test because symlink creation is unavailable: {err}"
+            )),
+        }
+    });
+
+    if let Some(reason) = unsupported_reason {
+        if std::env::var_os("SHELFBOX_REQUIRE_SYMLINKS").is_some() {
+            panic!("{reason}");
+        }
+        eprintln!("{reason}");
+        return false;
+    }
+
+    true
+}
+
+/// Creates a file symlink in a platform-aware way for integration tests.
+#[allow(dead_code)]
+pub fn create_file_symlink(target: &Path, link_path: &Path) {
+    try_create_file_symlink(target, link_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to create symlink {} -> {}: {e}",
+            link_path.display(),
+            target.display()
+        )
+    });
 }

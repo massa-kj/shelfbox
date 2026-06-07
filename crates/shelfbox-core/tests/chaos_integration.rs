@@ -17,6 +17,10 @@ use shelfbox_core::{
 
 mod common;
 
+fn require_symlink_support() -> bool {
+    common::require_symlink_support()
+}
+
 // ── Worktree scenarios (failure matrix #6) ────────────────────────────────────
 
 /// Accessing a repository via a linked worktree must reuse the same ULID as
@@ -60,6 +64,9 @@ fn worktree_add_reuses_repo_ulid() {
 /// repository is accessed via a linked worktree.
 #[test]
 fn worktree_shelved_items_visible_from_linked_worktree() {
+    if !require_symlink_support() {
+        return;
+    }
     let main_dir = common::init_git_repo_with_commit();
     let store_dir = TempDir::new().unwrap();
     let link = DefaultLinkStrategy;
@@ -105,6 +112,9 @@ fn worktree_shelved_items_visible_from_linked_worktree() {
 /// it becomes an orphan unreachable via the new context.
 #[test]
 fn index_deleted_creates_fresh_context_with_empty_manifest() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
     let link = DefaultLinkStrategy;
@@ -191,6 +201,9 @@ fn concurrent_read_locks_are_shared() {
 /// touching the healthy ones.
 #[test]
 fn partial_store_corruption_shows_mixed_status() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
     let link = DefaultLinkStrategy;
@@ -264,3 +277,4 @@ fn partial_store_corruption_shows_mixed_status() {
         "gamma.txt must still be readable"
     );
 }
+

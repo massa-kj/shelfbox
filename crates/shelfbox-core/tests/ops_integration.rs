@@ -17,10 +17,17 @@ use shelfbox_core::{
 
 mod common;
 
+fn require_symlink_support() -> bool {
+    common::require_symlink_support()
+}
+
 // ── add / restore ─────────────────────────────────────────────────────────────
 
 #[test]
 fn add_and_restore_file() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -92,6 +99,9 @@ fn add_and_restore_file() {
 
 #[test]
 fn add_dry_run_makes_no_changes() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -127,6 +137,9 @@ fn add_dry_run_makes_no_changes() {
 
 #[test]
 fn restore_dry_run_makes_no_changes() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -159,6 +172,9 @@ fn restore_dry_run_makes_no_changes() {
 
 #[test]
 fn add_already_managed_returns_error() {
+    if !require_symlink_support() {
+        return;
+    }
     // Simulate an inconsistent state: the manifest records the item but the
     // symlink was removed and the original file was copied back manually.
     // In this state the path is a regular file, not a symlink, so the
@@ -259,6 +275,9 @@ fn restore_nonexistent_path_returns_not_managed_link_error() {
 
 #[test]
 fn restore_keep_ignore_preserves_exclude_entry() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -284,6 +303,9 @@ fn restore_keep_ignore_preserves_exclude_entry() {
 
 #[test]
 fn restore_keep_store_leaves_symlink_and_store_item() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -334,6 +356,9 @@ fn restore_keep_store_leaves_symlink_and_store_item() {
 
 #[test]
 fn doctor_finds_orphan_store_item() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -422,6 +447,9 @@ fn add_git_dir_path_returns_error() {
 
 #[test]
 fn add_existing_symlink_returns_error() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -446,6 +474,9 @@ fn add_existing_symlink_returns_error() {
 
 #[test]
 fn doctor_reports_error_for_dangling_symlink() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -473,6 +504,9 @@ fn doctor_reports_error_for_dangling_symlink() {
 
 #[test]
 fn doctor_reports_warn_for_missing_exclude_entry() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -505,6 +539,9 @@ fn doctor_reports_warn_for_missing_exclude_entry() {
 
 #[test]
 fn repair_recreates_missing_symlink() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -540,6 +577,9 @@ fn repair_recreates_missing_symlink() {
 
 #[test]
 fn repair_rejects_wrong_target_symlink_without_force() {
+    if !require_symlink_support() {
+        return;
+    }
     // A symlink that points outside the managed store must NOT be silently
     // overwritten.  repair() must return RepairSymlinkTargetMismatch so the
     // user can investigate before running with --force.
@@ -583,6 +623,9 @@ fn repair_rejects_wrong_target_symlink_without_force() {
 
 #[test]
 fn repair_force_relinks_wrong_target_symlink() {
+    if !require_symlink_support() {
+        return;
+    }
     // With --force, repair must overwrite a wrong-target symlink and restore
     // the correct link to the managed store item.
     let repo_dir = common::init_git_repo();
@@ -611,6 +654,9 @@ fn repair_force_relinks_wrong_target_symlink() {
 
 #[test]
 fn repair_already_healthy_returns_no_op() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -629,6 +675,9 @@ fn repair_already_healthy_returns_no_op() {
 
 #[test]
 fn repair_returns_store_missing_when_store_item_gone() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -657,6 +706,9 @@ fn repair_returns_store_missing_when_store_item_gone() {
 
 #[test]
 fn repair_returns_not_managed_for_unknown_path() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -672,6 +724,9 @@ fn repair_returns_not_managed_for_unknown_path() {
 
 #[test]
 fn repair_refuses_to_overwrite_regular_file() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -711,6 +766,9 @@ fn repair_refuses_to_overwrite_regular_file() {
 
 #[test]
 fn repair_dry_run_makes_no_changes() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -735,6 +793,9 @@ fn repair_dry_run_makes_no_changes() {
 
 #[test]
 fn doctor_fix_repairs_missing_exclude_entry() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -785,6 +846,9 @@ fn doctor_fix_repairs_missing_exclude_entry() {
 
 #[test]
 fn doctor_fix_repairs_missing_symlink() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -822,6 +886,9 @@ fn doctor_fix_repairs_missing_symlink() {
 
 #[test]
 fn doctor_fix_records_cannot_fix_for_store_missing() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -854,6 +921,9 @@ fn doctor_fix_records_cannot_fix_for_store_missing() {
 
 #[test]
 fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
+    if !require_symlink_support() {
+        return;
+    }
     // A store item with no repo-side symlink is a "true orphan".
     // Without --yes, doctor --fix reports NeedsConfirmation and leaves the file.
     let repo_dir = common::init_git_repo();
@@ -891,6 +961,9 @@ fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
 
 #[test]
 fn doctor_fix_true_orphan_deleted_with_yes() {
+    if !require_symlink_support() {
+        return;
+    }
     // A store item with no repo-side symlink is a "true orphan".
     // With --yes, doctor --fix deletes it.
     let repo_dir = common::init_git_repo();
@@ -919,6 +992,9 @@ fn doctor_fix_true_orphan_deleted_with_yes() {
 
 #[test]
 fn doctor_fix_dry_run_makes_no_changes() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -965,6 +1041,9 @@ fn doctor_fix_dry_run_makes_no_changes() {
 
 #[test]
 fn doctor_fix_rebuilds_manifest_when_missing() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1024,6 +1103,9 @@ fn doctor_fix_rebuilds_manifest_when_missing() {
 
 #[test]
 fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1063,6 +1145,9 @@ fn doctor_fix_rebuilt_manifest_produces_healthy_status() {
 
 #[test]
 fn doctor_fix_rebuilds_only_missing_items_when_partial() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1111,6 +1196,9 @@ fn doctor_fix_rebuilds_only_missing_items_when_partial() {
 
 #[test]
 fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
+    if !require_symlink_support() {
+        return;
+    }
     // Scenario: one store item has a valid symlink (rebuild candidate) and
     // another has no symlink (true orphan).  Without --yes, doctor --fix must
     // report NeedsConfirmation for both and not modify the manifest or delete
@@ -1172,6 +1260,9 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
 
 #[test]
 fn doctor_fix_rebuild_dry_run_does_not_persist() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1224,6 +1315,9 @@ fn doctor_fix_rebuild_dry_run_does_not_persist() {
 
 #[test]
 fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
+    if !require_symlink_support() {
+        return;
+    }
     // A symlink at the expected repo-relative path that points to the WRONG
     // store location must NOT be absorbed as a rebuild candidate.  Only a
     // symlink whose target matches `<repo_store>/items/<path>` is valid.
@@ -1274,6 +1368,9 @@ fn doctor_fix_wrong_target_symlink_is_not_a_rebuild_candidate() {
 
 #[test]
 fn move_item_renames_store_and_updates_symlink() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1344,6 +1441,9 @@ fn move_item_renames_store_and_updates_symlink() {
 
 #[test]
 fn move_item_rejects_directory_kind() {
+    if !require_symlink_support() {
+        return;
+    }
     use shelfbox_core::store::manifest::{
         GitInfo, Item, ItemKind, LinkInfo, LinkType, OwnershipState,
     };
@@ -1390,6 +1490,9 @@ fn move_item_rejects_directory_kind() {
 
 #[test]
 fn move_item_rejects_when_destination_exists() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1423,6 +1526,9 @@ fn move_item_rejects_when_destination_exists() {
 
 #[test]
 fn move_item_rejects_when_new_path_already_managed() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1453,6 +1559,9 @@ fn move_item_rejects_when_new_path_already_managed() {
 
 #[test]
 fn move_item_rejects_when_symlink_mismatch() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1487,6 +1596,9 @@ fn move_item_rejects_when_symlink_mismatch() {
 
 #[test]
 fn move_item_dry_run_makes_no_changes() {
+    if !require_symlink_support() {
+        return;
+    }
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1520,3 +1632,4 @@ fn move_item_dry_run_makes_no_changes() {
     assert!(ctx.manifest.contains("original.txt"));
     assert!(!ctx.manifest.contains("renamed.txt"));
 }
+
