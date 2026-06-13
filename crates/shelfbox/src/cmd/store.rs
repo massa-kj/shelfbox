@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use shelfbox_core::{
     config::Config,
+    ops,
     store::{index, manifest, manifest::OwnershipState, meta},
 };
 
@@ -30,6 +31,13 @@ pub enum StoreCommand {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Explicitly migrate legacy manifests to the current schema.
+    MigrateManifests {
+        /// Print what would be converted without writing manifests.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 // ── store command runner ────────────────────────────────────────────────────────────────────────
@@ -47,6 +55,10 @@ pub fn run_store(
         StoreCommand::Verify => cmd_store_verify(store_override),
         StoreCommand::Gc { dry_run, yes } => {
             cmd_store_gc(store_override, dry_run, yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        StoreCommand::MigrateManifests { dry_run } => {
+            cmd_store_migrate_manifests(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -246,6 +258,38 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
     }
 
     println!("Done. {removed} removed, {skipped} skipped (reclaimable).");
+
+    Ok(())
+}
+
+fn cmd_store_migrate_manifests(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
+    let cfg = Config::load(store_override)?;
+    let report = ops::migrate_manifest::run(&cfg.store, dry_run)?;
+
+    if dry_run {
+        println!("Dry run - no manifests written.");
+    }
+    println!("target manifest version: {}", report.target_version);
+    println!("manifests converted: {}", report.converted_total());
+    for (version, count) in &report.converted {
+        println!("  v{} -> v{}: {}", version, report.target_version, count);
+    }
+    println!("manifests unchanged: {}", report.unchanged_total());
+    for (version, count) in &report.unchanged {
+        println!("  v{}: {}", version, count);
+    }
+    println!("skipped/failed: {}", report.skipped.len());
+    for skipped in &report.skipped {
+        println!("  {}: {}", skipped.repo_store_dir, skipped.reason);
+    }
+    println!(
+        "ownership mappings: stale -> unreachable: {}, adopted -> detached: {}",
+        report.stale_to_unreachable, report.adopted_to_detached
+    );
+    println!(
+        "namespace entries dropped: {}",
+        report.namespace_entries_dropped
+    );
 
     Ok(())
 }

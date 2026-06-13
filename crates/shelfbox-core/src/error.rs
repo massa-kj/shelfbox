@@ -130,7 +130,7 @@ pub enum AppError {
     /// loaded.  The store was written by a different version of shelfbox.
     #[error(
         "manifest at '{path}' has version {found}, expected {expected}\n\
-         hint: re-shelve your items to migrate to the new format"
+         hint: run 'shelfbox store migrate-manifests' for legacy manifests"
     )]
     ManifestVersionMismatch {
         path: PathBuf,

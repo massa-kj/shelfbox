@@ -3,6 +3,7 @@ pub mod detect_transitions;
 pub mod info;
 pub mod integrity;
 pub mod list;
+pub mod migrate_manifest;
 pub mod move_item;
 pub(crate) mod path;
 pub mod relink;

@@ -190,6 +190,14 @@ pub fn manifest_path(repo_store: &Path) -> PathBuf {
     repo_store.join("manifest.json")
 }
 
+pub fn read_version(repo_store: &Path) -> Result<u32> {
+    let path = manifest_path(repo_store);
+    let s = std::fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+    let raw: serde_json::Value =
+        serde_json::from_str(&s).map_err(|e| AppError::json(path.clone(), e))?;
+    Ok(raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32)
+}
+
 /// Reads and parses the manifest from disk.
 pub fn load(repo_store: &Path) -> Result<Manifest> {
     let path = manifest_path(repo_store);
