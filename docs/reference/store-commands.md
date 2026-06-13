@@ -10,7 +10,7 @@ shelfbox store info
 
 **Output:**
 
-```
+```text
 Store path  : /home/user/.local/share/shelfbox
 Store ID    : 01JTARXXXXXXXXXXXXXXXX
 Hostname    : my-workstation
@@ -23,14 +23,16 @@ Disk usage  : 12.3 KiB
 
 ### `store verify`
 
-Runs a deep integrity check across all repos in the store, checking that every
-manifest entry has a corresponding symlink and store file.
+Runs an integrity check across the store.
+
+For repositories with current local Git metadata, `store verify` checks both
+repo-side symlinks and store files. For repositories rebuilt from manifests
+alone (`root: None`), it verifies store-side data and reports that repo-side
+checks require `repo reclaim` and `repo repair`.
 
 ```sh
 shelfbox store verify
 ```
-
-Prints `MISS` lines for any problems found, then a summary.
 
 **Exit codes:**
 
@@ -41,40 +43,107 @@ Prints `MISS` lines for any problems found, then a summary.
 
 ---
 
+### `store rebuild-index`
+
+Regenerates `index.json` from canonical manifests under `repos/`.
+
+```sh
+shelfbox store rebuild-index
+shelfbox store rebuild-index --dry-run
+```
+
+**Behavior:**
+
+1. Scans `repos/*/manifest.json`.
+2. Reads each valid `repo_id` and repository store directory.
+3. Fails without writing if duplicate `repo_id` or duplicate `item_id` values exist.
+4. Reports corrupted manifests and skips them.
+5. Writes a new `index.json`.
+
+Rebuilt entries contain:
+
+```text
+repo_id
+repo_store_dir
+last_seen_at
+```
+
+Rebuilt entries do not invent:
+
+```text
+root
+git_dir
+git_common_dir
+```
+
+These local Git metadata fields are restored later by `repo reclaim`, `repo
+repair`, or normal repository operations.
+
+---
+
+### `store migrate-manifests`
+
+Explicitly migrates legacy manifests to the current manifest schema.
+
+```sh
+shelfbox store migrate-manifests
+shelfbox store migrate-manifests --dry-run
+```
+
+Migration is never performed automatically during normal command execution.
+
+**Dry-run output includes:**
+
+* Number of legacy manifests that would be converted
+* Number of current manifests that would be left unchanged
+* Manifests skipped or failed, with reasons
+* Ownership-state mapping counts
+* Namespace entries that would be dropped
+
+The migration fails without writing if duplicate repository or item identities
+are detected.
+
+---
+
 ### `store gc`
 
-Removes store entries for repositories whose root directory no longer exists
-on disk (e.g. after deleting or moving a repository without restoring its
-items first).
+Performs conservative garbage collection.
 
 ```sh
 shelfbox store gc
 shelfbox store gc --dry-run
-shelfbox store gc --yes
 ```
+
+**Restriction:**
+
+`store gc` may delete only items whose manifest state is:
+
+```text
+orphaned
+```
+
+It must not delete:
+
+```text
+attached
+detached
+unreachable
+```
+
+It must not delete an entire repository store directory just because no current
+Git clone is associated with that `RepoId`.
+
+**Index reachability rules:**
+
+* `root: None` means unassociated or rebuilt from manifests; it is normal after
+  `store rebuild-index` and is not a deletion signal.
+* `root: Some(path)` where `path` no longer exists means the local clone is not
+  reachable on this machine.
+* Even when the local clone is unreachable, only confirmed `orphaned` items may
+  be deleted.
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--dry-run` | Print what would be deleted without making any changes. |
-| `--yes` | Skip confirmation and perform deletions immediately. |
-
-**Reclaimable items:**
-
-Before deleting a repo's store directory, `store gc` loads its manifest and
-checks for items in `attached`, `detached`, `stale`, or `unreachable` state.
-If any exist, deletion is skipped even with `--yes`:
-
-```
-warning: skipping '<id>' [<name>]: 3 reclaimable item(s) — run 'shelfbox repo adopt --from <ID>' first
-```
-
-At the end of the run, skipped repos are counted separately:
-
-```
-Done. 2 removed, 1 skipped (reclaimable).
-```
-
-This guard is unconditional: `store gc` never force-deletes store files that
-can still be recovered via `repo adopt`.
+| `--dry-run` | Print what would be deleted without prompting or writing. |

@@ -1,94 +1,134 @@
 # Failure Matrix
 
-This document catalogues every known failure mode in `shelfbox`, describing
-how each one manifests, how it is detected, and how to recover from it.
+This document catalogues important failure and recovery scenarios in
+`shelfbox`.
 
 The guiding hierarchy is:
 
-```
-Don't break
+```text
+Do not break data
   ↓
 If broken, detect it
   ↓
-If detected, recover from it
+If detected, recover conservatively
   ↓
-Recovery must be deterministic
+Identity-changing actions require explicit user intent
 ```
 
 ---
 
-## Failure modes
+## Failure Modes
 
 | # | Scenario | How it breaks | Detection | Recovery command | Notes |
-|---|----------|--------------|-----------|-----------------|-------|
-| 1 | **Symlink deleted** (e.g. `rm .env`) | Repo-side symlink gone; store file intact | `item status` / `repo status` → `link_exists: false` | `item repair .env` | Safe to repair; store file unaffected |
-| 2 | **Store item deleted** (data loss) | Store file gone; symlink dangling | `item status` / `repo status` → `store_exists: false` | Manual recovery (data gone) | `repair` returns `CannotFix`; data_loss_warnings emitted |
-| 3 | **Manifest lost** (`manifest.json` deleted) | No items listed; store files still exist | `repo status` → 0 items, orphan store items | `repo repair --yes` | Deterministic rebuild from `items/` layout |
-| 4 | **Index lost** (`index.json` deleted) | New ULID generated; old store dir becomes unreachable | Fresh `repo status` → 0 items, but symlinks still in repo | `repo repair --yes` in each repo | Old repo store dir is orphaned under `repos/`; symlinks still point to old store |
-| 5 | **Repo moved** (entire `mv ~/src/api ~/work/api`) | Both `root` and `git_common_dir` change; new ULID created; old shelf inaccessible | Fresh `repo status` → 0 items; next `repo repair` in any repo with a matching `git_common_dir` marks old items `stale` automatically | `repo repair` applies `Attached → Stale`; then `repo adopt --from <old-id>` to reclaim | `detect_transitions::run()` handles the transition automatically on next `repo repair` |
-| 6 | **Repo accessed via linked worktree** | Different `root` but same `git_common_dir`; two-stage lookup resolves to same ULID | Transparent (no warning) | None needed | Automatic via `git_common_dir` lookup |
-| 7 | **Interrupted write — manifest** | `manifest.json.tmp` written but `rename(2)` not called | Startup: `manifest.json` unchanged (temp file is a sibling) | None needed | Atomic `rename(2)` guarantees `manifest.json` is never half-written |
-| 8 | **Interrupted write — move phase** | File moved to store but manifest not yet saved | `repo status` → orphan store item (no manifest entry) | `repo repair --yes` | Rebuild candidate if repo-side symlink exists and target matches |
-| 9 | **Concurrent `add` from two processes** | Advisory `flock` on `<store>/.lock`; second process blocked | `AppError::StoreLocked` returned to second process | Retry after first completes | Shared-lock mode allows concurrent reads; exclusive-lock for writes |
-| 10 | **Store partially copied** (e.g. interrupted `cp -r`) | Some `items/` files missing, manifest intact | `repo status` → some items `store_exists: false` | Manual recovery (copy missing files from source) | `repair` cannot recreate missing data |
-| 11 | **Wrong-target symlink** (e.g. leftover from reclone) | Symlink at repo path points to a different store | `item status` → `link_valid: false` | `item repair --force .env` | Without `--force`, `repair` refuses to overwrite |
-| 12 | **Regular file at repo path** (user placed file) | File exists at path where symlink should be | `item status` → `link_exists: true`, `link_valid: false` | Investigate; `item restore` if desired | `repair` returns `PathIsRegularFile`; refuses to overwrite |
-| 13 | **Exclude entry missing** | File visible to `git status` (but only cosmetically) | `repo status` → `in_exclude: false` | `repo repair` | Safe; exclude block is rewritten atomically |
-| 14 | **Store relocated** (store moved to new path) | All absolute paths in index wrong; `config.store` must be updated | Every command fails with path errors | Update `config.toml` or `$SHELFBOX_STORE` then `repo repair` | `store_path` in manifest is repo-store-relative; only `index.json` roots need fixing |
-| 15 | **Premature `store gc` on reclaimable items** | Repo root gone; items in `Stale`, `Unreachable`, or `Detached` state; user attempts `store gc --yes` | `store gc` loads each repo's manifest and counts reclaimable items before deletion | Automatic — deletion is skipped even with `--yes`; no recovery needed | `Orphaned` and `Adopted` items are the only ones `store gc` will delete |
+|---|---|---|---|---|---|
+| 1 | Symlink deleted | Repo-side symlink gone; store file intact | `item status` / `repo status` | `item repair <PATH>` or `repo repair` | Store file unaffected |
+| 2 | Store item deleted | Store file gone; manifest entry remains | `item status` / `repo status` | Manual recovery | Missing data cannot be recreated |
+| 3 | Git exclude entry missing | File may appear in `git status` | `item status` / `repo status` | `repo repair` | Exclude block is rewritten |
+| 4 | Wrong-target symlink | Repo path points at another store path | `item status` / `repo status` | `item repair --force <PATH>` | Requires explicit force |
+| 5 | Regular file at repo path | User-created file occupies expected symlink path | `item status` / `repo status` | Manual decision | Repair refuses to overwrite |
+| 6 | Repository path moved | Local index root points at the old path | `repo status` / next operation | Normal operation or `repo repair` when `git_common_dir` still matches | Index metadata can be refreshed |
+| 7 | Repository directory renamed | Local root changed but clone identity may still match | `repo status` / next operation | Normal operation or `repo repair` | `git_common_dir` match can reuse `RepoId` |
+| 8 | `repos/<repo-store-dir>` renamed | `index.json` points to old locator | `store verify` / load failure | `store rebuild-index` | Manifest `repo_id` remains identity |
+| 9 | `index.json` deleted | Local Git metadata cache is gone | Missing index or empty repo list | `store rebuild-index` then `repo reclaim` | Rebuild restores `repo_id` and `repo_store_dir` only |
+| 10 | Re-clone on same machine | New clone has no cache match | `repo status` shows no association | `repo reclaim` then `repo repair` | No automatic reclaim from hints |
+| 11 | PC migration | Only `repos/` is restored | Missing local cache | `store rebuild-index`, `repo reclaim`, `repo repair` | Main portability workflow |
+| 12 | Corrupted manifest | JSON parse fails | `store rebuild-index` / `store verify` | Restore manifest from backup or manual repair | Scanner reports and skips corrupted manifest where safe |
+| 13 | Duplicate `RepoId` | Two manifests claim same repository identity | Scanner duplicate check | Manual resolution | Rebuild/reclaim fail without mutation |
+| 14 | Duplicate `ItemId` | Two items claim same item identity | Scanner duplicate check | Manual resolution | Rebuild/reclaim fail without mutation |
+| 15 | Unassociated repo in index | `root: None` after rebuild | `repo list --verbose` | `repo reclaim` from the desired clone | Not a deletion signal |
+| 16 | Local clone path missing | `root: Some(path)` no longer exists | `store verify` / `store gc` planning | `repo reclaim` from a current clone | GC still deletes only `orphaned` items |
+| 17 | Orphaned item | Item has no valid claimant | Scanner or GC planning | `store gc` after confirmation | Only `orphaned` is GC-eligible |
 
 ---
 
-## Recoverability summary
+## Recovery Workflows
 
-| Broken component | Recoverable? | What's needed |
-|-----------------|-------------|---------------|
-| Symlink missing | Yes | `item repair` |
-| Symlink wrong target | Yes (with `--force`) | `item repair --force` |
+### PC Migration
+
+```text
+1. Restore repos/
+2. Run: shelfbox store rebuild-index
+3. Enter the current Git repository
+4. Run: shelfbox repo reclaim
+5. Select the existing RepoId
+6. Run: shelfbox repo repair
+```
+
+Expected result:
+
+* Existing managed items are preserved.
+* Current clone is associated with the selected `RepoId`.
+* Symlinks and exclude entries are repaired.
+* No ownership transfer occurs.
+
+---
+
+### Re-clone Recovery
+
+```text
+1. Clone repository again
+2. Keep or restore the existing repos/
+3. Run: shelfbox store rebuild-index
+4. Enter the new clone
+5. Run: shelfbox repo reclaim
+6. Select the matching repository
+7. Run: shelfbox repo repair
+```
+
+Expected result:
+
+* The new clone uses the existing `RepoId` only after explicit selection.
+* Existing items are not moved or merged.
+* Repair restores local working tree integration.
+
+---
+
+## Recoverability Summary
+
+| Broken component | Recoverable? | Needed action |
+|---|---|---|
+| Symlink missing | Yes | `item repair` or `repo repair` |
+| Symlink wrong target | Yes, with explicit force | `item repair --force` |
 | Regular file at repo path | Manual | User decides |
 | Exclude entry missing | Yes | `repo repair` |
-| Manifest missing | Yes | `repo repair --yes` |
-| Index missing | Partial | Re-register each repo; old store dirs become orphans |
-| Store item missing | **No** | Data lost; manual recovery only |
-| Store partially copied | **No** (for missing items) | Copy missing files from source |
-| Repo moved (same git_common_dir) | Yes, automatic | `context::build` updates root via two-stage lookup |
-| Repo moved (new clone, different git_common_dir) | Partial | `shelfbox repo adopt --from <old-repo-id>` |
-| Items in `Stale` or `Unreachable` state | Yes | `repo adopt --from <old-id>` (run `repo repair` first to detect) |
-| Items in `Detached` state | Yes | `item relink <PATH>` |
-| Store dir with reclaimable items (gc attempted) | Prevented | `store gc` always skips repos with reclaimable items |
+| `index.json` missing | Yes | `store rebuild-index`, then `repo reclaim` |
+| Repository store directory renamed | Yes | `store rebuild-index` |
+| New clone or new PC | Yes | `repo reclaim`, then `repo repair` |
+| Store item missing | No | Restore data from backup |
+| Corrupted manifest | Manual | Restore or repair manifest |
+| Duplicate identities | Manual | Resolve duplicate manifests/items |
 
 ---
 
-## Design invariants
-
-These invariants underpin the recoverability guarantees above.
+## Design Invariants
 
 | Invariant | Justification |
-|-----------|--------------|
-| `manifest.json` writes are atomic (`rename(2)`) | A crash mid-write leaves the previous manifest intact; no partial JSON |
-| `index.json` writes are atomic | Same guarantee for the global index |
-| `items/<repo-relative-path>` layout is deterministic | Manifest can always be reconstructed from the store tree without guessing |
-| `repair` never deletes store items | Follows "salvage-first" policy; orphans require explicit `--yes` to remove |
-| `repair` requires `--force` for wrong-target symlinks | Prevents silently masking stale links from reclones or copied repos |
-| `repair` refuses to overwrite regular files | Prevents data loss when the user has placed their own file at the path |
-| Advisory `flock` on all store access | Prevents manifest/index inconsistency from concurrent `shelfbox` processes |
-| `store_path` is repo-store-relative | `manifest.json` is portable across store relocations on the same machine |
+|---|---|
+| `repos/` is canonical | Cache files can be rebuilt from manifests |
+| `RepoId` is the only repository identity | Prevents accidental merge based on path, name, or remote |
+| `manifest.json` writes are atomic | A crash mid-write leaves the previous manifest intact |
+| `index.json` writes are atomic | Same guarantee for the local cache |
+| `store_path` is repo-store-relative | Manifests are portable across store locations and machines |
+| `identity_hints` are not proof | Candidate ranking does not imply identity |
+| Reclaim is explicit | Association changes require user intent |
+| Repair is ownership-neutral | Local integration can be fixed without changing ownership |
+| GC is conservative | Only confirmed `orphaned` items may be deleted |
 
 ---
 
-## Test coverage
+## Recovery Test Scenarios
 
-| Scenario | Covered by |
-|----------|-----------|
-| Symlink deleted, repair recreates | `repair_recreates_missing_symlink` |
-| Store item deleted (data loss) | `repair_returns_store_missing_when_store_item_gone`, `doctor_fix_records_cannot_fix_for_store_missing` |
-| Manifest lost, rebuild from store | `doctor_fix_rebuilds_manifest_when_missing` |
-| Index lost, fresh context created | `chaos::index_deleted_creates_fresh_context_with_empty_manifest` |
-| Repo moved via linked worktree | `chaos::worktree_add_reuses_repo_ulid`, `chaos::worktree_shelved_items_visible_from_linked_worktree` |
-| Interrupted write (manifest) | Atomic rename; no test needed (OS guarantee) |
-| Interrupted write (move phase) | `doctor_fix_rebuilds_manifest_when_missing` (simulates via orphan injection) |
-| Concurrent reads | `chaos::concurrent_read_locks_are_shared` |
-| Partial store corruption | `chaos::partial_store_corruption_shows_mixed_status` |
-| Wrong-target symlink | `repair_rejects_wrong_target_symlink_without_force`, `repair_force_relinks_wrong_target_symlink` |
-| Regular file at repo path | `repair_refuses_to_overwrite_regular_file` |
-| Exclude entry missing, repair restores | `doctor_fix_repairs_missing_exclude_entry` |
+The v0.7.0 recovery integration tests should cover:
+
+| Scenario | Key assertion |
+|---|---|
+| Move repository path | Existing `RepoId` is reused when local Git metadata matches |
+| Rename repository directory | Existing `RepoId` is reused when local Git metadata matches |
+| Rename `repos/<repo-store-dir>` | `store rebuild-index` restores the correct locator |
+| Delete `index.json` and rebuild | Rebuilt index contains `repo_id` and `repo_store_dir`, but no Git metadata |
+| Re-clone and reclaim | New clone uses old `RepoId` only after explicit `repo reclaim` |
+| Repair after reclaim | Symlinks and exclude entries are restored |
+| Reject reclaim with current items | No mutation occurs |
+| Duplicate `repo_id` | `store rebuild-index` and `repo reclaim` fail hard |
+| Duplicate `item_id` | `store rebuild-index` and `repo reclaim` fail hard |
+| GC safety | Non-`orphaned` items and repository stores survive GC |

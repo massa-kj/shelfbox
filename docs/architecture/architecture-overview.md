@@ -192,13 +192,13 @@ Detailed flow for `shelfbox repo repair`:
 
 ```text
 cmd::repo::run_repo()
-  -> context::build(..., write=true)
-  -> detect ownership transitions (attached -> stale/unreachable)
-  -> ops::integrity::fix(...)
-      - fix index root mismatch
-      - rebuild manifest from deterministic store layout when needed
+  -> build current Git context without creating a new RepoId
+  -> resolve existing association from index.json
+  -> repair attached items
       - restore missing exclude entries
-      - repair broken symlinks
+      - repair missing or broken symlinks
+      - refresh local Git metadata in index.json
+      - refresh identity hints
   -> print per-fix results
 ```
 
@@ -240,18 +240,18 @@ spec/ownership-model.md
 
 ---
 
-## Repair vs Transfer
+## Repair vs Reclaim
 
 Repair restores integrity.
 
-Transfer changes ownership.
+Reclaim associates the current Git clone with an existing `RepoId`.
 
-Repair must never transfer ownership.
+Repair must never perform reclaim.
 
-Ownership transfer is only performed by:
+Reclaim is only performed by explicit user action:
 
 ```text
-repo adopt
+repo reclaim
 ```
 
 ---

@@ -59,9 +59,9 @@ Reference for:
 
 * `repo list`
 * `repo status`
+* `repo reclaim`
 * `repo repair`
 * `repo gc`
-* `repo adopt`
 
 ### [Store Commands](./reference/store-commands.md)
 
@@ -69,6 +69,8 @@ Reference for:
 
 * `store info`
 * `store verify`
+* `store rebuild-index`
+* `store migrate-manifests`
 * `store gc`
 
 ### [Config Commands](./reference/config-commands.md)

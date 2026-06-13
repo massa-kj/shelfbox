@@ -81,10 +81,13 @@ items still exist in store
 Recovery:
 
 ```sh
+shelfbox store rebuild-index
+shelfbox repo reclaim
 shelfbox repo repair
 ```
 
-The manifest is reconstructed from the deterministic store layout.
+If `manifest.json` is missing, restore it from backup before rebuilding the
+index. `repos/` is the canonical store; `index.json` is only a local cache.
 
 See:
 
@@ -107,7 +110,8 @@ Recovery:
 shelfbox repo repair
 ```
 
-This updates repository metadata and applies any required ownership transitions.
+This refreshes local repository metadata and repairs symlinks/exclude entries
+when the current clone is already associated with the existing `RepoId`.
 
 See:
 
@@ -128,8 +132,9 @@ Old shelved items still exist.
 Typical workflow:
 
 ```sh
+shelfbox store rebuild-index
+shelfbox repo reclaim
 shelfbox repo repair
-shelfbox repo adopt --from <OLD_REPO_ID>
 ```
 
 See:
@@ -186,15 +191,18 @@ See:
 
 ---
 
-# Ownership Transfer
+# PC Migration or Store Restore
 
-When ownership of shelved items must move to a new repository identity:
+When `repos/` has been restored on another machine or into a fresh store:
 
 ```sh
-shelfbox repo adopt --from <OLD_REPO_ID>
+shelfbox store rebuild-index
+shelfbox repo reclaim
+shelfbox repo repair
 ```
 
-This operation is explicit and auditable.
+This associates the current clone with the selected existing `RepoId` and then
+repairs local symlinks and Git exclude entries.
 
 See:
 

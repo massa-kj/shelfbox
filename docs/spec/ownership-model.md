@@ -4,77 +4,83 @@
 
 This document defines the formal ownership model for `shelfbox`.
 
-The ownership model exists to answer the following questions deterministically:
+The ownership model answers:
 
 * Who owns a shelved item?
-* Which repository is allowed to repair or reclaim it?
-* When is an item reclaimable?
+* Which repository is allowed to repair it?
+* Which data is reclaimable?
 * When is garbage collection safe?
-* Which commands are allowed to mutate ownership state?
+* Which commands may mutate ownership state?
 
 This specification is the authoritative source for ownership semantics across:
 
-* `repair`
-* `restore`
+* `item add`
+* `item restore`
+* `item relink`
+* `item repair`
+* `repo reclaim`
 * `repo repair`
-* `repo gc`
-* `repo adopt`
-* directory namespace shelving
-* future provenance and snapshot systems
+* `store gc`
 
 ---
 
-# 2. Design goals
+# 2. Design Goals
 
-The ownership model must satisfy the following goals.
+## 2.1 Stable Repository Identity
 
-## 2.1 Deterministic recovery
+`RepoId` is the only repository identity.
 
-Recovery decisions must never depend on heuristics, timestamps, or content similarity.
+It must remain stable across:
 
-Ownership transitions must be derivable from explicit metadata only.
+* Repository path moves
+* Repository directory renames
+* `repos/` directory renames
+* PC migration
+* Explicit reclaim
+* Repair
 
----
-
-## 2.2 Separation of concerns
-
-The ownership model must remain independent from:
-
-* filesystem layout
-* symlink implementation
-* content hashing
-* future deduplication
-* future snapshot/versioning
-
-Ownership identity is not content identity.
+Repository store directory names, Git remotes, and Git paths are not identity.
 
 ---
 
-## 2.3 Explicit ownership transfer
+## 2.2 Explicit Association
 
-Ownership transfer must never occur implicitly.
+A new Git clone is not automatically the same as an existing `RepoId`.
 
-Operations that change ownership must always:
+Association between the current clone and an existing `RepoId` may only happen
+through explicit `repo reclaim`.
 
-* be explicit
-* be auditable
-* require user intent
-
----
-
-## 2.4 Local-only repair
-
-`repair` operations must never mutate ownership.
-
-Repair is strictly an integrity operation.
+Candidate ranking may use hints, but ranking must never cause automatic
+selection.
 
 ---
 
-## 2.5 Salvage-first policy
+## 2.3 Repair Is Ownership-Neutral
 
-Loss of metadata must never immediately imply loss of ownership.
+Repair may restore local integration:
 
-Objects remain reclaimable until explicitly garbage-collected.
+* Symlinks
+* Git exclude entries
+* Local index metadata
+* Identity hints
+
+Repair must not:
+
+* Assign a different `RepoId`
+* Transfer ownership
+* Merge repositories
+* Delete items
+* Change item ownership state
+
+---
+
+## 2.4 Salvage-First Policy
+
+Stored data should remain protected unless it is explicitly classified as safe
+to delete.
+
+Garbage collection may delete only `orphaned` items, and only after explicit
+confirmation.
 
 ---
 
@@ -82,16 +88,15 @@ Objects remain reclaimable until explicitly garbage-collected.
 
 ## 3.1 Repository Identity (`RepoId`)
 
-Stable logical identity assigned to a repository registration.
+Stable logical identity assigned by shelfbox.
 
 Properties:
 
-* globally unique ULID
-* stable across repairs
-* independent from filesystem path
-* independent from `git_common_dir`
-
-A repository move or reclone may create a new `RepoId`.
+* Globally unique
+* Stored in `manifest.json`
+* Independent from filesystem path
+* Independent from Git remote URL
+* Independent from repository store directory name
 
 ---
 
@@ -101,13 +106,13 @@ Stable logical identity assigned when an item is first shelved.
 
 Properties:
 
-* immutable
-* globally unique ULID
-* identifies ownership lineage
-* independent from content
-* independent from filesystem path
+* Immutable
+* Globally unique
+* Identifies ownership lineage
+* Independent from content
+* Independent from filesystem path
 
-`ItemId` MUST NOT encode content identity.
+`ItemId` must not encode content identity.
 
 ---
 
@@ -116,115 +121,44 @@ Properties:
 Relationship between:
 
 ```text
-(ItemId) → (RepoId)
+ItemId -> RepoId
 ```
 
-A binding represents the current logical owner of an item.
+An item belongs to the repository whose manifest contains the item entry.
 
 ---
 
-## 3.4 Attachment
+## 3.4 Reclaim
 
-An item is considered attached when:
+`repo reclaim` associates the current Git clone with an existing `RepoId`.
 
-* a valid ownership binding exists
-* the owner repository is considered active
-* the item is reachable from the active manifest
+Reclaim:
 
-Attachment does not require the symlink to currently exist.
+* Updates `index.json`
+* Updates `identity_hints`
+* Does not move item data
+* Does not copy item data
+* Does not change item ownership state
+* Does not repair symlinks or exclude entries
 
----
-
-## 3.5 Reclaimability
-
-An item is reclaimable when ownership continuity can still be established deterministically.
-
-Reclaimability is distinct from current attachment state.
+After reclaim, run `repo repair` to restore local working tree integration.
 
 ---
 
-## 3.6 Orphan
+# 4. Ownership States
 
-An orphan is an item for which no valid ownership claimant exists.
-
-Orphan status is terminal unless manually overridden.
-
----
-
-## 3.7 Orphan classification mapping
-
-The failure matrix defines five orphan classes.  Their mapping to ownership
-states is as follows:
-
-| Orphan class | Ownership state | Notes |
-|---|---|---|
-| `unowned` | `orphaned` | No manifest entry; no claimant found |
-| `unreachable` | `unreachable` | Manifest entry exists; repo path gone |
-| `detached` | `detached` | Intentionally unlinked; store retained |
-| `stale` | `stale` | Superseded by newer repo identity |
-| `abandoned` | `unreachable` or `stale` | Worktree deleted; classification depends on whether the worktree held a distinct repo identity |
-
-Orphan classes are diagnostic labels used by `repo gc` and `status` output.
-Ownership states are the authoritative model.
-
----
-
-# 4. Ownership object model
-
-## 4.1 Repository identity
+Supported states:
 
 ```text
-RepoIdentity {
-    repo_id
-    git_common_dir
-    created_at
-}
+attached
+detached
+unreachable
+orphaned
 ```
-
-`git_common_dir` is discovery metadata only.
-
-It MUST NOT be treated as ownership identity.
 
 ---
 
-## 4.2 Item identity
-
-```text
-ItemIdentity {
-    item_id
-    origin_repo_id
-    created_at
-}
-```
-
-`origin_repo_id` records the repository that originally created the item.
-
-It is immutable.
-
----
-
-## 4.3 Ownership binding
-
-```text
-OwnershipBinding {
-    item_id
-    current_owner_repo_id
-    state             -- one of the states defined in section 5
-    updated_at
-}
-```
-
-The ownership state machine operates on this object.
-
-When ownership is transferred via `repo adopt`, the old binding transitions to
-`adopted` and a new binding is created in `attached` state for the new owner.
-Both bindings are retained for auditability.
-
----
-
-# 5. Ownership states
-
-## 5.1 Attached
+## 4.1 Attached
 
 ```text
 attached
@@ -232,19 +166,19 @@ attached
 
 Definition:
 
-* item has an active owner
-* item is reachable from owner manifest
-* ownership is valid
+* Item belongs to the associated repository.
+* Item is present in the repository manifest.
+* The item is eligible for symlink and exclude repair.
 
 Properties:
 
-* reclaimable
-* repairable
-* restorable
+* Repairable
+* Restorable
+* Protected from GC
 
 ---
 
-## 5.2 Detached
+## 4.2 Detached
 
 ```text
 detached
@@ -252,9 +186,8 @@ detached
 
 Definition:
 
-* item intentionally removed from active manifest
-* store item intentionally retained
-* ownership preserved
+* Item was intentionally detached while preserving the store copy.
+* Ownership is preserved in the manifest.
 
 Typical source:
 
@@ -264,12 +197,12 @@ item restore --keep-store
 
 Properties:
 
-* reclaimable
-* not garbage-collectable automatically
+* Re-linkable with `item relink`
+* Protected from GC
 
 ---
 
-## 5.3 Unreachable
+## 4.3 Unreachable
 
 ```text
 unreachable
@@ -277,75 +210,23 @@ unreachable
 
 Definition:
 
-* owner repository can no longer be resolved
-* no replacement owner established
-* ownership continuity still exists
+* Manifest exists, but no current Git clone is associated with its `RepoId`.
+* Ownership continuity still exists.
 
 Examples:
 
-* repository deleted
-* repository path disappeared
-* index loss
+* Store restored on another PC
+* `index.json` rebuilt from `repos/`
+* A previously associated clone no longer exists locally
 
 Properties:
 
-* reclaimable
-* protected from automatic GC
+* Reclaimable by explicit `repo reclaim`
+* Protected from GC
 
 ---
 
-## 5.4 Stale
-
-```text
-stale
-```
-
-Definition:
-
-* ownership superseded by a newer repository identity
-* old ownership still exists
-* reclamation remains possible
-
-Examples:
-
-* reclone
-* repository move
-* worktree promotion
-
-Properties:
-
-* reclaimable
-* protected from automatic GC
-
----
-
-## 5.5 Adopted
-
-```text
-adopted
-```
-
-Definition:
-
-* ownership explicitly transferred to a different repository identity
-* old binding superseded by a `repo adopt` operation
-* a new binding is created in `attached` state under the new owner
-
-Typical source:
-
-```text
-repo adopt
-```
-
-Properties:
-
-* NOT reclaimable by the original owner (already reclaimed by new owner)
-* NOT garbage-collectable automatically
-* retained as an auditable record of ownership transfer
-
----
-
-## 5.6 Orphaned
+## 4.4 Orphaned
 
 ```text
 orphaned
@@ -353,314 +234,77 @@ orphaned
 
 Definition:
 
-* no deterministic ownership claimant exists
-* reclaimability lost
+* No valid ownership claimant exists.
+* The item is eligible for explicit conservative GC.
 
 Properties:
 
-* eligible for GC after confirmation
+* Not repaired automatically
+* May be deleted only by confirmed GC
 
 ---
 
-# 6. State transitions
-
-## 6.1 Allowed transitions
-
-```text
-attached
-    -> detached       (item restore --keep-store)
-    -> unreachable    (repo deleted / path disappeared)
-    -> stale          (reclone / repo moved / index lost)
-
-detached
-    -> attached       (re-link)
-    -> orphaned       (gc after confirmation)
-
-unreachable
-    -> attached       (repo adopt: ownership reclaim by same identity)
-    -> adopted        (repo adopt: ownership transfer to new identity)
-    -> orphaned       (gc after confirmation)
-
-stale
-    -> adopted        (repo adopt: old binding superseded)
-    -> orphaned       (gc after confirmation)
-
-adopted
-    (terminal — no further transitions from old binding)
-```
-
-Note: when `stale -> adopted` occurs, `repo adopt` simultaneously creates a
-new binding in `attached` state for the new owner.
-
-Note: `unreachable -> attached` applies when the same logical repository
-re-registers (e.g. reclone to same identity). `unreachable -> adopted` applies
-when a different repository identity claims the items.
-
----
-
-## 6.2 Forbidden transitions
-
-The following transitions are forbidden by invariant.
-
-```text
-repair
-    -> any ownership mutation
-
-gc
-    -> deletion without orphaned state
-
-adopt
-    -> implicit ownership transfer
-
-restore
-    -> ownership transfer
-```
-
----
-
-# 7. Command authority model
-
-Ownership transitions are restricted by command capability.
-
----
-
-## 7.1 `item repair`
-
-Allowed operations:
-
-* recreate symlink
-* restore local integrity
-
-Forbidden operations:
-
-* ownership reassignment
-* orphan resolution
-* adoption
-* state mutation
-
-`repair` is local-only.
-
----
-
-## 7.2 `repo repair`
-
-Allowed operations:
-
-* manifest reconstruction
-* symlink reconstruction
-* root metadata repair
-
-Forbidden operations:
-
-* ownership transfer
-* orphan resolution
-* implicit adoption
-
-Manifest reconstruction MUST NOT invent ownership identity.
-
----
-
-## 7.3 `item restore`
+# 5. State Transitions
 
 Allowed transitions:
 
-```text
-attached -> detached
-```
+| From | To | Command | Meaning |
+|---|---|---|---|
+| none | `attached` | `item add` | New item is shelved |
+| `attached` | removed | `item restore` | Store item is restored to the repo and manifest entry removed |
+| `attached` | `detached` | `item restore --keep-store` | Store copy is preserved and ownership remains recorded |
+| `detached` | `attached` | `item relink` | Detached item is re-linked |
+| any valid state | unchanged | `repo reclaim` | Current clone is associated with an existing `RepoId` |
+| any valid state | unchanged | `repo repair` / `item repair` | Local integration is repaired |
+| `orphaned` | removed | `store gc` | Confirmed conservative deletion |
 
-when `--keep-store` is used.
-
-Otherwise the ownership binding is removed entirely.
-
----
-
-## 7.4 `repo adopt`
-
-Allowed transitions (old binding):
-
-```text
-stale       -> adopted
-unreachable -> adopted   (ownership transfer case)
-unreachable -> attached  (ownership reclaim case: same identity)
-```
-
-For every `stale -> adopted` or `unreachable -> adopted` transition, `repo adopt`
-MUST simultaneously create a new binding in `attached` state for the new owner.
-
-Requirements:
-
-* explicit user intent
-* auditable operation
-* deterministic ownership proof
-* adopted state retained in old binding for audit trail
-
-`repo adopt` is the only command allowed to transfer ownership.
+Automatic ownership transfer is not supported.
 
 ---
 
-## 7.5 `repo gc`
+# 6. Garbage Collection Rules
 
-Allowed operations:
+GC may delete only items whose `ownership_state` is `orphaned`.
 
-* delete orphaned items
-
-Forbidden operations:
-
-* reclaimability judgement by heuristic
-* deletion of stale items
-* deletion of detached items
-
----
-
-# 8. Recovery rules
-
-## 8.1 Repair boundary
-
-Repair is bounded to integrity restoration only.
-
-Repair MUST NOT:
-
-* create ownership
-* transfer ownership
-* synthesize metadata
-* reinterpret stale state
-
----
-
-## 8.2 Manifest reconstruction
-
-Manifest reconstruction is permitted only when:
-
-* ownership continuity remains provable
-* item/store path mapping is deterministic
-
-Reconstruction MUST NOT generate new `ItemId`s.
-
----
-
-## 8.3 Store item loss
-
-Missing store data is terminal.
-
-The system MUST report:
+GC must not delete:
 
 ```text
-CannotFix
+attached
+detached
+unreachable
 ```
 
-No placeholder reconstruction is permitted.
+GC must not delete an entire repository store directory just because no current
+Git clone is associated with it.
+
+`root: None` in `index.json` means the entry was rebuilt from manifests or is
+currently unassociated. It is not a deletion signal.
 
 ---
 
-# 9. Garbage collection policy
+# 7. Namespace Policy
 
-GC policy is ownership-aware.
+Namespace is UI presentation only.
 
----
+Namespace must not be persisted as ownership or identity metadata. Directory
+grouping can be derived from `item.path` when a UI wants to display items by
+directory.
 
-## 9.1 Automatically protected states
+Namespace must not affect:
 
-The following states MUST NOT be auto-collected:
-
-* attached
-* detached
-* stale
-* unreachable
-* adopted
-
----
-
-## 9.2 GC-eligible state
-
-Only:
-
-```text
-orphaned
-```
-
-is eligible for deletion.
-
-Deletion still requires explicit confirmation.
+* Ownership
+* Reclaim
+* Repair
+* Garbage collection
 
 ---
 
-# 10. Identity invariants
+# 8. Safety Invariants
 
-The following invariants are mandatory.
-
----
-
-## 10.1 Ownership identity is not content identity
-
-```text
-ItemId != content hash
-```
-
-Future deduplication or snapshots MUST use separate identifiers.
-
----
-
-## 10.2 Ownership transfer is explicit-only
-
-No operation may silently transfer ownership.
-
----
-
-## 10.3 Repair is ownership-neutral
-
-Repair operations must never mutate ownership state.
-
----
-
-## 10.4 Manifest reconstruction is deterministic-only
-
-No recovery path may invent ownership metadata heuristically.
-
----
-
-## 10.5 Reclaimability precedes GC
-
-Potentially reclaimable items must remain protected.
-
----
-
-# 11. Future extensibility
-
-This model is intentionally designed to support future extensions without redefining ownership semantics.
-
-Examples:
-
-* snapshots
-* historical lineage
-* deduplicated blobs
-* multiple stores
-* provenance metadata
-* remote synchronization
-* namespace-based directory shelving
-
-These systems may extend metadata, but MUST NOT redefine ownership semantics established in this document.
-
----
-
-# 12. Non-goals
-
-The ownership model does not attempt to define:
-
-* content versioning
-* synchronization semantics
-* distributed conflict resolution
-* cryptographic integrity
-* deduplication policy
-* storage optimization
-
-These are separate layers.
-
----
-
-# 13. Relationship to failure matrix
-
-The ownership model exists to formalize the recovery semantics already implied by the failure matrix.
-
-The failure matrix remains the operational reference.
-
-This document defines the ownership invariants that constrain future implementations.
+* `RepoId` is the only repository identity.
+* `manifest.json` is canonical repository metadata.
+* `index.json` is rebuildable local cache.
+* `identity_hints` are not proof of identity.
+* Reclaim requires explicit user selection.
+* Repair never changes ownership state.
+* GC deletes only confirmed `orphaned` items.

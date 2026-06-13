@@ -2,7 +2,7 @@
 
 ### `repo list`
 
-Lists all repositories known to the store, with item counts.
+Lists repositories known to the store.
 
 ```sh
 shelfbox repo list
@@ -11,26 +11,22 @@ shelfbox repo list --format json
 shelfbox repo list --verbose
 ```
 
-**Output (table, default):**
-
-```
-  NAME                           ROOT                                               ITEMS  LAST SEEN
-  myapp                          /home/user/projects/myapp                              2  2026-04-29T12:00:00Z
-```
+Entries rebuilt from manifests may not have local Git metadata. In that case,
+the repository is shown as unassociated until `repo reclaim` or `repo repair`
+refreshes the index entry.
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
 | `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
-| `--verbose` | Show extended fields: git_common dir, store_dir, and last_seen timestamp per repository. |
+| `--verbose` | Show extended fields such as repo store directory, Git metadata if present, and last-seen timestamp. |
 
 ---
 
 ### `repo status`
 
-Runs a full integrity check on the current repository's shelved items and
-reports any problems (equivalent to the old `doctor` command).
+Runs a read-only health check on the current repository's shelved items.
 
 ```sh
 shelfbox repo status
@@ -40,167 +36,110 @@ shelfbox repo status --verbose
 
 **Checks:**
 
-- Per-item symlink and store-file health (same as `item status`).
-- Orphan store items: files in the store not referenced by the manifest.
-- Repo root match: verifies the recorded root path matches the current repo.
+* Per-item symlink and store-file health
+* Git exclude entries
+* Whether the current repository is associated with a known `RepoId`
 
-**Flags:**
-
-| Flag | Description |
-|---|---|
-| `--format <FORMAT>` | Output format: `table` (default), `plain`, `json`. |
-| `--verbose` | Show all health fields for each item individually. |
+`repo status` is read-only. It does not perform reclaim, repair symlinks, or
+mutate manifests.
 
 **Exit codes:**
 
 | Code | Meaning |
 |---|---|
 | `0` | All items are healthy. |
-| `1` | Warnings only (e.g. missing exclude entry). |
-| `2` | Errors present (broken symlink, missing store item, git-tracked item). |
+| `1` | Warnings only. |
+| `2` | Errors present. |
 
-**Ownership transition hint:**
+---
 
-If other repositories in the same store have `attached` items that would be
-affected by the current repo's presence (e.g. same `git_common_dir` after a
-reclone), `repo status` prints a hint to `stderr`:
+### `repo reclaim`
 
+Associates the current Git clone with an existing `RepoId`.
+
+```sh
+shelfbox repo reclaim
+shelfbox repo reclaim --repo-id 01ABC...
 ```
-hint: N item(s) in M repo(s) may need ownership transition — run 'shelfbox repo repair' to apply
-```
 
-This check is read-only: no manifests are modified by `repo status`.
+Use this after restoring `repos/`, rebuilding `index.json`, moving to a new PC,
+or re-cloning a repository.
+
+**Preconditions:**
+
+* The current directory must be inside a Git repository.
+* If the current repository is already associated with shelfbox, it must have no
+  managed items.
+
+**Behavior:**
+
+1. Detects current Git metadata without creating a new `RepoId`.
+2. Scans `repos/*/manifest.json`.
+3. Builds reclaim candidates from manifests and hints.
+4. Displays candidates for explicit user selection, unless `--repo-id` is used.
+5. Updates `index.json` for the selected `RepoId`.
+6. Updates `identity_hints`.
+
+`repo reclaim` does not:
+
+* Move or copy item data
+* Change item ownership state
+* Repair symlinks
+* Rewrite Git exclude entries
+
+After reclaim, run:
+
+```sh
+shelfbox repo repair
+```
 
 ---
 
 ### `repo repair`
 
-Applies safe automatic repairs to the current repository's shelf (equivalent
-to the old `doctor --fix`).
+Repairs local working tree integration for an already-associated repository.
 
 ```sh
 shelfbox repo repair
 shelfbox repo repair --dry-run
 ```
 
-**What is fixed automatically:**
+If the current clone is not associated with a `RepoId`, run `repo reclaim`
+first.
+
+**What is fixed:**
 
 | Problem | Action |
 |---|---|
-| Index root mismatch | Updates recorded root to current path |
-| Missing `.git/info/exclude` entries | Re-adds paths from manifest |
-| Missing or broken symlinks | Recreates symlink |
-| Store item missing | Reports WARN — cannot auto-fix |
-| `attached` items in other repos superseded by this repo | Transitions to `stale` or `unreachable` (see below) |
+| Missing or broken symlinks for `attached` items | Recreates symlinks |
+| Missing `.git/info/exclude` entries | Rebuilds shelfbox exclude block |
+| Stale local Git metadata in `index.json` | Updates `root`, `git_dir`, and `git_common_dir` |
+| Missing store item | Reports failure for that item |
 
-**Ownership state detection:**
+`repo repair` must not:
 
-`repo repair` automatically scans all other repos in the store and transitions
-`attached` items that are no longer current:
-
-- **`attached → stale`**: another repo entry shares the same `git_common_dir`
-  as the current repo (e.g. after a reclone that generated a new ULID). Old
-  items become reclaimable via `repo adopt --from <OLD-ID>`.
-- **`attached → unreachable`**: a repo's root directory no longer exists on
-  disk (repo deleted or moved without re-registering).
-
-Only `attached` items are ever auto-transitioned. Items already in `detached`,
-`stale`, `unreachable`, `adopted`, or `orphaned` state are left unchanged.
-
-This detection runs before the integrity fix pass so that subsequent status
-checks reflect up-to-date ownership information.  It is skipped in dry-run mode.
+* Perform reclaim
+* Assign a different `RepoId`
+* Transfer ownership
+* Change item ownership state
+* Delete item data
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--dry-run` | Print what would be fixed without making any changes. |
+| `--dry-run` | Print what would be fixed without making changes. |
 
 ---
 
 ### `repo gc`
 
-Deletes orphan store items (files in the store not referenced by the manifest).
+`repo gc` is retained only for current-repository orphan inspection if
+implemented. Store-wide deletion rules live under `store gc`.
 
-```sh
-shelfbox repo gc
-shelfbox repo gc --dry-run
-shelfbox repo gc --yes
-```
+Garbage collection must follow the ownership model:
 
-**Flags:**
-
-| Flag | Description |
-|---|---|
-| `--dry-run` | Print what would be deleted without making any changes. |
-| `--yes` | Skip confirmation and perform deletions immediately. |
-
-**Ownership-protected items:**
-
-Before listing FS orphan candidates, `repo gc` checks the current repo's
-manifest for items in `detached`, `stale`, or `unreachable` state. These items
-are not FS orphans (they remain in the manifest) but are reported separately:
-
-```
-ownership-protected items (not collected by gc):
-  2 detached    — run 'shelfbox item relink <PATH>' to re-attach
-  1 stale       — run 'shelfbox repo adopt --from <OLD-REPO-ID>' to reclaim
-  1 unreachable — run 'shelfbox repo adopt --from <OLD-REPO-ID>' or 'shelfbox repo repair' to recover
-```
-
----
-
-### `repo adopt`
-
-Transfers ownership of shelved items from a previous repository identity into
-the current one.
-
-Use this after a reclone, repository move, or path migration where the old
-store entry is no longer reachable under the new repository identity.
-
-```sh
-# Find the old repository ID
-shelfbox repo list --verbose
-
-# Transfer its items to the current repo
-shelfbox repo adopt --from 01JTARXXXXXXXXXXXXXXXX
-shelfbox repo adopt --from 01JTARXXXXXXXXXXXXXXXX --dry-run
-```
-
-**What happens:**
-
-1. Locates the source repository by its ID in the store index.
-2. For each eligible item in the source manifest:
-   - Copies the store file into the current repository's store directory.
-   - Creates a symlink at the repo-relative path.
-   - Records the item in the current manifest with `ownership_state: adopted`.
-3. Marks the transferred items in the source manifest with `ownership_state: adopted`.
-4. Saves both manifests atomically.
-
-Items that conflict with an existing path in the current manifest are skipped.
-Items whose store file is missing are also skipped.
-
-**Flags:**
-
-| Flag | Description |
-|---|---|
-| `--from <REPO_ID>` | Source repository ID to adopt items from. Required. |
-| `--dry-run` | Print what would happen without making any changes. |
-
-**Outcomes per item:**
-
-| Outcome | Meaning |
-|---|---|
-| `adopted` | Item transferred and symlink created. |
-| `adopted (no link)` | Item transferred but symlink creation failed. Run `item repair` to fix. |
-| `reclaimed` | The source item was `unreachable` and shares the same `git_common_dir` as the current repo — treated as a reclaim (same logical repo, new identity). The source item transitions to `attached` rather than `adopted`. |
-| `reclaimed (no link)` | Same as `reclaimed` but symlink creation failed. Run `item repair` to fix. |
-| `skipped (conflict)` | Current manifest already contains an item at this path. |
-| `skipped (store missing)` | Source store file not found. |
-
-**Errors:**
-
-| Error | Meaning |
-|---|---|
-| `cannot adopt from self` | `--from` refers to the current repository. |
-| `no store entry found for repo id` | The ID is not in the store. Run `repo list --verbose` to see known IDs. |
+* Only `orphaned` items may be deleted.
+* `attached`, `detached`, and `unreachable` items are protected.
+* Repository store directories are not deleted merely because a local clone is
+  missing.
