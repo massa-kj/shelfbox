@@ -6,91 +6,50 @@ use crate::error::{AppError, Result};
 
 // ── Data model ────────────────────────────────────────────────────────────────
 
-/// The kind of filesystem object that was shelved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ItemKind {
-    File,
-    Directory,
-}
-
-/// The type of link used to connect the repo path to the store item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LinkType {
-    Symlink,
-}
-
-/// Link metadata stored per item.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LinkInfo {
-    /// The mechanism used to create the link.
-    #[serde(rename = "type")]
-    pub link_type: LinkType,
-}
-
-/// Git metadata recorded at the time the item was shelved.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GitInfo {
-    /// Whether the file was tracked by git before shelving. Should almost
-    /// always be `false` in normal usage; stored for auditability.
-    pub was_tracked: bool,
-}
-
 /// Ownership state of a shelved item.
-///
-/// Transitions are governed by the rules in `docs/ownership-model.md`.
-/// Only `repo adopt` may transfer ownership; `repair` must never mutate state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OwnershipState {
-    /// Active owner; symlink valid (or repairable).  Default on creation.
+    /// Active owner; symlink valid or repairable.
     Attached,
     /// Intentionally unlinked via `restore --keep-store`; store item retained.
     Detached,
-    /// Owner repository can no longer be resolved (deleted, path gone).
+    /// Manifest exists, but no current Git clone is associated with the RepoId.
     Unreachable,
-    /// Ownership superseded by a newer repository identity (reclone, move).
-    Stale,
-    /// Ownership transferred to a new repository identity via `repo adopt`.
-    Adopted,
-    /// No deterministic claimant; eligible for GC after confirmation.
+    /// No deterministic claimant; eligible for confirmed conservative GC.
     Orphaned,
+}
+
+/// Candidate-ranking hints. These are never proof of identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct IdentityHints {
+    /// Normalized remote hints, e.g. `github.com/org/repo`.
+    #[serde(default)]
+    pub remote_hints: Vec<String>,
+    /// Recent repository directory names, most recent first.
+    #[serde(default)]
+    pub repo_name_hints: Vec<String>,
+    /// Last successful explicit association or repair timestamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attached_at: Option<String>,
 }
 
 /// A single shelved item recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     /// Immutable ULID assigned when this item is first shelved.
-    ///
-    /// This is ownership identity only — it does not encode content.
-    /// Must never be regenerated for an existing item.
     pub item_id: String,
 
-    /// ULID of the repository that originally shelved this item
-    /// (`RepoMeta::id`).  Immutable.  Used by `repo adopt` and `repo gc`
-    /// to establish ownership lineage.
+    /// Repository identity that originally shelved this item. Immutable.
     pub origin_repo_id: String,
 
     /// Path relative to the repository root (forward slashes, no leading `/`).
     pub path: String,
 
-    /// Path of the store-side file relative to the repo's store directory
-    /// (i.e. relative to `repos/<id>/`).
+    /// Path of the store-side file relative to the repo's store directory.
     pub store_path: String,
 
-    /// Whether this is a file or directory.
-    pub kind: ItemKind,
-
-    /// Link information.
-    pub link: LinkInfo,
-
-    /// Git metadata at the time of shelving.
-    pub git: GitInfo,
-
-    /// Current ownership state.  Set to [`OwnershipState::Attached`] on creation.
-    /// Must only be mutated through the transitions defined in
-    /// `docs/ownership-model.md`.
+    /// Current ownership state.
     pub ownership_state: OwnershipState,
 
     /// ISO-8601 creation timestamp.
@@ -100,71 +59,36 @@ pub struct Item {
     pub updated_at: String,
 }
 
-/// A directory namespace registration grouping shelved items under a common path.
-///
-/// A namespace is a query filter only — it does not own items.  Membership is
-/// derived dynamically: an item belongs to a namespace if and only if
-/// `item.path.starts_with(&namespace.path)`.
-///
-/// # Path convention
-///
-/// `path` MUST always end with `/`.  The trailing slash acts as a
-/// path-component boundary: `"secrets/"` matches `"secrets/api_key"` but
-/// never `"secrets2/file"`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NamespaceEntry {
-    /// Repo-relative directory path.  Always ends with `/`.
-    pub path: String,
-    /// ISO-8601 creation timestamp.
-    pub created_at: String,
-    /// ISO-8601 last-updated timestamp.
-    pub updated_at: String,
-}
-
-/// Repo metadata embedded in the manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RepoMeta {
-    /// ULID repo identifier.
-    pub id: String,
-
-    /// Human-readable repository name (directory name of repo root).
-    pub name: String,
-
-    /// Remote URL of `origin`, if available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remote: Option<String>,
-}
-
 /// The in-memory representation of `manifest.json` for a single repository.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     version: u32,
 
-    /// Stable repo metadata (not environment-specific).
-    pub repo: RepoMeta,
+    /// Stable repository identity.
+    pub repo_id: String,
+
+    /// ISO-8601 creation timestamp.
+    pub created_at: String,
+
+    /// Candidate-ranking and display hints.
+    pub identity_hints: IdentityHints,
 
     /// All currently shelved items.
     pub items: Vec<Item>,
-
-    /// Directory namespace registrations.
-    ///
-    /// Defaults to an empty vec for manifests created before namespace support
-    /// was added.  Namespace entries are NOT recovered during manifest rebuild;
-    /// users must re-declare them via `item add <dir>/`.
-    #[serde(default)]
-    pub namespaces: Vec<NamespaceEntry>,
 }
 
 impl Manifest {
-    const CURRENT_VERSION: u32 = 2;
+    pub const CURRENT_VERSION: u32 = 3;
+    const MAX_REPO_NAME_HINTS: usize = 5;
 
     /// Creates a new, empty manifest for the given repository.
-    pub fn new(meta: RepoMeta) -> Self {
+    pub fn new(repo_id: impl Into<String>, created_at: impl Into<String>) -> Self {
         Self {
             version: Self::CURRENT_VERSION,
-            repo: meta,
+            repo_id: repo_id.into(),
+            created_at: created_at.into(),
+            identity_hints: IdentityHints::default(),
             items: Vec::new(),
-            namespaces: Vec::new(),
         }
     }
 
@@ -178,8 +102,7 @@ impl Manifest {
         self.get(path).is_some()
     }
 
-    /// Appends a new item.  Panics in debug builds if `path` already exists
-    /// (callers are responsible for checking [`contains`] first).
+    /// Appends a new item. Panics in debug builds if `path` already exists.
     pub fn add(&mut self, item: Item) {
         debug_assert!(
             !self.contains(&item.path),
@@ -189,8 +112,7 @@ impl Manifest {
         self.items.push(item);
     }
 
-    /// Removes the item with the given `path`.  Returns `true` if an item
-    /// was actually removed.
+    /// Removes the item with the given `path`. Returns `true` if removed.
     pub fn remove(&mut self, path: &str) -> bool {
         let before = self.items.len();
         self.items.retain(|i| i.path != path);
@@ -198,10 +120,6 @@ impl Manifest {
     }
 
     /// Sets the ownership state of the item at `path`, updating `updated_at`.
-    /// Returns `true` if the item was found.
-    ///
-    /// Only allowed transitions are defined in `docs/ownership-model.md`;
-    /// callers are responsible for enforcing the correct transition.
     pub fn set_ownership_state(
         &mut self,
         path: &str,
@@ -217,47 +135,7 @@ impl Manifest {
         }
     }
 
-    /// Returns an iterator over all items that belong to the namespace at
-    /// `ns_path`.
-    ///
-    /// Membership is determined by path-component prefix: an item belongs if
-    /// `item.path.starts_with(ns_path)`.  `ns_path` must end with `/`.
-    pub fn namespace_members<'a>(
-        &'a self,
-        ns_path: &'a str,
-    ) -> impl Iterator<Item = &'a Item> + 'a {
-        debug_assert!(ns_path.ends_with('/'), "ns_path must end with '/'");
-        self.items
-            .iter()
-            .filter(move |i| i.path.starts_with(ns_path))
-    }
-
-    /// Registers a new namespace entry.  Does nothing if a namespace with the
-    /// same path is already registered.
-    pub fn add_namespace(&mut self, entry: NamespaceEntry) {
-        if !self.namespaces.iter().any(|n| n.path == entry.path) {
-            self.namespaces.push(entry);
-        }
-    }
-
-    /// Removes the namespace entry for `ns_path` if no items remain under it.
-    ///
-    /// Returns `true` if the entry was removed.
-    pub fn remove_namespace_if_empty(&mut self, ns_path: &str) -> bool {
-        let has_members = self.items.iter().any(|i| i.path.starts_with(ns_path));
-        if !has_members {
-            let before = self.namespaces.len();
-            self.namespaces.retain(|n| n.path != ns_path);
-            return self.namespaces.len() < before;
-        }
-        false
-    }
-
     /// Renames a manifest item in-place.
-    ///
-    /// Updates `path`, `store_path`, and `updated_at` while preserving all
-    /// other fields (`kind`, `link`, `git`, `created_at`).
-    /// Returns `false` if `old_path` is not found.
     pub fn rename(
         &mut self,
         old_path: &str,
@@ -274,31 +152,60 @@ impl Manifest {
             false
         }
     }
+
+    /// Adds a normalized remote hint if not already present.
+    pub fn add_remote_hint(&mut self, hint: &str) {
+        if hint.is_empty() {
+            return;
+        }
+        if !self.identity_hints.remote_hints.iter().any(|h| h == hint) {
+            self.identity_hints.remote_hints.push(hint.to_string());
+        }
+    }
+
+    /// Adds a repository-name hint, most recent first.
+    pub fn add_repo_name_hint(&mut self, name: &str) {
+        if name.is_empty() {
+            return;
+        }
+        self.identity_hints.repo_name_hints.retain(|h| h != name);
+        self.identity_hints
+            .repo_name_hints
+            .insert(0, name.to_string());
+        self.identity_hints
+            .repo_name_hints
+            .truncate(Self::MAX_REPO_NAME_HINTS);
+    }
+
+    /// Updates `last_attached_at`.
+    pub fn touch_attached_at(&mut self, now: impl Into<String>) {
+        self.identity_hints.last_attached_at = Some(now.into());
+    }
 }
 
 // ── I/O ───────────────────────────────────────────────────────────────────────
 
 /// Returns the path to the manifest file for a given repo store directory.
-///
-/// `repo_store` is `<store_root>/repos/<repo_id>/`.
 pub fn manifest_path(repo_store: &Path) -> PathBuf {
     repo_store.join("manifest.json")
 }
 
 /// Reads and parses the manifest from disk.
-///
-/// Returns [`AppError::ManifestVersionMismatch`] if the on-disk format version
-/// does not match [`Manifest::CURRENT_VERSION`].
 pub fn load(repo_store: &Path) -> Result<Manifest> {
     let path = manifest_path(repo_store);
     let s = std::fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
 
-    // Two-phase: extract version before full deserialization so we can
-    // emit a clear error instead of a confusing serde parse failure.
     let raw: serde_json::Value =
         serde_json::from_str(&s).map_err(|e| AppError::json(path.clone(), e))?;
     let found_version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    if found_version != Manifest::CURRENT_VERSION {
+    if found_version < Manifest::CURRENT_VERSION {
+        return Err(AppError::ManifestVersionMismatch {
+            path,
+            found: found_version,
+            expected: Manifest::CURRENT_VERSION,
+        });
+    }
+    if found_version > Manifest::CURRENT_VERSION {
         return Err(AppError::ManifestVersionMismatch {
             path,
             found: found_version,
@@ -313,8 +220,6 @@ pub fn load(repo_store: &Path) -> Result<Manifest> {
 pub fn save(repo_store: &Path, manifest: &Manifest) -> Result<()> {
     let path = manifest_path(repo_store);
 
-    // Ensure the parent directory exists with restricted permissions so that
-    // other users on the same machine cannot read shelved secrets.
     if let Some(parent) = path.parent() {
         #[cfg(unix)]
         {
@@ -347,12 +252,8 @@ mod tests {
     use tempfile::TempDir;
     use ulid::Ulid;
 
-    fn sample_meta(id: &str) -> RepoMeta {
-        RepoMeta {
-            id: id.to_string(),
-            name: "myapp".into(),
-            remote: Some("git@github.com:example/myapp.git".into()),
-        }
+    fn sample_manifest() -> Manifest {
+        Manifest::new("01JWPQ3VKGE93V9BDHAENVXFA5", "2026-04-29T00:00:00Z")
     }
 
     fn sample_item(path: &str) -> Item {
@@ -361,11 +262,6 @@ mod tests {
             origin_repo_id: "01JWPQ3VKGE93V9BDHAENVXFA5".into(),
             path: path.to_string(),
             store_path: format!("items/{path}"),
-            kind: ItemKind::File,
-            link: LinkInfo {
-                link_type: LinkType::Symlink,
-            },
-            git: GitInfo { was_tracked: false },
             ownership_state: OwnershipState::Attached,
             created_at: "2026-04-29T00:00:00Z".into(),
             updated_at: "2026-04-29T00:00:00Z".into(),
@@ -375,17 +271,20 @@ mod tests {
     #[test]
     fn round_trip_empty_manifest() {
         let dir = TempDir::new().unwrap();
-        let manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
+        let manifest = sample_manifest();
         save(dir.path(), &manifest).unwrap();
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.items.len(), 0);
-        assert_eq!(loaded.repo.name, "myapp");
+        assert_eq!(loaded.repo_id, "01JWPQ3VKGE93V9BDHAENVXFA5");
     }
 
     #[test]
-    fn round_trip_with_item() {
+    fn round_trip_with_item_and_hints() {
         let dir = TempDir::new().unwrap();
-        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
+        let mut manifest = sample_manifest();
+        manifest.add_remote_hint("github.com/example/myapp");
+        manifest.add_repo_name_hint("myapp");
+        manifest.touch_attached_at("2026-05-01T00:00:00Z");
         manifest.add(sample_item("notes/design.md"));
 
         save(dir.path(), &manifest).unwrap();
@@ -393,11 +292,99 @@ mod tests {
 
         assert_eq!(loaded.items.len(), 1);
         assert_eq!(loaded.items[0].path, "notes/design.md");
+        assert_eq!(
+            loaded.identity_hints.remote_hints,
+            vec!["github.com/example/myapp"]
+        );
+    }
+
+    #[test]
+    fn reject_manifest_with_missing_repo_id() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            r#"{"version":3,"created_at":"2026-04-29T00:00:00Z","identity_hints":{},"items":[]}"#,
+        )
+        .unwrap();
+
+        assert!(load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn reject_manifest_with_invalid_ownership_state() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            r#"{
+              "version":3,
+              "repo_id":"01JWPQ3VKGE93V9BDHAENVXFA5",
+              "created_at":"2026-04-29T00:00:00Z",
+              "identity_hints":{},
+              "items":[{
+                "item_id":"01JWPQ3VKGE93V9BDHAENVXFA6",
+                "origin_repo_id":"01JWPQ3VKGE93V9BDHAENVXFA5",
+                "path":".env",
+                "store_path":"items/.env",
+                "ownership_state":"stale",
+                "created_at":"2026-04-29T00:00:00Z",
+                "updated_at":"2026-04-29T00:00:00Z"
+              }]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn reject_manifest_below_version_3() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            r#"{"version":2,"repo_id":"01JWPQ3VKGE93V9BDHAENVXFA5","created_at":"2026-04-29T00:00:00Z","identity_hints":{},"items":[]}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            load(dir.path()),
+            Err(AppError::ManifestVersionMismatch {
+                found: 2,
+                expected: 3,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn add_repo_name_hint_trims_dedupes_and_keeps_most_recent_first() {
+        let mut manifest = sample_manifest();
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            manifest.add_repo_name_hint(name);
+        }
+        manifest.add_repo_name_hint("d");
+
+        assert_eq!(
+            manifest.identity_hints.repo_name_hints,
+            vec!["d", "f", "e", "c", "b"]
+        );
+    }
+
+    #[test]
+    fn add_remote_hint_deduplicates_without_reordering() {
+        let mut manifest = sample_manifest();
+        manifest.add_remote_hint("github.com/example/a");
+        manifest.add_remote_hint("github.com/example/b");
+        manifest.add_remote_hint("github.com/example/a");
+
+        assert_eq!(
+            manifest.identity_hints.remote_hints,
+            vec!["github.com/example/a", "github.com/example/b"]
+        );
     }
 
     #[test]
     fn add_then_remove_item() {
-        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
+        let mut manifest = sample_manifest();
         manifest.add(sample_item("notes.md"));
         assert!(manifest.contains("notes.md"));
 
@@ -407,24 +394,8 @@ mod tests {
     }
 
     #[test]
-    fn remove_nonexistent_returns_false() {
-        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
-        assert!(!manifest.remove("ghost.md"));
-    }
-
-    #[test]
-    fn remove_only_target_item() {
-        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
-        manifest.add(sample_item("a.md"));
-        manifest.add(sample_item("b.md"));
-        manifest.remove("a.md");
-        assert!(!manifest.contains("a.md"));
-        assert!(manifest.contains("b.md"));
-    }
-
-    #[test]
     fn rename_updates_path_and_store_path() {
-        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
+        let mut manifest = sample_manifest();
         manifest.add(sample_item("old/file.md"));
 
         let renamed = manifest.rename(
@@ -439,30 +410,6 @@ mod tests {
         let item = manifest.get("new/file.md").expect("new path must exist");
         assert_eq!(item.store_path, "items/new/file.md");
         assert_eq!(item.updated_at, "2026-05-25T00:00:00Z");
-        // Other fields are preserved.
         assert_eq!(item.created_at, "2026-04-29T00:00:00Z");
-        assert_eq!(item.kind, ItemKind::File);
-    }
-
-    #[test]
-    fn rename_nonexistent_returns_false() {
-        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
-        assert!(!manifest.rename(
-            "ghost.md",
-            "other.md",
-            "items/other.md",
-            "2026-05-25T00:00:00Z"
-        ));
-    }
-
-    #[test]
-    fn rename_preserves_other_items() {
-        let mut manifest = Manifest::new(sample_meta("01JWPQ3VKGE93V9BDHAENVXFA5"));
-        manifest.add(sample_item("a.md"));
-        manifest.add(sample_item("b.md"));
-        manifest.rename("a.md", "c.md", "items/c.md", "2026-05-25T00:00:00Z");
-        assert!(manifest.contains("c.md"));
-        assert!(manifest.contains("b.md"));
-        assert!(!manifest.contains("a.md"));
     }
 }

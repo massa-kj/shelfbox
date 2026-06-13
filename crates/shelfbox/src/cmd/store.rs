@@ -210,7 +210,7 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
 
     if !yes {
         println!("Run with --yes to remove eligible entries.");
-        println!("note: repos with reclaimable items are always skipped — run 'shelfbox repo adopt --from <ID>' first.");
+        println!("note: repos with reclaimable items are always skipped — run 'shelfbox repo reclaim' from a current clone first.");
         return Ok(());
     }
 
@@ -224,11 +224,10 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
         if reclaimable > 0 {
             eprintln!(
                 "warning: skipping '{}' [{}]: {} reclaimable item(s) \
-                 — run 'shelfbox repo adopt --from {}' to transfer them first",
+                 — run 'shelfbox repo reclaim' from a current clone first",
                 root.display(),
                 id,
-                reclaimable,
-                id
+                reclaimable
             );
             skipped += 1;
             continue;
@@ -252,10 +251,7 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
 }
 
 /// Returns the number of items in `repo_store`'s manifest that are protected
-/// from GC — i.e., in a state other than `Orphaned` or `Adopted` (terminal).
-///
-/// `Attached`, `Detached`, `Stale`, and `Unreachable` items are reclaimable
-/// and must not be deleted by `store gc` (spec §7.5, §9.1, §9.2).
+/// from GC — i.e., in a state other than `Orphaned`.
 fn count_reclaimable_items(repo_store: &std::path::Path) -> usize {
     if !repo_store.exists() {
         return 0;
@@ -264,12 +260,7 @@ fn count_reclaimable_items(repo_store: &std::path::Path) -> usize {
         .map(|mf| {
             mf.items
                 .iter()
-                .filter(|i| {
-                    !matches!(
-                        i.ownership_state,
-                        OwnershipState::Orphaned | OwnershipState::Adopted
-                    )
-                })
+                .filter(|i| !matches!(i.ownership_state, OwnershipState::Orphaned))
                 .count()
         })
         .unwrap_or(0)

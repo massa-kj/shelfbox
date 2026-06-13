@@ -9,7 +9,7 @@ use crate::{
     error::{AppError, Result},
     store::{
         index::{self, Index, RepoEntry},
-        manifest::{self, Manifest, RepoMeta},
+        manifest::{self, Manifest},
         meta,
     },
 };
@@ -302,14 +302,9 @@ fn load_or_init_manifest(
     if path.exists() {
         manifest::load(repo_store)
     } else {
-        // Remote URL is filled in by Phase 3 (git::get_remote_url).
-        // Leave it as None for now; it will be updated on first `add`.
-        let meta = RepoMeta {
-            id: repo_id.to_string(),
-            name: repo_name.to_string(),
-            remote: None,
-        };
-        Ok(Manifest::new(meta))
+        let mut manifest = Manifest::new(repo_id.to_string(), now_iso8601());
+        manifest.add_repo_name_hint(repo_name);
+        Ok(manifest)
     }
 }
 
@@ -403,11 +398,7 @@ mod tests {
             repo_id: "TESTID".into(),
             repo_store: repo_store.clone(),
             git_common_dir: PathBuf::from("/repo/.git"),
-            manifest: Manifest::new(RepoMeta {
-                id: "TESTID".into(),
-                name: "repo".into(),
-                remote: None,
-            }),
+            manifest: Manifest::new("TESTID", "2026-04-29T00:00:00Z"),
             config: Config::with_store("/store"),
             _store_lock: None,
         };

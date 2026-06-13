@@ -116,11 +116,6 @@ pub enum AppError {
     )]
     NamespaceNotFound { path: String },
 
-    // ── repo adopt ────────────────────────────────────────────────────────────
-    /// Cannot adopt items from the current repository.
-    #[error("cannot adopt from self (repo id: '{repo_id}')")]
-    AdoptFromSelf { repo_id: String },
-
     // ── item relink ───────────────────────────────────────────────────────────
     /// The item exists in the manifest but is not in `Detached` state.
     #[error(
@@ -129,13 +124,6 @@ pub enum AppError {
          hint: use 'item repair' to fix symlinks for attached items"
     )]
     RelinkNotDetached { path: PathBuf, actual_state: String },
-
-    /// The specified source repository is not registered in the store index.
-    #[error(
-        "no store entry found for repo id '{repo_id}'\n\
-         hint: run 'shelfbox repo list' to see known repositories"
-    )]
-    AdoptSourceNotFound { repo_id: String },
 
     // ── Store format ─────────────────────────────────────────────────────────
     /// The manifest file uses an incompatible format version and cannot be

@@ -1440,55 +1440,6 @@ fn move_item_renames_store_and_updates_symlink() {
 }
 
 #[test]
-fn move_item_rejects_directory_kind() {
-    if !require_symlink_support() {
-        return;
-    }
-    use shelfbox_core::store::manifest::{
-        GitInfo, Item, ItemKind, LinkInfo, LinkType, OwnershipState,
-    };
-    use ulid::Ulid;
-
-    let repo_dir = common::init_git_repo();
-    let store_dir = TempDir::new().unwrap();
-
-    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
-
-    // Inject a Directory-kind item directly into the manifest to simulate a
-    // legacy or externally-created entry.  add() no longer accepts directories.
-    let now = shelfbox_core::context::now_iso8601();
-    ctx.manifest.add(Item {
-        item_id: Ulid::new().to_string(),
-        origin_repo_id: ctx.repo_id.clone(),
-        path: "mydir".to_string(),
-        store_path: "items/mydir".to_string(),
-        kind: ItemKind::Directory,
-        link: LinkInfo {
-            link_type: LinkType::Symlink,
-        },
-        git: GitInfo { was_tracked: false },
-        ownership_state: OwnershipState::Attached,
-        created_at: now.clone(),
-        updated_at: now,
-    });
-    assert_eq!(ctx.manifest.get("mydir").unwrap().kind, ItemKind::Directory);
-
-    let dir_path = repo_dir.path().join("mydir");
-    let new_path = repo_dir.path().join("mydir_renamed");
-    let err = ops::move_item::move_item(&mut ctx, &dir_path, &new_path, false, &link, &ignore)
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            shelfbox_core::error::AppError::MoveDirectoryUnsupported
-        ),
-        "expected MoveDirectoryUnsupported, got: {err}"
-    );
-}
-
-#[test]
 fn move_item_rejects_when_destination_exists() {
     if !require_symlink_support() {
         return;

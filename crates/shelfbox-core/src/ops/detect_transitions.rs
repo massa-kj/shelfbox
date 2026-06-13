@@ -8,8 +8,6 @@ use crate::{
 /// Summary of ownership state transitions performed by [`run`].
 #[derive(Debug, Default)]
 pub struct TransitionReport {
-    /// Number of items transitioned from `Attached` to `Stale`.
-    pub stale: usize,
     /// Number of items transitioned from `Attached` to `Unreachable`.
     pub unreachable: usize,
     /// Repo IDs whose manifests were updated.
@@ -19,33 +17,27 @@ pub struct TransitionReport {
 impl TransitionReport {
     /// Returns `true` if no transitions were performed.
     pub fn is_empty(&self) -> bool {
-        self.stale == 0 && self.unreachable == 0
+        self.unreachable == 0
     }
 }
 
 /// Scans all other repos in the store index and automatically transitions
-/// `Attached` items to `Stale` or `Unreachable` as appropriate.
+/// `Attached` items to `Unreachable` when their local root is gone.
 ///
 /// # Detection rules
 ///
 /// For each repo entry in the index whose ID differs from `ctx.repo_id`:
 ///
-/// * **`Attached → Stale`**: `entry.git_common_dir == ctx.git_common_dir`.
-///   The current repo has superseded the old one (reclone or repo move). Items
-///   that were `Attached` in the old repo are now stale — reclaimable via
-///   `repo adopt`.
-///
 /// * **`Attached → Unreachable`**: `entry.root` no longer exists on disk (and
-///   the above stale condition does not apply).  The repo has been deleted or
-///   moved without re-registering.
+///   the repo has been deleted or moved without re-registering.
 ///
 /// # Guard
 ///
 /// Only `Attached` items are candidates for automatic transition.  Items
-/// already in `Detached`, `Stale`, `Unreachable`, `Adopted`, or `Orphaned`
+/// already in `Detached`, `Unreachable`, or `Orphaned`
 /// state are left unchanged.  This prevents re-transitioning already-resolved
 /// items if, for example, an index corruption creates a duplicate
-/// `git_common_dir` entry for an already-adopted repo.
+/// `git_common_dir` entry for an already-associated repo.
 ///
 /// # Write behaviour
 ///
@@ -66,17 +58,10 @@ pub fn run(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
 
         let repo_store = config.store.join("repos").join(&entry.store_dir);
 
-        // Determine which transition applies to this repo, if any.
-        let target_state = if entry.git_common_dir == ctx.git_common_dir {
-            // Same logical repo (same git_common_dir): current identity has
-            // superseded this older ULID → items become Stale.
-            OwnershipState::Stale
-        } else if !entry.root.exists() {
-            // Repo root path is gone: items become Unreachable.
-            OwnershipState::Unreachable
-        } else {
+        if entry.root.exists() {
             continue;
-        };
+        }
+        let target_state = OwnershipState::Unreachable;
 
         // Load the repo's manifest; skip gracefully if missing or unreadable.
         let mut mf = match manifest::load(&repo_store) {
@@ -95,11 +80,7 @@ pub fn run(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
             item.updated_at = now.clone();
             changed = true;
 
-            match target_state {
-                OwnershipState::Stale => report.stale += 1,
-                OwnershipState::Unreachable => report.unreachable += 1,
-                _ => {}
-            }
+            report.unreachable += 1;
         }
 
         if changed {
@@ -124,13 +105,9 @@ pub fn scan(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
             continue;
         }
 
-        let target_state = if entry.git_common_dir == ctx.git_common_dir {
-            OwnershipState::Stale
-        } else if !entry.root.exists() {
-            OwnershipState::Unreachable
-        } else {
+        if entry.root.exists() {
             continue;
-        };
+        }
 
         let repo_store = config.store.join("repos").join(&entry.store_dir);
         let mf = match manifest::load(&repo_store) {
@@ -142,11 +119,7 @@ pub fn scan(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
             if item.ownership_state != OwnershipState::Attached {
                 continue;
             }
-            match target_state {
-                OwnershipState::Stale => report.stale += 1,
-                OwnershipState::Unreachable => report.unreachable += 1,
-                _ => {}
-            }
+            report.unreachable += 1;
             if !report.affected_repos.contains(&repo_id.to_owned()) {
                 report.affected_repos.push(repo_id.to_owned());
             }
@@ -175,10 +148,9 @@ mod tests {
     }
 
     #[test]
-    fn non_empty_stale_not_empty() {
+    fn non_empty_unreachable_not_empty() {
         let report = TransitionReport {
-            stale: 1,
-            unreachable: 0,
+            unreachable: 1,
             affected_repos: vec!["A".into()],
         };
         assert!(!report.is_empty());

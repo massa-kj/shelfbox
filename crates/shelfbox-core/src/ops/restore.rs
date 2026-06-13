@@ -198,19 +198,21 @@ pub fn restore_namespace(
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
 ) -> Result<NamespaceRestoreResult> {
-    // Verify the namespace is registered.
-    if !ctx.manifest.namespaces.iter().any(|n| n.path == ns_path) {
+    // v0.7.0 no longer persists namespace entries. Directory restore derives
+    // membership from item paths.
+    let member_paths: Vec<String> = ctx
+        .manifest
+        .items
+        .iter()
+        .filter(|i| i.path.starts_with(ns_path))
+        .map(|i| i.path.clone())
+        .collect();
+
+    if member_paths.is_empty() {
         return Err(AppError::NamespaceNotFound {
             path: ns_path.to_owned(),
         });
     }
-
-    // Collect member paths (clone to release the borrow on ctx.manifest).
-    let member_paths: Vec<String> = ctx
-        .manifest
-        .namespace_members(ns_path)
-        .map(|i| i.path.clone())
-        .collect();
 
     let mut results: Vec<(String, NsRestoreItemOutcome)> = Vec::new();
 
@@ -237,17 +239,9 @@ pub fn restore_namespace(
         }
     }
 
-    // Remove namespace entry if no members remain.
-    let namespace_removed = if ctx.manifest.remove_namespace_if_empty(ns_path) {
-        manifest::save(&ctx.repo_store, &ctx.manifest)?;
-        true
-    } else {
-        false
-    };
-
     Ok(NamespaceRestoreResult {
         ns_path: ns_path.to_owned(),
         results,
-        namespace_removed,
+        namespace_removed: false,
     })
 }

@@ -6,7 +6,7 @@ use crate::{
     git,
     ignore::IgnoreBackend,
     link::LinkStrategy,
-    store::manifest::{self, ItemKind},
+    store::manifest,
 };
 
 use super::path::{normalize_repo_relative, repo_relative_path};
@@ -86,11 +86,6 @@ pub fn move_item(
             path: old_abs.to_path_buf(),
         })?
         .clone();
-
-    // Directory moves are not yet supported.
-    if item.kind == ItemKind::Directory {
-        return Err(AppError::MoveDirectoryUnsupported);
-    }
 
     // Destination must not already be managed.
     if ctx.manifest.contains(&new_rel_str) {

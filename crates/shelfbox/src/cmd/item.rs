@@ -15,7 +15,7 @@ use shelfbox_core::{
         restore::NsRestoreItemOutcome,
         status::ItemStatus,
     },
-    store::manifest::{Item, ItemKind},
+    store::manifest::Item,
 };
 
 use crate::cmd::format::OutputFormat;
@@ -554,11 +554,12 @@ fn print_list(items: &[Item], verbose: bool, ctx: &context::RepoContext) {
         return;
     }
     for item in items {
-        let kind = match item.kind {
-            ItemKind::File => "file",
-            ItemKind::Directory => "dir",
-        };
-        println!("  {:<45} {:<5} {}", item.path, kind, item.created_at);
+        println!(
+            "  {:<45} {:<11} {}",
+            item.path,
+            format!("{:?}", item.ownership_state).to_lowercase(),
+            item.created_at
+        );
         if verbose {
             let store_path = ctx.repo_store.join(&item.store_path);
             let link_target = std::fs::read_link(ctx.repo_root.join(&item.path)).ok();

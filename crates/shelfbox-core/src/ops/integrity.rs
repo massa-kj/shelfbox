@@ -194,7 +194,7 @@ pub fn fix(
 /// mapping deterministic — no guessing required.
 ///
 /// Metadata that cannot be recovered (`created_at`, `updated_at`) is set to
-/// the current time.  `git.was_tracked` is conservatively set to `false`.
+/// the current time.
 ///
 /// Already-managed items are skipped (`manifest.contains()` check) so the
 /// function is safe to call even when the manifest is partially intact.
@@ -270,23 +270,11 @@ fn rebuild_manifest_from_store(
 
     let now = context::now_iso8601();
     for orphan in &to_add {
-        let abs_store_path = ctx.items_dir().join(orphan);
-        let kind = if abs_store_path.is_dir() {
-            manifest::ItemKind::Directory
-        } else {
-            manifest::ItemKind::File
-        };
-
         ctx.manifest.add(manifest::Item {
             item_id: Ulid::new().to_string(),
             origin_repo_id: ctx.repo_id.clone(),
             path: orphan.clone(),
             store_path: format!("items/{orphan}"),
-            kind,
-            link: manifest::LinkInfo {
-                link_type: manifest::LinkType::Symlink,
-            },
-            git: manifest::GitInfo { was_tracked: false },
             ownership_state: manifest::OwnershipState::Attached,
             created_at: now.clone(),
             updated_at: now.clone(),

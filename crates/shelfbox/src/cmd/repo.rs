@@ -10,10 +10,7 @@ use shelfbox_core::{
     ignore::GitInfoExclude,
     link::DefaultLinkStrategy,
     ops,
-    ops::{
-        adopt::AdoptOutcome,
-        integrity::{FixResult, IntegrityReport},
-    },
+    ops::integrity::{FixResult, IntegrityReport},
     store::{index, manifest, manifest::OwnershipState},
 };
 
@@ -63,21 +60,6 @@ pub enum RepoCommand {
         yes: bool,
     },
 
-    /// Adopt shelved items from another repository into the current one.
-    ///
-    /// Use this after a reclone or repository rename to reclaim shelved items
-    /// from the old identity.  Specify the source repository by its ID as
-    /// shown by `shelfbox repo list --verbose`.
-    Adopt {
-        /// Source repository ID to adopt items from.
-        #[arg(long)]
-        from: String,
-
-        /// Print what would happen without making any changes.
-        #[arg(long)]
-        dry_run: bool,
-    },
-
     /// Migrate the manifest schema to the current version (not yet implemented).
     #[command(hide = true)]
     Migrate,
@@ -104,10 +86,6 @@ pub fn run_repo(
         }
         RepoCommand::Gc { dry_run, yes } => {
             cmd_repo_gc(cwd, store_override, dry_run, yes)?;
-            Ok(ExitCode::SUCCESS)
-        }
-        RepoCommand::Adopt { from, dry_run } => {
-            cmd_repo_adopt(cwd, store_override, &from, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         RepoCommand::Migrate => {
@@ -247,10 +225,9 @@ fn cmd_repo_status(
     if !pending.is_empty() {
         eprintln!(
             "hint: {} item(s) in {} repo(s) may need ownership transition \
-             (stale: {}, unreachable: {}) — run 'shelfbox repo repair' to apply",
-            pending.stale + pending.unreachable,
+             (unreachable: {}) — run 'shelfbox repo repair' to apply",
+            pending.unreachable,
             pending.affected_repos.len(),
-            pending.stale,
             pending.unreachable,
         );
     }
@@ -270,14 +247,13 @@ fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> 
     let ignore = GitInfoExclude;
 
     // Detect and apply ownership state transitions across all other repos in
-    // the store (Attached -> Stale / Unreachable).  Runs before integrity fix
+    // the store (Attached -> Unreachable).  Runs before integrity fix
     // so that status checks reflect up-to-date ownership information.
     if !dry_run {
         let tr = ops::detect_transitions::run(&ctx, &ctx.config.clone())?;
         if !tr.is_empty() {
             println!(
-                "ownership transitions applied: {} stale, {} unreachable (across {} repo(s))",
-                tr.stale,
+                "ownership transitions applied: {} unreachable (across {} repo(s))",
                 tr.unreachable,
                 tr.affected_repos.len()
             );
@@ -314,12 +290,6 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
         .iter()
         .filter(|i| i.ownership_state == OwnershipState::Detached)
         .count();
-    let stale_count = ctx
-        .manifest
-        .items
-        .iter()
-        .filter(|i| i.ownership_state == OwnershipState::Stale)
-        .count();
     let unreachable_count = ctx
         .manifest
         .items
@@ -327,18 +297,15 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
         .filter(|i| i.ownership_state == OwnershipState::Unreachable)
         .count();
 
-    if detached_count > 0 || stale_count > 0 || unreachable_count > 0 {
+    if detached_count > 0 || unreachable_count > 0 {
         println!("ownership-protected items (not collected by gc):");
         if detached_count > 0 {
             println!(
                 "  {detached_count} detached — run 'shelfbox item relink <PATH>' to re-attach"
             );
         }
-        if stale_count > 0 {
-            println!("  {stale_count} stale    — run 'shelfbox repo adopt --from <OLD-REPO-ID>' to reclaim");
-        }
         if unreachable_count > 0 {
-            println!("  {unreachable_count} unreachable — run 'shelfbox repo adopt --from <OLD-REPO-ID>' or 'shelfbox repo repair' to recover");
+            println!("  {unreachable_count} unreachable — run 'shelfbox repo reclaim' then 'shelfbox repo repair' to recover");
         }
     }
 
@@ -377,57 +344,6 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
             Err(e) => eprintln!("error: failed to delete '{orphan}': {e}"),
         }
     }
-    Ok(())
-}
-
-fn cmd_repo_adopt(
-    cwd: &Path,
-    store_override: Option<&Path>,
-    from_repo_id: &str,
-    dry_run: bool,
-) -> Result<()> {
-    let mut ctx = context::build(cwd, store_override, !dry_run)
-        .context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
-
-    let result = ops::adopt::adopt(&mut ctx, from_repo_id, dry_run, &link)?;
-
-    if result.items.is_empty() {
-        println!("no eligible items found in repository '{from_repo_id}'");
-        return Ok(());
-    }
-
-    for item in &result.items {
-        match item.outcome {
-            AdoptOutcome::Adopted => println!("adopted:         {}", item.path),
-            AdoptOutcome::AdoptedLinkFailed => {
-                println!("adopted (no link): {}", item.path);
-                eprintln!(
-                    "warning: symlink update failed for '{}'; run 'shelfbox item repair {}' to fix",
-                    item.path, item.path
-                );
-            }
-            AdoptOutcome::Reclaimed => println!("reclaimed:       {}", item.path),
-            AdoptOutcome::ReclaimedLinkFailed => {
-                println!("reclaimed (no link): {}", item.path);
-                eprintln!(
-                    "warning: symlink update failed for '{}'; run 'shelfbox item repair {}' to fix",
-                    item.path, item.path
-                );
-            }
-            AdoptOutcome::WouldAdopt => println!("would adopt:     {}", item.path),
-            AdoptOutcome::Conflict => println!("skipped (conflict):      {}", item.path),
-            AdoptOutcome::StoreMissing => println!("skipped (store missing): {}", item.path),
-        }
-    }
-
-    let count = result.adopted_count();
-    if dry_run {
-        println!("\n{count} item(s) would be adopted (dry run)");
-    } else {
-        println!("\n{count} item(s) adopted from '{from_repo_id}'");
-    }
-
     Ok(())
 }
 

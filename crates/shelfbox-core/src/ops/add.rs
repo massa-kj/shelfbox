@@ -9,9 +9,7 @@ use crate::{
     git,
     ignore::IgnoreBackend,
     link::LinkStrategy,
-    store::manifest::{
-        self, GitInfo, Item, ItemKind, LinkInfo, LinkType, NamespaceEntry, OwnershipState,
-    },
+    store::manifest::{self, Item, OwnershipState},
 };
 
 /// Shelves `abs_path` into the store, leaving a symlink in its place.
@@ -86,8 +84,6 @@ pub fn add(
         });
     }
 
-    let kind = ItemKind::File;
-
     // Store-relative path (relative to repo_store): "items/<rel>".
     let store_path_rel = format!("items/{rel_str}");
 
@@ -123,23 +119,16 @@ pub fn add(
         return Err(e);
     }
 
-    // Update the remote URL in the manifest on first shelve if not yet recorded.
-    if ctx.manifest.repo.remote.is_none() {
-        ctx.manifest.repo.remote = git::get_remote_url(&ctx.repo_root)?;
-    }
-
     // Record the item in the manifest.
     let now = context::now_iso8601();
+    if let Some(name) = ctx.repo_root.file_name().and_then(|n| n.to_str()) {
+        ctx.manifest.add_repo_name_hint(name);
+    }
     let item = Item {
         item_id: Ulid::new().to_string(),
         origin_repo_id: ctx.repo_id.clone(),
         path: rel_str.clone(),
         store_path: store_path_rel,
-        kind,
-        link: LinkInfo {
-            link_type: LinkType::Symlink,
-        },
-        git: GitInfo { was_tracked: false },
         ownership_state: OwnershipState::Attached,
         created_at: now.clone(),
         updated_at: now,
@@ -194,19 +183,17 @@ pub enum DirItemOutcome {
 /// Summary of a [`add_directory`] operation.
 #[derive(Debug)]
 pub struct DirectoryAddResult {
-    /// The registered namespace path (repo-relative, ends with `/`).
+    /// Directory path that was processed (repo-relative, ends with `/`).
     pub ns_path: String,
     /// Per-file outcomes in the order they were processed.
     pub results: Vec<(String, DirItemOutcome)>,
-    /// Whether a new namespace entry was created in the manifest.
+    /// Always false in v0.7.0; namespaces are UI-only and not persisted.
     pub namespace_created: bool,
 }
 
-/// Shelves all eligible files under `abs_dir` as a named directory namespace.
+/// Shelves all eligible files under `abs_dir`.
 ///
-/// Each eligible file is moved to the store and replaced with a symlink, then
-/// a single [`NamespaceEntry`] is registered in the manifest.  The namespace
-/// acts as a query filter only — it does not own any items.
+/// Each eligible file is moved to the store and replaced with a symlink.
 ///
 /// # Eligibility rules
 ///
@@ -217,7 +204,7 @@ pub struct DirectoryAddResult {
 ///
 /// Nested git repositories inside `abs_dir` are reported as
 /// [`DirItemOutcome::NestedGitRepo`] and their contents are excluded entirely.
-/// Partial success is allowed: if ≥1 file is shelved, the namespace is created.
+/// Partial success is allowed.
 ///
 /// # Dry-run
 /// When `dry_run` is `true`, no filesystem changes are made.
@@ -327,12 +314,10 @@ pub fn add_directory(
     }
 
     // ── Execute shelving ─────────────────────────────────────────────────────
-    // Update the remote URL once if not yet recorded.
-    if ctx.manifest.repo.remote.is_none() {
-        ctx.manifest.repo.remote = git::get_remote_url(&ctx.repo_root)?;
-    }
-
     let now = context::now_iso8601();
+    if let Some(name) = ctx.repo_root.file_name().and_then(|n| n.to_str()) {
+        ctx.manifest.add_repo_name_hint(name);
+    }
     let mut added_paths: Vec<String> = Vec::new();
 
     for (rel_cand_str, abs_cand, store_path_rel) in to_shelve {
@@ -371,11 +356,6 @@ pub fn add_directory(
             origin_repo_id: ctx.repo_id.clone(),
             path: rel_cand_str.clone(),
             store_path: store_path_rel,
-            kind: ItemKind::File,
-            link: LinkInfo {
-                link_type: LinkType::Symlink,
-            },
-            git: GitInfo { was_tracked: false },
             ownership_state: OwnershipState::Attached,
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -385,13 +365,7 @@ pub fn add_directory(
         results.push((rel_cand_str, DirItemOutcome::Added));
     }
 
-    let namespace_created = !added_paths.is_empty();
-    if namespace_created {
-        ctx.manifest.add_namespace(NamespaceEntry {
-            path: ns_path.clone(),
-            created_at: now.clone(),
-            updated_at: now,
-        });
+    if !added_paths.is_empty() {
         manifest::save(&ctx.repo_store, &ctx.manifest)?;
 
         let refs: Vec<&str> = added_paths.iter().map(String::as_str).collect();
@@ -401,7 +375,7 @@ pub fn add_directory(
     Ok(DirectoryAddResult {
         ns_path,
         results,
-        namespace_created,
+        namespace_created: false,
     })
 }
 

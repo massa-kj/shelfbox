@@ -199,6 +199,9 @@ Rules:
 
 A managed file entry.
 
+Items are path-addressed files. Directory operations are command behavior over
+matching item paths; they do not add a persisted item kind or namespace record.
+
 Important fields:
 
 ```text
