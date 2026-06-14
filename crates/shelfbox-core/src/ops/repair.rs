@@ -231,20 +231,22 @@ pub fn repair_repo(
         }
     }
 
-    let before_hints = ctx.manifest.identity_hints.clone();
-    let now = context::now_iso8601();
-    if let Some(name) = current.repo_root.file_name().and_then(|name| name.to_str()) {
-        ctx.manifest.add_repo_name_hint(name);
-    }
-    if let Some(remote_hint) = &current.remote_hint {
-        ctx.manifest.add_remote_hint(remote_hint);
-    }
-    ctx.manifest.touch_attached_at(now);
-    report.hints_updated = ctx.manifest.identity_hints != before_hints;
-    if report.hints_updated && !dry_run {
-        manifest::save(&ctx.repo_store, &ctx.manifest)?;
-    } else if dry_run {
-        ctx.manifest.identity_hints = before_hints;
+    if report.symlinks_failed.is_empty() {
+        let before_hints = ctx.manifest.identity_hints.clone();
+        let now = context::now_iso8601();
+        if let Some(name) = current.repo_root.file_name().and_then(|name| name.to_str()) {
+            ctx.manifest.add_repo_name_hint(name);
+        }
+        if let Some(remote_hint) = &current.remote_hint {
+            ctx.manifest.add_remote_hint(remote_hint);
+        }
+        ctx.manifest.touch_attached_at(now);
+        report.hints_updated = ctx.manifest.identity_hints != before_hints;
+        if report.hints_updated && !dry_run {
+            manifest::save(&ctx.repo_store, &ctx.manifest)?;
+        } else if dry_run {
+            ctx.manifest.identity_hints = before_hints;
+        }
     }
 
     Ok(report)

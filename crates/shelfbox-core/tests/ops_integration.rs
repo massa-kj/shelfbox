@@ -865,9 +865,12 @@ fn repo_repair_reports_missing_store_file_as_nonfatal_failure() {
     assert_eq!(report.symlinks_repaired, 0);
     assert_eq!(report.symlinks_already_healthy, 0);
     assert_eq!(report.symlinks_failed.len(), 1);
+    assert!(!report.hints_updated);
     assert_eq!(report.symlinks_failed[0].0, "lost-repo.txt");
     assert!(report.symlinks_failed[0].1.contains("store item missing"));
     assert!(file_path.symlink_metadata().is_ok());
+    let manifest = store::manifest::load(&ctx.repo_store).unwrap();
+    assert_eq!(manifest.identity_hints.last_attached_at, None);
 }
 
 #[test]
