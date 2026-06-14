@@ -12,6 +12,18 @@ use crate::{
     store::manifest::{self, Item, OwnershipState},
 };
 
+fn update_identity_hints(ctx: &mut RepoContext) {
+    if let Some(name) = ctx.repo_root.file_name().and_then(|n| n.to_str()) {
+        ctx.manifest.add_repo_name_hint(name);
+    }
+
+    if let Ok(Some(remote_url)) = git::remote_url(&ctx.repo_root) {
+        if let Some(remote_hint) = git::normalize_remote_hint(&remote_url) {
+            ctx.manifest.add_remote_hint(&remote_hint);
+        }
+    }
+}
+
 /// Shelves `abs_path` into the store, leaving a symlink in its place.
 ///
 /// # Dry-run
@@ -121,9 +133,7 @@ pub fn add(
 
     // Record the item in the manifest.
     let now = context::now_iso8601();
-    if let Some(name) = ctx.repo_root.file_name().and_then(|n| n.to_str()) {
-        ctx.manifest.add_repo_name_hint(name);
-    }
+    update_identity_hints(ctx);
     let item = Item {
         item_id: Ulid::new().to_string(),
         origin_repo_id: ctx.repo_id.clone(),
@@ -315,9 +325,7 @@ pub fn add_directory(
 
     // ── Execute shelving ─────────────────────────────────────────────────────
     let now = context::now_iso8601();
-    if let Some(name) = ctx.repo_root.file_name().and_then(|n| n.to_str()) {
-        ctx.manifest.add_repo_name_hint(name);
-    }
+    update_identity_hints(ctx);
     let mut added_paths: Vec<String> = Vec::new();
 
     for (rel_cand_str, abs_cand, store_path_rel) in to_shelve {

@@ -78,6 +78,110 @@ fn reclone_starts_fresh_while_preserving_old_store() {
     );
 }
 
+#[test]
+fn matching_remote_does_not_reclaim_repo_id_automatically() {
+    if !require_symlink_support() {
+        return;
+    }
+    let original_repo = common::init_git_repo();
+    common::run_git(
+        original_repo.path(),
+        &["remote", "add", "origin", "git@github.com:example/app.git"],
+    );
+    let store_dir = TempDir::new().unwrap();
+
+    let secret = original_repo.path().join("secret.txt");
+    std::fs::write(&secret, "sensitive data").unwrap();
+
+    let mut ctx = context::build(original_repo.path(), Some(store_dir.path()), true).unwrap();
+    let original_id = ctx.repo_id.clone();
+    ops::add::add(
+        &mut ctx,
+        &secret,
+        false,
+        &DefaultLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
+    assert_eq!(
+        ctx.manifest.identity_hints.remote_hints,
+        vec!["github.com/example/app"]
+    );
+    drop(ctx);
+
+    let recloned_repo = common::init_git_repo();
+    common::run_git(
+        recloned_repo.path(),
+        &["remote", "add", "origin", "git@github.com:example/app.git"],
+    );
+    let ctx_reclone = context::build(recloned_repo.path(), Some(store_dir.path()), false).unwrap();
+
+    assert_ne!(
+        ctx_reclone.repo_id, original_id,
+        "matching remote hints must not trigger automatic reclaim"
+    );
+}
+
+#[test]
+fn item_add_updates_identity_hints_without_absolute_paths() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo = common::init_git_repo();
+    common::run_git(
+        repo.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/app.git",
+        ],
+    );
+    let store_dir = TempDir::new().unwrap();
+
+    let secret = repo.path().join("secret.txt");
+    std::fs::write(&secret, "sensitive data").unwrap();
+
+    let mut ctx = context::build(repo.path(), Some(store_dir.path()), true).unwrap();
+    ops::add::add(
+        &mut ctx,
+        &secret,
+        false,
+        &DefaultLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
+
+    let repo_name = repo
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        ctx.manifest.identity_hints.remote_hints,
+        vec!["github.com/example/app"]
+    );
+    assert_eq!(
+        ctx.manifest.identity_hints.repo_name_hints.first(),
+        Some(&repo_name)
+    );
+
+    let repo_path = repo.path().to_string_lossy();
+    let store_path = store_dir.path().to_string_lossy();
+    for hint in ctx
+        .manifest
+        .identity_hints
+        .remote_hints
+        .iter()
+        .chain(ctx.manifest.identity_hints.repo_name_hints.iter())
+    {
+        assert!(!hint.contains(repo_path.as_ref()));
+        assert!(!hint.contains(store_path.as_ref()));
+        assert!(!std::path::Path::new(hint).is_absolute());
+    }
+}
+
 // ── Scenario 2: repo rename ───────────────────────────────────────────────────
 
 /// Renaming a repository directory on disk must be detected as a new
