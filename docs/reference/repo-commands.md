@@ -43,6 +43,10 @@ shelfbox repo status --verbose
 `repo status` is read-only. It does not perform reclaim, repair symlinks, or
 mutate manifests.
 
+If the current clone has no local cache match but manifests contain positive
+reclaim candidates, `repo status` prints a hint to run `shelfbox repo reclaim`.
+The hint is informational only; reclaim remains an explicit user action.
+
 **Exit codes:**
 
 | Code | Meaning |

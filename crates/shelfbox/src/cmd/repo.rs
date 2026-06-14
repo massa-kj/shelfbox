@@ -15,7 +15,7 @@ use shelfbox_core::{
     store::{index, manifest, manifest::OwnershipState},
 };
 
-use crate::cmd::format::OutputFormat;
+use crate::cmd::{format::OutputFormat, util::warn_reclaim_candidates_if_unassociated};
 
 // ── repo subcommands ────────────────────────────────────────────────────────────────────────────
 
@@ -248,6 +248,8 @@ fn cmd_repo_status(
     format: Option<OutputFormat>,
     verbose: bool,
 ) -> Result<ExitCode> {
+    warn_reclaim_candidates_if_unassociated(cwd, store_override);
+
     let ctx =
         context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);

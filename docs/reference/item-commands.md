@@ -21,8 +21,12 @@ shelfbox item add secrets/notes/local.md
 7. Adds the repo-relative path to `.git/info/exclude` inside a managed block.
 8. Updates `identity_hints` with normalized remote and repository-name hints.
 
-`item add` must not scan manifests for matching hints and must not automatically
-reclaim an existing `RepoId`.
+Repository resolution for `item add` must not use manifest hints as identity
+proof and must not automatically reclaim an existing `RepoId`.
+
+If no local cache entry matches but existing manifests contain positive reclaim
+candidates, the CLI prints a hint to run `shelfbox repo reclaim`. It still keeps
+reclaim explicit and does not select or attach a candidate automatically.
 
 **Flags:**
 

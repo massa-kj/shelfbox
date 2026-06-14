@@ -19,7 +19,7 @@ use shelfbox_core::{
 };
 
 use crate::cmd::format::OutputFormat;
-use crate::cmd::util::resolve_path;
+use crate::cmd::util::{resolve_path, warn_reclaim_candidates_if_unassociated};
 
 // ── item subcommands ────────────────────────────────────────────────────────────────────────────
 
@@ -200,6 +200,8 @@ fn cmd_add(
     paths: &[PathBuf],
     dry_run: bool,
 ) -> Result<()> {
+    warn_reclaim_candidates_if_unassociated(cwd, store_override);
+
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = DefaultLinkStrategy;
