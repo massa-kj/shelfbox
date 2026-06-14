@@ -136,6 +136,15 @@ pub struct RepoContext {
     _store_lock: Option<StoreLock>,
 }
 
+/// Facts about the current Git checkout without any shelfbox store side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentGitContext {
+    pub repo_root: PathBuf,
+    pub git_dir: PathBuf,
+    pub git_common_dir: PathBuf,
+    pub remote_hint: Option<String>,
+}
+
 impl RepoContext {
     /// Root of the `items/` subdirectory inside [`repo_store`].
     pub fn items_dir(&self) -> PathBuf {
@@ -159,6 +168,32 @@ impl RepoContext {
 }
 
 // ── Construction ──────────────────────────────────────────────────────────────
+
+/// Detects Git metadata for `cwd` without creating a shelfbox `RepoId`, store
+/// metadata, index entry, or manifest.
+pub fn current_git_context(cwd: &Path) -> Result<CurrentGitContext> {
+    let repo_root = crate::git::find_repo_root(cwd)?;
+    let git_dir = crate::git::git_dir(&repo_root)?;
+    let git_common_dir = crate::git::git_common_dir(&repo_root)?;
+    let remote_hint =
+        crate::git::remote_url(&repo_root)?.and_then(|url| crate::git::normalize_remote_hint(&url));
+
+    Ok(CurrentGitContext {
+        repo_root,
+        git_dir,
+        git_common_dir,
+        remote_hint,
+    })
+}
+
+/// Resolves an existing shelfbox repository from local Git metadata without
+/// creating anything. Root matches take precedence over `git_common_dir`.
+pub fn resolve_existing_repo(current: &CurrentGitContext, index: &Index) -> Option<String> {
+    index
+        .find_by_root(&current.repo_root)
+        .or_else(|| index.find_by_git_common_dir(&current.git_common_dir))
+        .map(str::to_string)
+}
 
 /// Builds a [`RepoContext`] for the current working directory.
 ///
@@ -218,8 +253,8 @@ fn resolve_repo(
     // for the new RepoEntry when this repository is seen for the first time.
     // Fall back to `repo_root/.git` if the git command fails (e.g. in tests
     // that create a bare-minimum repo without worktrees).
-    let common_dir =
-        crate::git::git_common_dir(repo_root).unwrap_or_else(|_| repo_root.join(".git"));
+    let git_dir = crate::git::git_dir(repo_root).unwrap_or_else(|_| repo_root.join(".git"));
+    let common_dir = crate::git::git_common_dir(repo_root).unwrap_or_else(|_| git_dir.clone());
 
     // Human-readable portion of the store directory name (used for new repos).
     let repo_name = repo_root
@@ -245,7 +280,7 @@ fn resolve_repo(
             let dir = entry.repo_store_dir.clone();
             let mut updated = entry.clone();
             updated.root = Some(repo_root.to_path_buf());
-            updated.git_dir = Some(common_dir.clone());
+            updated.git_dir = Some(git_dir.clone());
             updated.git_common_dir = Some(common_dir.clone());
             updated.last_seen_at = now_iso8601();
             index.upsert(&id, updated);
@@ -262,7 +297,7 @@ fn resolve_repo(
         let dir = allocate_repo_store_dir(store_root, &sanitize_name(&repo_name), &id)?;
         let entry = RepoEntry {
             root: Some(repo_root.to_path_buf()),
-            git_dir: Some(common_dir.clone()),
+            git_dir: Some(git_dir.clone()),
             git_common_dir: Some(common_dir.clone()),
             repo_store_dir: dir.clone(),
             last_seen_at: now_iso8601(),
@@ -412,6 +447,45 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command as StdCommand;
+
+    use tempfile::TempDir;
+
+    fn init_git_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        init_git_repo_at(dir.path());
+        dir
+    }
+
+    fn init_git_repo_at(path: &Path) {
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test User"],
+        ] {
+            run_git(path, &args);
+        }
+    }
+
+    fn init_git_repo_with_commit() -> TempDir {
+        let dir = init_git_repo();
+        run_git(dir.path(), &["commit", "--allow-empty", "-m", "initial"]);
+        dir
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = StdCommand::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {}: {e}", args[0]));
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args[0],
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn epoch_zero_is_unix_epoch() {
@@ -494,5 +568,90 @@ mod tests {
         let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-1").unwrap();
 
         assert_eq!(dir, "my-project");
+    }
+
+    #[test]
+    fn current_git_context_resolves_indexed_repo_by_root() {
+        let repo = init_git_repo();
+        run_git(
+            repo.path(),
+            &["remote", "add", "origin", "git@github.com:example/app.git"],
+        );
+        let current = current_git_context(repo.path()).unwrap();
+
+        let mut index = Index::new();
+        index.upsert(
+            "repo-1",
+            RepoEntry {
+                root: Some(current.repo_root.clone()),
+                git_dir: Some(current.git_dir.clone()),
+                git_common_dir: Some(current.git_common_dir.clone()),
+                repo_store_dir: "app".into(),
+                last_seen_at: "2026-04-29T00:00:00Z".into(),
+            },
+        );
+
+        assert_eq!(
+            current.remote_hint.as_deref(),
+            Some("github.com/example/app")
+        );
+        assert_eq!(
+            resolve_existing_repo(&current, &index).as_deref(),
+            Some("repo-1")
+        );
+    }
+
+    #[test]
+    fn current_git_context_for_unindexed_clone_creates_no_store_files() {
+        let repo = init_git_repo();
+        let store = TempDir::new().unwrap();
+
+        let current = current_git_context(repo.path()).unwrap();
+        let index = Index::new();
+
+        assert_eq!(resolve_existing_repo(&current, &index), None);
+        assert!(!store.path().join("index.json").exists());
+        assert!(!store.path().join("repos").exists());
+        assert!(!store.path().join("meta.json").exists());
+    }
+
+    #[test]
+    fn current_git_context_resolves_linked_worktree_by_git_common_dir() {
+        let main = init_git_repo_with_commit();
+        let worktree_parent = TempDir::new().unwrap();
+        let worktree = worktree_parent.path().join("linked-worktree");
+        run_git(
+            main.path(),
+            &["worktree", "add", worktree.to_str().unwrap(), "HEAD"],
+        );
+
+        let main_current = current_git_context(main.path()).unwrap();
+        let worktree_current = current_git_context(&worktree).unwrap();
+
+        let mut index = Index::new();
+        index.upsert(
+            "repo-1",
+            RepoEntry {
+                root: Some(main_current.repo_root),
+                git_dir: Some(main_current.git_dir),
+                git_common_dir: Some(main_current.git_common_dir),
+                repo_store_dir: "app".into(),
+                last_seen_at: "2026-04-29T00:00:00Z".into(),
+            },
+        );
+
+        assert_eq!(
+            resolve_existing_repo(&worktree_current, &index).as_deref(),
+            Some("repo-1")
+        );
+    }
+
+    #[test]
+    fn current_git_context_outside_git_repo_returns_not_a_git_repo() {
+        let dir = TempDir::new().unwrap();
+
+        let err = current_git_context(dir.path()).unwrap_err();
+
+        assert!(matches!(err, AppError::NotAGitRepo));
     }
 }

@@ -162,6 +162,21 @@ pub fn git_common_dir(repo_root: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Returns the Git directory for this checkout.
+///
+/// Equivalent to `git rev-parse --git-dir`. For a linked worktree, this is the
+/// worktree-specific Git directory, while [`git_common_dir`] points at the
+/// shared common directory.
+pub fn git_dir(repo_root: &Path) -> Result<PathBuf> {
+    let raw = run_git(&["rev-parse", "--git-dir"], repo_root)?;
+    let p = PathBuf::from(&raw);
+    if p.is_absolute() {
+        Ok(p)
+    } else {
+        Ok(repo_root.join(p))
+    }
+}
+
 /// Returns the URL of the `origin` remote, if configured.
 pub fn remote_url(repo_root: &Path) -> Result<Option<String>> {
     match run_git(&["remote", "get-url", "origin"], repo_root) {
