@@ -5,9 +5,10 @@ use std::{
 };
 
 use crate::{
+    context::{self, CurrentGitContext},
     error::{AppError, Result},
     store::{
-        index::Index,
+        index::{self, Index, RepoEntry},
         manifest::{Manifest, OwnershipState},
         scanner::{self, ScanError},
     },
@@ -31,6 +32,12 @@ pub enum CandidateState {
     Unreachable,
     Detached,
     AttachedElsewhere,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReclaimOutcome {
+    pub repo_id: String,
+    pub repo_store_dir: String,
 }
 
 pub fn build_candidates(
@@ -108,6 +115,88 @@ pub fn check_reclaim_precondition(current_manifest: Option<&Manifest>) -> Result
         ));
     }
     Ok(())
+}
+
+/// Associates the current Git checkout with an existing `RepoId`.
+///
+/// This updates only local index metadata and target manifest identity hints.
+/// It does not move items, mutate item ownership, repair symlinks, or rewrite
+/// ignore/exclude files.
+pub fn execute_reclaim(
+    store_root: &Path,
+    current: &CurrentGitContext,
+    target_repo_id: &str,
+) -> Result<ReclaimOutcome> {
+    let scan = scanner::scan(store_root)?;
+    if let Some(error) = scan.errors.first() {
+        match error {
+            ScanError::ReadFailed { dir, source } => {
+                return Err(AppError::Internal(format!(
+                    "cannot reclaim: failed to read repos/{dir}/manifest.json: {source}"
+                )));
+            }
+            ScanError::ParseFailed { dir, source } => {
+                return Err(AppError::Internal(format!(
+                    "cannot reclaim: failed to parse repos/{dir}/manifest.json: {source}"
+                )));
+            }
+            ScanError::DuplicateRepoId { repo_id, dirs } => {
+                return Err(AppError::Internal(format!(
+                    "cannot reclaim: duplicate repo_id '{repo_id}' found in {}",
+                    dirs.join(", ")
+                )));
+            }
+            ScanError::DuplicateItemId { item_id, repo_ids } => {
+                return Err(AppError::Internal(format!(
+                    "cannot reclaim: duplicate item_id '{item_id}' found in repo_id(s) {}",
+                    repo_ids.join(", ")
+                )));
+            }
+        }
+    }
+
+    let target = scan
+        .entries
+        .into_iter()
+        .find(|entry| entry.manifest.repo_id == target_repo_id)
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "cannot reclaim: target repo_id '{target_repo_id}' not found"
+            ))
+        })?;
+
+    let mut manifest = target.manifest;
+    let repo_store_dir = target.repo_store_dir;
+    let repo_store = store_root.join("repos").join(&repo_store_dir);
+    let now = context::now_iso8601();
+
+    if let Some(name) = current.repo_root.file_name().and_then(|name| name.to_str()) {
+        manifest.add_repo_name_hint(name);
+    }
+    if let Some(remote_hint) = &current.remote_hint {
+        manifest.add_remote_hint(remote_hint);
+    }
+    manifest.touch_attached_at(now.clone());
+
+    let mut idx = index::load(store_root)?;
+    idx.upsert(
+        target_repo_id,
+        RepoEntry {
+            repo_store_dir: repo_store_dir.clone(),
+            root: Some(current.repo_root.clone()),
+            git_dir: Some(current.git_dir.clone()),
+            git_common_dir: Some(current.git_common_dir.clone()),
+            last_seen_at: now,
+        },
+    );
+
+    index::save(store_root, &idx)?;
+    crate::store::manifest::save(&repo_store, &manifest)?;
+
+    Ok(ReclaimOutcome {
+        repo_id: target_repo_id.to_string(),
+        repo_store_dir,
+    })
 }
 
 fn score_candidate(
@@ -278,8 +367,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    use crate::context::CurrentGitContext;
     use crate::store::{
-        index::RepoEntry,
+        index::{self, RepoEntry},
         manifest::{self, Item},
     };
     use tempfile::TempDir;
@@ -304,11 +394,26 @@ mod tests {
         }
     }
 
+    fn write_raw_manifest(store_root: &Path, dir: &str, contents: &str) {
+        let repo_store = store_root.join("repos").join(dir);
+        std::fs::create_dir_all(&repo_store).unwrap();
+        std::fs::write(manifest::manifest_path(&repo_store), contents).unwrap();
+    }
+
     fn current_repo_root(name: &str) -> (TempDir, PathBuf) {
         let base = TempDir::new().unwrap();
         let root = base.path().join(name);
         std::fs::create_dir(&root).unwrap();
         (base, root)
+    }
+
+    fn current_context(root: PathBuf) -> CurrentGitContext {
+        CurrentGitContext {
+            git_dir: root.join(".git"),
+            git_common_dir: root.join(".git"),
+            repo_root: root,
+            remote_hint: Some("github.com/example/current".into()),
+        }
     }
 
     #[test]
@@ -426,6 +531,130 @@ mod tests {
 
         check_reclaim_precondition(None).unwrap();
         check_reclaim_precondition(Some(&manifest)).unwrap();
+    }
+
+    #[test]
+    fn execute_reclaim_updates_index_and_hints_without_item_mutation() {
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root.clone());
+        let mut manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
+        manifest.add(item("repo-1", "item-1", OwnershipState::Unreachable));
+        write_manifest(store.path(), "target", &manifest, true);
+
+        let outcome = execute_reclaim(store.path(), &current, "repo-1").unwrap();
+
+        assert_eq!(outcome.repo_id, "repo-1");
+        assert_eq!(outcome.repo_store_dir, "target");
+
+        let idx = index::load(store.path()).unwrap();
+        let entry = idx.get("repo-1").unwrap();
+        assert_eq!(entry.repo_store_dir, "target");
+        assert_eq!(entry.root.as_deref(), Some(root.as_path()));
+        assert_eq!(entry.git_dir.as_deref(), Some(root.join(".git").as_path()));
+        assert_eq!(
+            entry.git_common_dir.as_deref(),
+            Some(root.join(".git").as_path())
+        );
+
+        let loaded = manifest::load(&store.path().join("repos/target")).unwrap();
+        assert_eq!(loaded.items, manifest.items, "items must not be mutated");
+        assert_eq!(
+            loaded.identity_hints.remote_hints,
+            vec!["github.com/example/current"]
+        );
+        assert_eq!(
+            loaded
+                .identity_hints
+                .repo_name_hints
+                .first()
+                .map(String::as_str),
+            Some("current")
+        );
+        assert!(loaded.identity_hints.last_attached_at.is_some());
+    }
+
+    #[test]
+    fn execute_reclaim_from_uninitialized_current_repo_creates_no_throwaway_repo_id() {
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root);
+        write_manifest(
+            store.path(),
+            "target",
+            &Manifest::new("repo-1", "2026-04-29T00:00:00Z"),
+            true,
+        );
+
+        execute_reclaim(store.path(), &current, "repo-1").unwrap();
+
+        let idx = index::load(store.path()).unwrap();
+        assert_eq!(idx.iter().count(), 1);
+        assert!(idx.get("repo-1").is_some());
+        assert!(!store.path().join("repos/current").exists());
+    }
+
+    #[test]
+    fn execute_reclaim_unknown_repo_id_errors_without_writing_index() {
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root);
+        write_manifest(
+            store.path(),
+            "target",
+            &Manifest::new("repo-1", "2026-04-29T00:00:00Z"),
+            true,
+        );
+
+        let err = execute_reclaim(store.path(), &current, "missing").unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("target repo_id 'missing' not found"));
+        assert!(!index::index_path(store.path()).exists());
+    }
+
+    #[test]
+    fn execute_reclaim_corrupted_manifest_errors_without_writing_index() {
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root);
+        write_manifest(
+            store.path(),
+            "target",
+            &Manifest::new("repo-1", "2026-04-29T00:00:00Z"),
+            true,
+        );
+        write_raw_manifest(store.path(), "bad", "{not json");
+
+        let err = execute_reclaim(store.path(), &current, "repo-1").unwrap_err();
+
+        assert!(err.to_string().contains("failed to parse"));
+        assert!(!index::index_path(store.path()).exists());
+    }
+
+    #[test]
+    fn execute_reclaim_duplicate_repo_id_errors_without_writing_index() {
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root);
+        write_manifest(
+            store.path(),
+            "a",
+            &Manifest::new("repo-1", "2026-04-29T00:00:00Z"),
+            true,
+        );
+        write_manifest(
+            store.path(),
+            "b",
+            &Manifest::new("repo-1", "2026-04-29T00:00:00Z"),
+            true,
+        );
+
+        let err = execute_reclaim(store.path(), &current, "repo-1").unwrap_err();
+
+        assert!(err.to_string().contains("duplicate repo_id"));
+        assert!(!index::index_path(store.path()).exists());
     }
 
     #[test]

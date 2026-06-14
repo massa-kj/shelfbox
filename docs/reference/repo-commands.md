@@ -68,8 +68,7 @@ or re-cloning a repository.
 **Preconditions:**
 
 * The current directory must be inside a Git repository.
-* If the current repository is already associated with shelfbox, it must have no
-  managed items.
+* If the current repository is already associated with shelfbox, it must have no managed items.
 
 **Behavior:**
 
@@ -79,6 +78,16 @@ or re-cloning a repository.
 4. Displays candidates for explicit user selection, unless `--repo-id` is used.
 5. Updates `index.json` for the selected `RepoId`.
 6. Updates `identity_hints`.
+
+Without `--repo-id`, choose a displayed candidate by number or enter `q` to quit without changes. If no candidates are found, the command exits without writing.
+
+With `--repo-id`, shelfbox skips interactive selection and reclaims that identity directly after the same validation checks.
+
+Successful output:
+
+```text
+Associated with <repo_id>. Run `shelfbox repo repair` to restore symlinks.
+```
 
 `repo reclaim` does not:
 

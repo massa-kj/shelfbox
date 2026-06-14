@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -60,6 +61,13 @@ pub enum RepoCommand {
         yes: bool,
     },
 
+    /// Associate the current clone with an existing RepoId.
+    Reclaim {
+        /// Reclaim this repository identity directly, skipping selection.
+        #[arg(long)]
+        repo_id: Option<String>,
+    },
+
     /// Migrate the manifest schema to the current version (not yet implemented).
     #[command(hide = true)]
     Migrate,
@@ -86,6 +94,10 @@ pub fn run_repo(
         }
         RepoCommand::Gc { dry_run, yes } => {
             cmd_repo_gc(cwd, store_override, dry_run, yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        RepoCommand::Reclaim { repo_id } => {
+            cmd_repo_reclaim(cwd, store_override, repo_id.as_deref())?;
             Ok(ExitCode::SUCCESS)
         }
         RepoCommand::Migrate => {
@@ -367,7 +379,134 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
     Ok(())
 }
 
+fn cmd_repo_reclaim(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    requested_repo_id: Option<&str>,
+) -> Result<()> {
+    let config = Config::load(store_override).context("failed to load config")?;
+    let current =
+        context::current_git_context(cwd).context("failed to inspect current git repository")?;
+    let idx = index::load(&config.store).context("failed to load store index")?;
+
+    let current_manifest = match context::resolve_existing_repo(&current, &idx) {
+        Some(repo_id) => {
+            let entry = idx
+                .get(&repo_id)
+                .with_context(|| format!("index entry disappeared for repo_id {repo_id}"))?;
+            let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
+            Some(
+                manifest::load(&repo_store)
+                    .with_context(|| format!("failed to load current manifest for {repo_id}"))?,
+            )
+        }
+        None => None,
+    };
+    ops::reclaim::check_reclaim_precondition(current_manifest.as_ref())?;
+
+    let repo_id = if let Some(repo_id) = requested_repo_id {
+        repo_id.to_string()
+    } else {
+        let candidates = ops::reclaim::build_candidates(
+            &config.store,
+            &current.repo_root,
+            current.remote_hint.as_deref(),
+            &idx,
+        )?;
+
+        if candidates.is_empty() {
+            println!("No reclaim candidates found.");
+            return Ok(());
+        }
+
+        print_reclaim_candidates(&candidates);
+        match prompt_reclaim_selection(candidates.len())? {
+            Some(index) => candidates[index].repo_id.clone(),
+            None => {
+                println!("No changes made.");
+                return Ok(());
+            }
+        }
+    };
+
+    let outcome = ops::reclaim::execute_reclaim(&config.store, &current, &repo_id)?;
+    println!(
+        "Associated with {}. Run `shelfbox repo repair` to restore symlinks.",
+        outcome.repo_id
+    );
+
+    Ok(())
+}
+
 // ── Human-readable formatters ───────────────────────────────────────────────────────────────────
+
+fn print_reclaim_candidates(candidates: &[ops::reclaim::ReclaimCandidate]) {
+    println!("Reclaim candidates:");
+    println!();
+
+    for (idx, candidate) in candidates.iter().enumerate() {
+        println!("{}. {}", idx + 1, candidate.repo_store_dir);
+        println!("   repo_id: {}", candidate.repo_id);
+        println!("   score:   {}", candidate.score);
+        println!(
+            "   reason:  {}",
+            if candidate.reasons.is_empty() {
+                "(none)".to_string()
+            } else {
+                candidate.reasons.join(", ")
+            }
+        );
+        println!("   items:   {}", candidate.item_count);
+        println!("   state:   {}", candidate_state_label(candidate.state));
+        println!(
+            "   remote:  {}",
+            if candidate.remote_hints.is_empty() {
+                "(none)".to_string()
+            } else {
+                candidate.remote_hints.join(", ")
+            }
+        );
+        println!(
+            "   names:   {}",
+            if candidate.repo_name_hints.is_empty() {
+                "(none)".to_string()
+            } else {
+                candidate.repo_name_hints.join(", ")
+            }
+        );
+        println!();
+    }
+}
+
+fn prompt_reclaim_selection(candidate_count: usize) -> Result<Option<usize>> {
+    print!("Select [1-{candidate_count}] or q to quit: ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.eq_ignore_ascii_case("q") {
+        return Ok(None);
+    }
+
+    let selected: usize = input
+        .parse()
+        .with_context(|| format!("invalid selection '{input}'"))?;
+    if selected == 0 || selected > candidate_count {
+        anyhow::bail!("selection out of range: {selected}");
+    }
+
+    Ok(Some(selected - 1))
+}
+
+fn candidate_state_label(state: ops::reclaim::CandidateState) -> &'static str {
+    match state {
+        ops::reclaim::CandidateState::Unreachable => "unreachable",
+        ops::reclaim::CandidateState::Detached => "detached",
+        ops::reclaim::CandidateState::AttachedElsewhere => "attached elsewhere",
+    }
+}
 
 fn print_repo_status(report: &IntegrityReport, verbose: bool, repo_root: &Path) {
     println!("repo: {}", repo_root.display());
