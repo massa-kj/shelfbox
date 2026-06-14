@@ -11,7 +11,7 @@ use shelfbox_core::{
     ignore::GitInfoExclude,
     link::DefaultLinkStrategy,
     ops,
-    ops::integrity::{FixResult, IntegrityReport},
+    ops::integrity::IntegrityReport,
     store::{index, manifest, manifest::OwnershipState},
 };
 
@@ -48,6 +48,10 @@ pub enum RepoCommand {
         /// Print what would happen without making any changes.
         #[arg(long)]
         dry_run: bool,
+
+        /// Replace wrong-target symlinks instead of reporting them as failures.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Delete orphan store items not referenced by the manifest.
@@ -88,8 +92,8 @@ pub fn run_repo(
         RepoCommand::Status { format, verbose } => {
             cmd_repo_status(cwd, store_override, format, verbose)
         }
-        RepoCommand::Repair { dry_run } => {
-            cmd_repo_repair(cwd, store_override, dry_run)?;
+        RepoCommand::Repair { dry_run, force } => {
+            cmd_repo_repair(cwd, store_override, dry_run, force)?;
             Ok(ExitCode::SUCCESS)
         }
         RepoCommand::Gc { dry_run, yes } => {
@@ -272,35 +276,28 @@ fn cmd_repo_status(
     Ok(classify_integrity_exit(&report))
 }
 
-fn cmd_repo_repair(cwd: &Path, store_override: Option<&Path>, dry_run: bool) -> Result<()> {
+fn cmd_repo_repair(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    dry_run: bool,
+    force: bool,
+) -> Result<()> {
+    let config = Config::load(store_override).context("failed to load config")?;
+    let current =
+        context::current_git_context(cwd).context("failed to inspect current git repository")?;
+    let idx = index::load(&config.store).context("failed to load store index")?;
+    let associated_repo_id = context::resolve_existing_repo(&current, &idx)
+        .ok_or_else(|| anyhow::anyhow!("Run `shelfbox repo reclaim` first"))?;
+
     let mut ctx =
         context::build(cwd, store_override, true).context("failed to initialise repo context")?;
     let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
-
-    // Detect and apply ownership state transitions across all other repos in
-    // the store (Attached -> Unreachable).  Runs before integrity fix
-    // so that status checks reflect up-to-date ownership information.
-    if !dry_run {
-        let tr = ops::detect_transitions::run(&ctx, &ctx.config.clone())?;
-        if !tr.is_empty() {
-            println!(
-                "ownership transitions applied: {} unreachable (across {} repo(s))",
-                tr.unreachable,
-                tr.affected_repos.len()
-            );
-        }
+    if ctx.repo_id != associated_repo_id {
+        anyhow::bail!("Run `shelfbox repo reclaim` first");
     }
 
-    // yes=false: safe fixes only; orphan deletion requires explicit `repo gc`.
-    let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, dry_run)?;
-
-    for action in &report.actions {
-        print_fix_result(action);
-    }
-    for warning in &report.data_loss_warnings {
-        eprintln!("warning: data loss — {warning}");
-    }
+    let report = ops::repair::repair_repo(&mut ctx, &link, dry_run, force)?;
+    print_repo_repair_report(&report, dry_run);
     Ok(())
 }
 
@@ -508,6 +505,41 @@ fn candidate_state_label(state: ops::reclaim::CandidateState) -> &'static str {
     }
 }
 
+fn print_repo_repair_report(report: &ops::repair::RepairRepoReport, dry_run: bool) {
+    let repaired_label = if dry_run { "would repair" } else { "repaired" };
+
+    println!("repo repair:");
+    println!("  symlinks {repaired_label}: {}", report.symlinks_repaired);
+    println!(
+        "  symlinks already healthy: {}",
+        report.symlinks_already_healthy
+    );
+    println!("  symlinks failed: {}", report.symlinks_failed.len());
+    for (path, reason) in &report.symlinks_failed {
+        eprintln!("    failed {path}: {reason}");
+    }
+    println!(
+        "  exclude: {}",
+        repair_change_label(report.exclude_updated, dry_run)
+    );
+    println!(
+        "  index: {}",
+        repair_change_label(report.index_updated, dry_run)
+    );
+    println!(
+        "  identity hints: {}",
+        repair_change_label(report.hints_updated, dry_run)
+    );
+}
+
+fn repair_change_label(changed: bool, dry_run: bool) -> &'static str {
+    match (changed, dry_run) {
+        (true, true) => "would update",
+        (true, false) => "updated",
+        (false, _) => "already current",
+    }
+}
+
 fn print_repo_status(report: &IntegrityReport, verbose: bool, repo_root: &Path) {
     println!("repo: {}", repo_root.display());
 
@@ -603,14 +635,4 @@ fn classify_integrity_exit(report: &IntegrityReport) -> ExitCode {
     }
 
     ExitCode::SUCCESS
-}
-
-fn print_fix_result(result: &FixResult) {
-    match result {
-        FixResult::Fixed(msg) => println!("  fixed    {msg}"),
-        FixResult::Skipped(msg) => println!("  skipped  {msg}"),
-        FixResult::Failed(msg) => eprintln!("  failed   {msg}"),
-        FixResult::NeedsConfirmation(msg) => println!("  confirm  {msg}"),
-        FixResult::CannotFix(msg) => eprintln!("  cannot   {msg}"),
-    }
 }

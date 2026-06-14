@@ -147,16 +147,28 @@ impl GitInfoExclude {
         format!("{before_sep}{block}{after}")
     }
 
+    fn sorted_entries(mut entries: Vec<String>) -> Vec<String> {
+        entries.sort();
+        entries.dedup();
+        entries
+    }
+
+    /// Returns true when the managed block already contains exactly
+    /// `new_entries`, ignoring order and duplicates.
+    pub fn entries_match(&self, repo_root: &Path, new_entries: Vec<String>) -> Result<bool> {
+        let contents = Self::read(repo_root)?;
+        let (_, managed, _) = Self::parse(&contents);
+
+        Ok(Self::sorted_entries(managed) == Self::sorted_entries(new_entries))
+    }
+
     /// Updates the managed block with `new_entries` (fully replaces current entries).
-    #[allow(dead_code)]
-    fn update_entries(&self, repo_root: &Path, new_entries: Vec<String>) -> Result<()> {
+    pub fn update_entries(&self, repo_root: &Path, new_entries: Vec<String>) -> Result<()> {
         let contents = Self::read(repo_root)?;
         let (before, _, after) = Self::parse(&contents);
 
         // Sort for deterministic output (easier to review diffs).
-        let mut sorted = new_entries;
-        sorted.sort();
-        sorted.dedup();
+        let sorted = Self::sorted_entries(new_entries);
 
         let rendered = Self::render(&before, &sorted, &after);
         Self::write(repo_root, &rendered)

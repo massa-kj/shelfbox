@@ -111,6 +111,7 @@ Repairs local working tree integration for an already-associated repository.
 ```sh
 shelfbox repo repair
 shelfbox repo repair --dry-run
+shelfbox repo repair --force
 ```
 
 If the current clone is not associated with a `RepoId`, run `repo reclaim`
@@ -121,9 +122,28 @@ first.
 | Problem | Action |
 |---|---|
 | Missing or broken symlinks for `attached` items | Recreates symlinks |
-| Missing `.git/info/exclude` entries | Rebuilds shelfbox exclude block |
+| Missing or stale `.git/info/exclude` entries | Rebuilds shelfbox exclude block from `attached` items |
 | Stale local Git metadata in `index.json` | Updates `root`, `git_dir`, and `git_common_dir` |
+| Missing identity hints | Updates repo-name, remote, and last-attached hints |
 | Missing store item | Reports failure for that item |
+
+Wrong-target symlinks are reported as per-item failures by default. Use
+`--force` only after checking that replacing those symlinks is intentional.
+
+Successful output is summarized as:
+
+```text
+repo repair:
+  symlinks repaired: <count>
+  symlinks already healthy: <count>
+  symlinks failed: <count>
+  exclude: updated|already current
+  index: updated|already current
+  identity hints: updated|already current
+```
+
+With `--dry-run`, the changed metadata lines use `would update`, and symlink
+counts report what would be repaired without writing files.
 
 `repo repair` must not:
 
@@ -138,6 +158,7 @@ first.
 | Flag | Description |
 |---|---|
 | `--dry-run` | Print what would be fixed without making changes. |
+| `--force` | Replace wrong-target symlinks instead of reporting them as failures. |
 
 ---
 

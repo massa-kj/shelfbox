@@ -789,6 +789,228 @@ fn repair_dry_run_makes_no_changes() {
     assert!(!file_path.exists(), "dry-run must not recreate the symlink");
 }
 
+#[test]
+fn repo_repair_recreates_broken_symlinks() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("repo-secret.env");
+    std::fs::write(&file_path, "TOKEN=repo").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    std::fs::remove_file(&file_path).unwrap();
+    assert!(file_path.symlink_metadata().is_err());
+
+    let report = ops::repair::repair_repo(&mut ctx, &link, false, false).unwrap();
+
+    assert_eq!(report.symlinks_repaired, 1);
+    assert_eq!(report.symlinks_already_healthy, 0);
+    assert!(report.symlinks_failed.is_empty());
+    assert!(link.is_managed_link(&file_path, &ctx.config.store));
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "TOKEN=repo");
+}
+
+#[test]
+fn repo_repair_reports_healthy_symlinks_without_relinking() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("healthy-repo.txt");
+    std::fs::write(&file_path, "ok").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    let target_before = link.read_target(&file_path).unwrap();
+    let report = ops::repair::repair_repo(&mut ctx, &link, false, false).unwrap();
+    let target_after = link.read_target(&file_path).unwrap();
+
+    assert_eq!(report.symlinks_repaired, 0);
+    assert_eq!(report.symlinks_already_healthy, 1);
+    assert!(report.symlinks_failed.is_empty());
+    assert_eq!(target_after, target_before);
+}
+
+#[test]
+fn repo_repair_reports_missing_store_file_as_nonfatal_failure() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("lost-repo.txt");
+    std::fs::write(&file_path, "lost").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    std::fs::remove_file(ctx.repo_store.join("items/lost-repo.txt")).unwrap();
+
+    let report = ops::repair::repair_repo(&mut ctx, &link, false, false).unwrap();
+
+    assert_eq!(report.symlinks_repaired, 0);
+    assert_eq!(report.symlinks_already_healthy, 0);
+    assert_eq!(report.symlinks_failed.len(), 1);
+    assert_eq!(report.symlinks_failed[0].0, "lost-repo.txt");
+    assert!(report.symlinks_failed[0].1.contains("store item missing"));
+    assert!(file_path.symlink_metadata().is_ok());
+}
+
+#[test]
+fn repo_repair_updates_index_and_identity_hints() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("portable.txt");
+    std::fs::write(&file_path, "portable").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    common::run_git(
+        repo_dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:example/portable.git",
+        ],
+    );
+
+    let mut idx = store::index::load(store_dir.path()).unwrap();
+    let mut entry = idx.get(&ctx.repo_id).unwrap().clone();
+    entry.git_dir = None;
+    entry.git_common_dir = None;
+    idx.upsert(&ctx.repo_id, entry);
+    store::index::save(store_dir.path(), &idx).unwrap();
+
+    let report = ops::repair::repair_repo(&mut ctx, &link, false, false).unwrap();
+    let current = context::current_git_context(repo_dir.path()).unwrap();
+    let idx = store::index::load(store_dir.path()).unwrap();
+    let entry = idx.get(&ctx.repo_id).unwrap();
+    let manifest = store::manifest::load(&ctx.repo_store).unwrap();
+
+    assert!(report.index_updated);
+    assert!(report.hints_updated);
+    assert_eq!(entry.root.as_deref(), Some(current.repo_root.as_path()));
+    assert_eq!(entry.git_dir.as_deref(), Some(current.git_dir.as_path()));
+    assert_eq!(
+        entry.git_common_dir.as_deref(),
+        Some(current.git_common_dir.as_path())
+    );
+    assert!(manifest
+        .identity_hints
+        .remote_hints
+        .contains(&"github.com/example/portable".to_string()));
+    assert!(manifest.identity_hints.last_attached_at.is_some());
+}
+
+#[test]
+fn repo_repair_requires_existing_repoid_without_creating_one() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("unassociated.txt");
+    std::fs::write(&file_path, "data").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    let mut idx = store::index::load(store_dir.path()).unwrap();
+    assert!(idx.remove(&ctx.repo_id));
+    store::index::save(store_dir.path(), &idx).unwrap();
+
+    let result = ops::repair::repair_repo(&mut ctx, &link, false, false);
+    let idx_after = store::index::load(store_dir.path()).unwrap();
+
+    assert!(result.is_err());
+    assert_eq!(idx_after.iter().count(), 0);
+}
+
+#[test]
+fn repo_repair_dry_run_makes_no_file_writes() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("dry-repo.txt");
+    std::fs::write(&file_path, "dry").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    common::run_git(
+        repo_dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/dry.git",
+        ],
+    );
+    std::fs::remove_file(&file_path).unwrap();
+    ignore
+        .remove_entries(repo_dir.path(), &["dry-repo.txt"])
+        .unwrap();
+
+    let mut idx = store::index::load(store_dir.path()).unwrap();
+    let mut entry = idx.get(&ctx.repo_id).unwrap().clone();
+    entry.git_dir = None;
+    entry.git_common_dir = None;
+    idx.upsert(&ctx.repo_id, entry);
+    store::index::save(store_dir.path(), &idx).unwrap();
+
+    let manifest_path = store::manifest::manifest_path(&ctx.repo_store);
+    let index_path = store::index::index_path(store_dir.path());
+    let exclude_path = shelfbox_core::git::exclude_file_path(repo_dir.path()).unwrap();
+    let manifest_before = std::fs::read_to_string(&manifest_path).unwrap();
+    let index_before = std::fs::read_to_string(&index_path).unwrap();
+    let exclude_before = std::fs::read_to_string(&exclude_path).unwrap();
+
+    let report = ops::repair::repair_repo(&mut ctx, &link, true, false).unwrap();
+
+    assert_eq!(report.symlinks_repaired, 1);
+    assert!(report.exclude_updated);
+    assert!(report.index_updated);
+    assert!(report.hints_updated);
+    assert!(file_path.symlink_metadata().is_err());
+    assert_eq!(
+        std::fs::read_to_string(&manifest_path).unwrap(),
+        manifest_before
+    );
+    assert_eq!(std::fs::read_to_string(&index_path).unwrap(), index_before);
+    assert_eq!(
+        std::fs::read_to_string(&exclude_path).unwrap(),
+        exclude_before
+    );
+}
+
 // ── doctor --fix ──────────────────────────────────────────────────────────────
 
 #[test]
