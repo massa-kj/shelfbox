@@ -164,8 +164,10 @@ counts report what would be repaired without writing files.
 
 ### `repo gc`
 
-`repo gc` is retained only for current-repository orphan inspection if
-implemented. Store-wide deletion rules live under `store gc`.
+`repo gc` is retained only for current-repository orphan inspection. It lists
+store files under the current repo's `items/` directory that are not referenced
+by the manifest, but it does not delete them. Store-wide deletion rules live
+under `store gc`.
 
 Garbage collection must follow the ownership model:
 
@@ -173,3 +175,5 @@ Garbage collection must follow the ownership model:
 * `attached`, `detached`, and `unreachable` items are protected.
 * Repository store directories are not deleted merely because a local clone is
   missing.
+* `repo gc --yes` is ignored for deletion; use `store gc --yes` after items are
+  explicitly marked `orphaned`.

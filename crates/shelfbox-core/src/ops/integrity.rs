@@ -150,7 +150,7 @@ pub struct IntegrityFixReport {
 ///
 /// **Safety levels:**
 /// - Safe (no data loss possible): performed automatically.
-/// - Potentially destructive (orphan deletion): requires `yes = true`.
+/// - Potentially destructive unclassified data: reported but left untouched.
 /// - Cannot fix (store item missing): recorded in `data_loss_warnings`.
 ///
 /// Actions are applied in order, and failures are recorded but do not
@@ -423,39 +423,21 @@ fn fix_symlinks(
     }
 }
 
-/// Handles orphan store items: confirms deletion with `yes`, or records a
-/// [`FixResult::NeedsConfirmation`] when `yes` is false.
+/// Reports unreferenced store items without deleting them.
+///
+/// Conservative GC only deletes manifest entries explicitly marked
+/// `OwnershipState::Orphaned`, via `store gc`. A bare file under `items/` is
+/// not enough proof that deletion is safe.
 fn handle_orphans(ctx: &RepoContext, yes: bool, actions: &mut Vec<FixResult>, dry_run: bool) {
     for orphan in collect_orphan_store_items(ctx) {
-        if !yes {
-            actions.push(FixResult::NeedsConfirmation(format!(
-                "orphan store item '{orphan}': run with --yes to delete"
-            )));
-            continue;
-        }
-
-        let full_path = ctx.items_dir().join(&orphan);
-
-        if dry_run {
-            actions.push(FixResult::Fixed(format!(
-                "[dry-run] would delete orphan store item '{orphan}'"
-            )));
-            continue;
-        }
-
-        let result = if full_path.is_dir() {
-            std::fs::remove_dir_all(&full_path)
+        let prefix = if dry_run { "[dry-run] " } else { "" };
+        let suffix = if yes {
+            "; --yes does not delete unclassified store files"
         } else {
-            std::fs::remove_file(&full_path)
+            "; conservative GC requires manifest ownership_state=orphaned"
         };
-
-        match result {
-            Ok(()) => actions.push(FixResult::Fixed(format!(
-                "deleted orphan store item '{orphan}'"
-            ))),
-            Err(e) => actions.push(FixResult::Failed(format!(
-                "failed to delete orphan '{orphan}': {e}"
-            ))),
-        }
+        actions.push(FixResult::Skipped(format!(
+            "{prefix}unreferenced store item '{orphan}' left untouched{suffix}"
+        )));
     }
 }

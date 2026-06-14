@@ -54,13 +54,13 @@ pub enum RepoCommand {
         force: bool,
     },
 
-    /// Delete orphan store items not referenced by the manifest.
+    /// Inspect current-repository store files not referenced by the manifest.
     Gc {
-        /// Print what would be deleted without making any changes.
+        /// Print inspection output without making any changes.
         #[arg(long)]
         dry_run: bool,
 
-        /// Skip confirmation prompt and perform deletions immediately.
+        /// Deprecated; repo gc is inspection-only. Use `store gc --yes`.
         #[arg(long)]
         yes: bool,
     },
@@ -303,11 +303,11 @@ fn cmd_repo_repair(
 
 fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
     let ctx =
-        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
+        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
 
-    // Use check() to collect orphan store items.
+    // Use check() to inspect unreferenced store files without deleting them.
     let report = ops::integrity::check(&ctx, &link, &ignore)?;
 
     // Inform the user about items protected from GC by their ownership state.
@@ -339,40 +339,24 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
     }
 
     if report.orphan_store_items.is_empty() {
-        println!("no orphan store items found");
+        println!("no unreferenced current-repository store files found");
         return Ok(());
     }
 
     if dry_run {
-        println!("orphan store items that would be deleted:");
-        for orphan in &report.orphan_store_items {
-            println!("  {orphan}");
-        }
-        return Ok(());
+        println!("unreferenced current-repository store files:");
+    } else {
+        println!("unreferenced current-repository store files (not deleted):");
     }
-
-    if !yes {
-        println!("orphan store items:");
-        for orphan in &report.orphan_store_items {
-            println!("  {orphan}");
-        }
-        println!("re-run with --yes to delete them");
-        return Ok(());
-    }
-
-    // Delete confirmed.
     for orphan in &report.orphan_store_items {
-        let full_path = ctx.items_dir().join(orphan);
-        let result = if full_path.is_dir() {
-            std::fs::remove_dir_all(&full_path)
-        } else {
-            std::fs::remove_file(&full_path)
-        };
-        match result {
-            Ok(()) => println!("deleted: {orphan}"),
-            Err(e) => eprintln!("error: failed to delete '{orphan}': {e}"),
-        }
+        println!("  {orphan}");
     }
+    if yes {
+        println!("note: --yes is ignored by repo gc; use `shelfbox store gc --yes` for confirmed conservative deletion of manifest items marked orphaned");
+    } else {
+        println!("note: repo gc is inspection-only; use `shelfbox store gc` for conservative deletion of manifest items marked orphaned");
+    }
+
     Ok(())
 }
 
@@ -584,12 +568,12 @@ fn print_repo_status(report: &IntegrityReport, verbose: bool, repo_root: &Path) 
 
     let orphan_count = report.orphan_store_items.len();
     if orphan_count > 0 {
-        println!("orphan store items: {orphan_count}  [WARN]");
+        println!("unreferenced store items: {orphan_count}  [WARN]");
         for o in &report.orphan_store_items {
             println!("  {o}");
         }
     } else {
-        println!("orphan store items: 0  [OK]");
+        println!("unreferenced store items: 0  [OK]");
     }
 
     let root_label = if report.repo_root_matches_index {
@@ -606,7 +590,7 @@ fn print_repo_status_plain(report: &IntegrityReport) {
         println!("{label} {}", s.path);
     }
     for o in &report.orphan_store_items {
-        println!("ORPHAN {o}");
+        println!("UNREFERENCED {o}");
     }
     if !report.repo_root_matches_index {
         println!("ROOT_MISMATCH");
@@ -616,7 +600,7 @@ fn print_repo_status_plain(report: &IntegrityReport) {
 /// Determine the exit code for `repo status` based on the integrity report.
 ///
 /// - 2: structural ERROR (broken/missing symlink, missing store item, git-tracked)
-/// - 1: WARN only (missing exclude entry, orphan store items, root mismatch)
+/// - 1: WARN only (missing exclude entry, unreferenced store items, root mismatch)
 /// - 0: all clear
 fn classify_integrity_exit(report: &IntegrityReport) -> ExitCode {
     let has_error = report

@@ -1142,12 +1142,12 @@ fn doctor_fix_records_cannot_fix_for_store_missing() {
 }
 
 #[test]
-fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
+fn doctor_fix_true_orphan_is_reported_without_deletion() {
     if !require_symlink_support() {
         return;
     }
-    // A store item with no repo-side symlink is a "true orphan".
-    // Without --yes, doctor --fix reports NeedsConfirmation and leaves the file.
+    // A store item with no repo-side symlink is unclassified data. Conservative
+    // GC must leave it alone unless a manifest marks it `orphaned`.
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1166,8 +1166,8 @@ fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
         report
             .actions
             .iter()
-            .any(|a| matches!(a, FixResult::NeedsConfirmation(_))),
-        "expected NeedsConfirmation for true orphan without --yes"
+            .any(|a| matches!(a, FixResult::Skipped(_))),
+        "expected Skipped for unclassified store item"
     );
     // True orphan must NOT be absorbed into the manifest.
     assert!(
@@ -1177,17 +1177,17 @@ fn doctor_fix_true_orphan_needs_confirmation_without_yes() {
     // The store file must remain untouched.
     assert!(
         orphan_path.exists(),
-        "orphan file must not be deleted without --yes"
+        "unclassified store file must not be deleted"
     );
 }
 
 #[test]
-fn doctor_fix_true_orphan_deleted_with_yes() {
+fn doctor_fix_true_orphan_not_deleted_with_yes() {
     if !require_symlink_support() {
         return;
     }
-    // A store item with no repo-side symlink is a "true orphan".
-    // With --yes, doctor --fix deletes it.
+    // Even with --yes, a store item with no repo-side symlink is not deleted
+    // unless a manifest explicitly marks it `orphaned` for store gc.
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1199,17 +1199,19 @@ fn doctor_fix_true_orphan_deleted_with_yes() {
     std::fs::create_dir_all(ctx.items_dir()).unwrap();
     std::fs::write(&orphan_path, "orphan").unwrap();
 
-    // yes=true: true orphan must be deleted.
     let report = ops::integrity::fix(&mut ctx, &link, &ignore, true, false).unwrap();
 
     assert!(
         report
             .actions
             .iter()
-            .any(|a| matches!(a, FixResult::Fixed(_))),
-        "expected Fixed for orphan deletion"
+            .any(|a| matches!(a, FixResult::Skipped(_))),
+        "expected Skipped for unclassified store item"
     );
-    assert!(!orphan_path.exists(), "orphan must be deleted with --yes");
+    assert!(
+        orphan_path.exists(),
+        "unclassified store file must not be deleted with --yes"
+    );
 }
 
 #[test]
@@ -1422,9 +1424,9 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
         return;
     }
     // Scenario: one store item has a valid symlink (rebuild candidate) and
-    // another has no symlink (true orphan).  Without --yes, doctor --fix must
-    // report NeedsConfirmation for both and not modify the manifest or delete
-    // any store item.
+    // another has no symlink (unclassified store data). Without --yes,
+    // doctor --fix must report the rebuild candidate as needing confirmation,
+    // skip the unclassified item, and not modify the manifest or delete data.
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
@@ -1451,7 +1453,6 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
 
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
-    // Without --yes: both rebuild candidate and true orphan get NeedsConfirmation.
     let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, false).unwrap();
 
     // Neither item must be absorbed into the manifest without --yes.
@@ -1463,20 +1464,29 @@ fn doctor_fix_mixed_rebuild_candidate_and_true_orphan() {
         !ctx.manifest.contains("bare_mixed_orphan.txt"),
         "true orphan must not be added to manifest"
     );
-    // Both must be reported as NeedsConfirmation.
+    // The rebuild candidate needs confirmation; the unclassified store item is skipped.
     let confirmation_count = report
         .actions
         .iter()
         .filter(|a| matches!(a, FixResult::NeedsConfirmation(_)))
         .count();
+    let skipped_count = report
+        .actions
+        .iter()
+        .filter(|a| matches!(a, FixResult::Skipped(_)))
+        .count();
     assert!(
-        confirmation_count >= 2,
-        "expected NeedsConfirmation for both rebuild candidate and true orphan, got {confirmation_count}"
+        confirmation_count >= 1,
+        "expected NeedsConfirmation for rebuild candidate, got {confirmation_count}"
     );
-    // True orphan store file must remain.
+    assert!(
+        skipped_count >= 1,
+        "expected Skipped for unclassified store item, got {skipped_count}"
+    );
+    // Unclassified store file must remain.
     assert!(
         orphan_path.exists(),
-        "true orphan must not be deleted without --yes"
+        "unclassified store file must not be deleted"
     );
 }
 

@@ -50,8 +50,7 @@ pub enum ItemCommand {
         #[arg(long)]
         keep_ignore: bool,
 
-        /// Remove from manifest only; keep the store item and symlink in place.
-        /// The store item becomes an orphan subject to `repo gc`.
+        /// Keep the store item and mark it detached.
         #[arg(long)]
         keep_store: bool,
     },
