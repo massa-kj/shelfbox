@@ -118,17 +118,18 @@ Expected result:
 
 ## Recovery Test Scenarios
 
-The v0.7.0 recovery integration tests should cover:
+The v0.7.0 recovery integration tests live in
+`crates/shelfbox-core/tests/recovery_integration.rs`.
 
-| Scenario | Key assertion |
-|---|---|
-| Move repository path | Existing `RepoId` is reused when local Git metadata matches |
-| Rename repository directory | Existing `RepoId` is reused when local Git metadata matches |
-| Rename `repos/<repo-store-dir>` | `store rebuild-index` restores the correct locator |
-| Delete `index.json` and rebuild | Rebuilt index contains `repo_id` and `repo_store_dir`, but no Git metadata |
-| Re-clone and reclaim | New clone uses old `RepoId` only after explicit `repo reclaim` |
-| Repair after reclaim | Symlinks and exclude entries are restored |
-| Reject reclaim with current items | No mutation occurs |
-| Duplicate `repo_id` | `store rebuild-index` and `repo reclaim` fail hard |
-| Duplicate `item_id` | `store rebuild-index` and `repo reclaim` fail hard |
-| GC safety | Non-`orphaned` items and repository stores survive GC |
+| Scenario | Test | Key assertion |
+|---|---|---|
+| Move repository path | `move_repository_path_reuses_repoid_via_git_common_dir` | Existing `RepoId` is reused when local Git metadata matches |
+| Rename repository directory | `rename_repository_directory_reuses_repoid_via_git_common_dir` | Existing `RepoId` is reused when local Git metadata matches |
+| Rename `repos/<repo-store-dir>` | `renamed_repo_store_dir_rebuild_index_restores_locator_and_repair_succeeds` | `store rebuild-index` restores the locator and repair succeeds after reclaim |
+| Delete `index.json` and rebuild | `delete_index_and_rebuild_restores_repoid_and_store_dir_without_git_metadata` | Rebuilt index contains `repo_id` and `repo_store_dir`, but no Git metadata |
+| Re-clone and reclaim | `reclone_reclaim_associates_existing_repoid_after_fresh_repoid` | New clone uses old `RepoId` only after explicit reclaim |
+| Repair after reclaim | `repair_after_reclaim_restores_symlinks_and_exclude_entries` | Symlinks and exclude entries are restored |
+| Reject reclaim with current items | `reclaim_rejects_current_repo_with_items_before_mutation` | Reclaim precondition errors before mutation |
+| Duplicate `repo_id` | `duplicate_repoid_makes_rebuild_index_and_reclaim_fail_hard` | `store rebuild-index` and reclaim fail hard |
+| Duplicate `item_id` | `duplicate_itemid_makes_rebuild_index_and_reclaim_fail_hard` | `store rebuild-index` and reclaim fail hard |
+| GC safety | `gc_does_not_delete_unreachable_repos_or_items` | Non-`orphaned` items and repository stores survive GC |

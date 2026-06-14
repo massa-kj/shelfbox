@@ -179,6 +179,18 @@ pub fn execute_reclaim(
     manifest.touch_attached_at(now.clone());
 
     let mut idx = index::load(store_root)?;
+    let current_association_ids: Vec<String> = idx
+        .iter()
+        .filter(|(repo_id, entry)| {
+            *repo_id != target_repo_id
+                && (entry.root.as_deref() == Some(current.repo_root.as_path())
+                    || entry.git_common_dir.as_deref() == Some(current.git_common_dir.as_path()))
+        })
+        .map(|(repo_id, _)| repo_id.to_string())
+        .collect();
+    for repo_id in current_association_ids {
+        idx.remove(&repo_id);
+    }
     idx.upsert(
         target_repo_id,
         RepoEntry {
