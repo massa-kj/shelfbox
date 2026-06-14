@@ -15,20 +15,23 @@ use crate::error::{AppError, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoEntry {
     /// Absolute path to the repository root on this machine.
-    pub root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<PathBuf>,
 
     /// Absolute path to the `.git` directory (may differ from `root/.git`
     /// for worktrees).
-    pub git_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_dir: Option<PathBuf>,
 
     /// Absolute path to the git-common-dir — the shared `.git/` directory
     /// that is stable across all linked worktrees of the same clone.
     /// Equivalent to `git rev-parse --git-common-dir`.
-    pub git_common_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_common_dir: Option<PathBuf>,
 
     /// Name of the per-repo directory under `<store>/repos/`.
-    /// Format: `<sanitized-repo-name>-<ulid>` (e.g. `my-project-01JTAR...`).
-    pub store_dir: String,
+    /// Format: `<sanitized-repo-name>`, with numeric suffixes for conflicts.
+    pub repo_store_dir: String,
 
     /// ISO-8601 timestamp of the last time this repo was accessed via
     /// shelfbox.
@@ -74,7 +77,7 @@ impl Index {
     pub fn find_by_root(&self, root: &Path) -> Option<&str> {
         self.repos
             .iter()
-            .find_map(|(id, e)| (e.root == root).then_some(id.as_str()))
+            .find_map(|(id, e)| (e.root.as_deref() == Some(root)).then_some(id.as_str()))
     }
 
     /// Removes the entry for `repo_id`.  Returns `true` if an entry was removed.
@@ -88,9 +91,9 @@ impl Index {
     /// via a linked worktree (different `root`) but shares the same underlying
     /// git objects directory.
     pub fn find_by_git_common_dir(&self, common_dir: &Path) -> Option<&str> {
-        self.repos
-            .iter()
-            .find_map(|(id, e)| (e.git_common_dir == common_dir).then_some(id.as_str()))
+        self.repos.iter().find_map(|(id, e)| {
+            (e.git_common_dir.as_deref() == Some(common_dir)).then_some(id.as_str())
+        })
     }
 }
 
@@ -157,10 +160,10 @@ mod tests {
 
     fn sample_entry(root: &str) -> RepoEntry {
         RepoEntry {
-            root: PathBuf::from(root),
-            git_dir: PathBuf::from(format!("{root}/.git")),
-            git_common_dir: PathBuf::from(format!("{root}/.git")),
-            store_dir: "myapp-01JTAR00000000000000000000".into(),
+            root: Some(PathBuf::from(root)),
+            git_dir: Some(PathBuf::from(format!("{root}/.git"))),
+            git_common_dir: Some(PathBuf::from(format!("{root}/.git"))),
+            repo_store_dir: "myapp".into(),
             last_seen_at: "2026-04-29T00:00:00Z".into(),
         }
     }
@@ -187,7 +190,7 @@ mod tests {
         let loaded = load(dir.path()).unwrap();
 
         let entry = loaded.get("01JWPQ3VKGE93V9BDHAENVXFA5").unwrap();
-        assert_eq!(entry.root, PathBuf::from("/home/user/myapp"));
+        assert_eq!(entry.root.as_deref(), Some(Path::new("/home/user/myapp")));
     }
 
     #[test]
@@ -217,6 +220,53 @@ mod tests {
 
         save(dir.path(), &index).unwrap();
         let loaded = load(dir.path()).unwrap();
-        assert_eq!(loaded.get(id).unwrap().root, PathBuf::from("/new/path"));
+        assert_eq!(
+            loaded.get(id).unwrap().root.as_deref(),
+            Some(Path::new("/new/path"))
+        );
+    }
+
+    #[test]
+    fn round_trip_with_missing_git_fields() {
+        let json = r#"{
+            "version": 1,
+            "repos": {
+                "01JWPQ3VKGE93V9BDHAENVXFA5": {
+                    "repo_store_dir": "myapp",
+                    "last_seen_at": "2026-04-29T00:00:00Z"
+                }
+            }
+        }"#;
+
+        let index: Index = serde_json::from_str(json).unwrap();
+        let entry = index.get("01JWPQ3VKGE93V9BDHAENVXFA5").unwrap();
+        assert_eq!(entry.repo_store_dir, "myapp");
+        assert_eq!(entry.root, None);
+        assert_eq!(entry.git_dir, None);
+        assert_eq!(entry.git_common_dir, None);
+
+        let serialized = serde_json::to_string(&index).unwrap();
+        let loaded: Index = serde_json::from_str(&serialized).unwrap();
+        let loaded_entry = loaded.get("01JWPQ3VKGE93V9BDHAENVXFA5").unwrap();
+        assert_eq!(loaded_entry.root, None);
+        assert_eq!(loaded_entry.git_dir, None);
+        assert_eq!(loaded_entry.git_common_dir, None);
+    }
+
+    #[test]
+    fn find_by_root_skips_entries_without_root() {
+        let mut index = Index::new();
+        index.upsert(
+            "01JWPQ3VKGE93V9BDHAENVXFA5",
+            RepoEntry {
+                root: None,
+                git_dir: None,
+                git_common_dir: None,
+                repo_store_dir: "myapp".into(),
+                last_seen_at: "2026-04-29T00:00:00Z".into(),
+            },
+        );
+
+        assert_eq!(index.find_by_root(Path::new("/home/user/myapp")), None);
     }
 }

@@ -234,7 +234,7 @@ fn resolve_repo(
         let id = id.to_string();
         let dir = index
             .get(&id)
-            .map(|e| e.store_dir.clone())
+            .map(|e| e.repo_store_dir.clone())
             .unwrap_or_else(|| id.clone());
         (id, dir)
     } else if let Some(id) = index.find_by_git_common_dir(&common_dir) {
@@ -242,9 +242,11 @@ fn resolve_repo(
         // update the recorded root to the current one.
         let id = id.to_string();
         let dir = if let Some(entry) = index.get(&id) {
-            let dir = entry.store_dir.clone();
+            let dir = entry.repo_store_dir.clone();
             let mut updated = entry.clone();
-            updated.root = repo_root.to_path_buf();
+            updated.root = Some(repo_root.to_path_buf());
+            updated.git_dir = Some(common_dir.clone());
+            updated.git_common_dir = Some(common_dir.clone());
             updated.last_seen_at = now_iso8601();
             index.upsert(&id, updated);
             index::save(store_root, &index)?;
@@ -257,13 +259,12 @@ fn resolve_repo(
         // First time this repository is seen: generate a new ULID and a
         // human-readable directory name.
         let id = Ulid::new().to_string();
-        let dir = format!("{}-{}", sanitize_name(&repo_name), &id);
-        let git_dir = common_dir.clone();
+        let dir = allocate_repo_store_dir(store_root, &sanitize_name(&repo_name), &id)?;
         let entry = RepoEntry {
-            root: repo_root.to_path_buf(),
-            git_dir,
-            git_common_dir: common_dir.clone(),
-            store_dir: dir.clone(),
+            root: Some(repo_root.to_path_buf()),
+            git_dir: Some(common_dir.clone()),
+            git_common_dir: Some(common_dir.clone()),
+            repo_store_dir: dir.clone(),
             last_seen_at: now_iso8601(),
         };
         index.upsert(&id, entry);
@@ -306,6 +307,41 @@ fn load_or_init_manifest(
         manifest.add_repo_name_hint(repo_name);
         Ok(manifest)
     }
+}
+
+fn allocate_repo_store_dir(store_root: &Path, base_name: &str, repo_id: &str) -> Result<String> {
+    let repos_dir = store_root.join("repos");
+    let mut n = 1;
+    loop {
+        let candidate = if n == 1 {
+            base_name.to_string()
+        } else {
+            format!("{base_name}-{n}")
+        };
+
+        if repo_store_dir_available(&repos_dir, &candidate, repo_id)? {
+            return Ok(candidate);
+        }
+        n += 1;
+    }
+}
+
+fn repo_store_dir_available(repos_dir: &Path, candidate: &str, repo_id: &str) -> Result<bool> {
+    let repo_store = repos_dir.join(candidate);
+    if !repo_store.exists() {
+        return Ok(true);
+    }
+
+    let manifest_path = manifest::manifest_path(&repo_store);
+    let contents = match std::fs::read_to_string(&manifest_path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(AppError::io(manifest_path, e)),
+    };
+    let raw: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|e| AppError::json(manifest_path, e))?;
+
+    Ok(raw.get("repo_id").and_then(|v| v.as_str()) == Some(repo_id))
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -411,5 +447,52 @@ mod tests {
 
         let rel = ctx.store_relative_path(&abs).unwrap();
         assert_eq!(rel, "notes/design.md");
+    }
+
+    #[test]
+    fn new_repo_store_dir_uses_sanitized_name_without_ulid() {
+        let store = tempfile::TempDir::new().unwrap();
+
+        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-1").unwrap();
+
+        assert_eq!(dir, "my-project");
+    }
+
+    #[test]
+    fn repo_store_dir_conflict_uses_numeric_suffix() {
+        let store = tempfile::TempDir::new().unwrap();
+        let existing = store.path().join("repos/my-project");
+        let manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
+        manifest::save(&existing, &manifest).unwrap();
+
+        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-2").unwrap();
+
+        assert_eq!(dir, "my-project-2");
+    }
+
+    #[test]
+    fn repo_store_dir_three_way_conflict_uses_next_numeric_suffix() {
+        let store = tempfile::TempDir::new().unwrap();
+        for (dir, repo_id) in [("my-project", "repo-1"), ("my-project-2", "repo-2")] {
+            let repo_store = store.path().join("repos").join(dir);
+            let manifest = Manifest::new(repo_id, "2026-04-29T00:00:00Z");
+            manifest::save(&repo_store, &manifest).unwrap();
+        }
+
+        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-3").unwrap();
+
+        assert_eq!(dir, "my-project-3");
+    }
+
+    #[test]
+    fn repo_store_dir_allows_existing_dir_with_same_repo_id() {
+        let store = tempfile::TempDir::new().unwrap();
+        let existing = store.path().join("repos/my-project");
+        let manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
+        manifest::save(&existing, &manifest).unwrap();
+
+        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-1").unwrap();
+
+        assert_eq!(dir, "my-project");
     }
 }

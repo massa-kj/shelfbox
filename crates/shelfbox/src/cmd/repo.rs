@@ -100,9 +100,23 @@ pub fn run_repo(
 #[derive(Debug, Serialize)]
 struct RepoSummary {
     name: String,
-    root: PathBuf,
+    root: Option<PathBuf>,
     item_count: usize,
     last_seen_at: String,
+}
+
+fn repo_entry_name(entry: &index::RepoEntry) -> String {
+    entry
+        .root
+        .as_ref()
+        .and_then(|root| root.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| entry.repo_store_dir.clone())
+}
+
+fn repo_root_label(root: Option<&PathBuf>) -> String {
+    root.map(|root| root.display().to_string())
+        .unwrap_or_else(|| "(unassociated)".to_string())
 }
 
 fn cmd_repo_list(
@@ -116,16 +130,12 @@ fn cmd_repo_list(
     let mut rows: Vec<RepoSummary> = idx
         .iter()
         .map(|(_id, entry)| {
-            let repo_store = config.store.join("repos").join(&entry.store_dir);
+            let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
             let item_count = manifest::load(&repo_store)
                 .map(|m| m.items.len())
                 .unwrap_or(0);
             RepoSummary {
-                name: entry
-                    .root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| entry.root.to_string_lossy().into_owned()),
+                name: repo_entry_name(entry),
                 root: entry.root.clone(),
                 item_count,
                 last_seen_at: entry.last_seen_at.clone(),
@@ -142,7 +152,12 @@ fn cmd_repo_list(
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&rows)?),
         OutputFormat::Plain => {
             for r in &rows {
-                println!("{} {} {}", r.name, r.root.display(), r.item_count);
+                println!(
+                    "{} {} {}",
+                    r.name,
+                    repo_root_label(r.root.as_ref()),
+                    r.item_count
+                );
             }
         }
         OutputFormat::Table => {
@@ -152,14 +167,16 @@ fn cmd_repo_list(
                 entries.sort_by(|(_, a), (_, b)| {
                     let na = a
                         .root
-                        .file_name()
+                        .as_ref()
+                        .and_then(|root| root.file_name())
                         .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| a.repo_store_dir.clone());
                     let nb = b
                         .root
-                        .file_name()
+                        .as_ref()
+                        .and_then(|root| root.file_name())
                         .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| b.repo_store_dir.clone());
                     na.cmp(&nb)
                 });
                 if entries.is_empty() {
@@ -167,19 +184,22 @@ fn cmd_repo_list(
                     return Ok(());
                 }
                 for (_, entry) in &entries {
-                    let repo_store = config.store.join("repos").join(&entry.store_dir);
+                    let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
                     let item_count = manifest::load(&repo_store)
                         .map(|m| m.items.len())
                         .unwrap_or(0);
-                    let name = entry
-                        .root
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| entry.root.to_string_lossy().into_owned());
+                    let name = repo_entry_name(entry);
                     println!("  {name}");
-                    println!("    root:        {}", entry.root.display());
-                    println!("    git_common:  {}", entry.git_common_dir.display());
-                    println!("    store_dir:   {}", entry.store_dir);
+                    println!("    root:        {}", repo_root_label(entry.root.as_ref()));
+                    println!(
+                        "    git_common:  {}",
+                        entry
+                            .git_common_dir
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(unassociated)".to_string())
+                    );
+                    println!("    store_dir:   {}", entry.repo_store_dir);
                     println!("    items:       {item_count}");
                     println!("    last_seen:   {}", entry.last_seen_at);
                     println!();
@@ -195,7 +215,7 @@ fn cmd_repo_list(
                     println!(
                         "  {:<30} {:<50} {:>5}  {}",
                         r.name,
-                        r.root.display(),
+                        repo_root_label(r.root.as_ref()),
                         r.item_count,
                         r.last_seen_at,
                     );

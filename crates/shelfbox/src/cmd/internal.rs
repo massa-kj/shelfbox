@@ -79,11 +79,13 @@ fn cmd_debug(cwd: &Path, store_override: Option<&Path>, allow_sensitive: bool) -
     entries.sort_by_key(|(_, e)| e.last_seen_at.as_str());
     for (id, entry) in &entries {
         println!("  {id}");
-        println!(
-            "    root        = {}",
-            display_path(&entry.root, allow_sensitive)
-        );
-        println!("    store_dir   = {}", entry.store_dir);
+        let root = entry
+            .root
+            .as_ref()
+            .map(|root| display_path(root, allow_sensitive))
+            .unwrap_or_else(|| "(unassociated)".to_string());
+        println!("    root        = {root}");
+        println!("    store_dir   = {}", entry.repo_store_dir);
         println!("    last_seen   = {}", entry.last_seen_at);
     }
 

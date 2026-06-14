@@ -56,9 +56,9 @@ pub fn run(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
             continue;
         }
 
-        let repo_store = config.store.join("repos").join(&entry.store_dir);
+        let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
 
-        if entry.root.exists() {
+        if entry.root.as_ref().is_some_and(|root| root.exists()) {
             continue;
         }
         let target_state = OwnershipState::Unreachable;
@@ -105,11 +105,11 @@ pub fn scan(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
             continue;
         }
 
-        if entry.root.exists() {
+        if entry.root.as_ref().is_some_and(|root| root.exists()) {
             continue;
         }
 
-        let repo_store = config.store.join("repos").join(&entry.store_dir);
+        let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
         let mf = match manifest::load(&repo_store) {
             Ok(m) => m,
             Err(_) => continue,

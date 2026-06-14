@@ -123,6 +123,8 @@ Purpose:
 * Canonical repository manifest storage
 * Shelved item storage
 
+If that directory is already occupied by a different `repo_id`, shelfbox appends the next numeric suffix: `my-project-2`, then `my-project-3`, and so on.
+
 The repository store directory remains even if no current Git clone is
 associated with its `RepoId`.
 

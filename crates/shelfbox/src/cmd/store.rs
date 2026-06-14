@@ -115,7 +115,7 @@ fn cmd_store_info(store_override: Option<&Path>) -> Result<()> {
     let mut repo_count: usize = 0;
     for (_id, entry) in idx.iter() {
         repo_count += 1;
-        let repo_store = cfg.store.join("repos").join(&entry.store_dir);
+        let repo_store = cfg.store.join("repos").join(&entry.repo_store_dir);
         if let Ok(mf) = manifest::load(&repo_store) {
             total_items += mf.items.len();
         }
@@ -147,22 +147,28 @@ fn cmd_store_verify(store_override: Option<&Path>) -> Result<ExitCode> {
     let mut issues: usize = 0;
 
     for (_id, entry) in idx.iter() {
-        let repo_store = cfg.store.join("repos").join(&entry.store_dir);
+        let repo_store = cfg.store.join("repos").join(&entry.repo_store_dir);
         let mf = match manifest::load(&repo_store) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("WARN  {} — cannot read manifest: {e}", entry.root.display());
+                eprintln!(
+                    "WARN  repos/{} — cannot read manifest: {e}",
+                    entry.repo_store_dir
+                );
                 issues += 1;
                 continue;
             }
         };
 
         for item in &mf.items {
-            // Check that the symlink target exists.
-            let link_path = entry.root.join(&item.path);
-            if !link_path.exists() {
-                eprintln!("MISS  symlink not found: {}", link_path.display());
-                issues += 1;
+            if let Some(root) = &entry.root {
+                // Check that the symlink target exists when this index entry
+                // is associated with a local clone.
+                let link_path = root.join(&item.path);
+                if !link_path.exists() {
+                    eprintln!("MISS  symlink not found: {}", link_path.display());
+                    issues += 1;
+                }
             }
 
             // Check that the store file exists.
@@ -190,8 +196,14 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
     // Collect repos whose root directory no longer exists on disk.
     let stale: Vec<(String, std::path::PathBuf, String)> = idx
         .iter()
-        .filter(|(_id, entry)| !entry.root.exists())
-        .map(|(id, entry)| (id.to_owned(), entry.root.clone(), entry.store_dir.clone()))
+        .filter(|(_id, entry)| entry.root.as_ref().is_some_and(|root| !root.exists()))
+        .map(|(id, entry)| {
+            (
+                id.to_owned(),
+                entry.root.clone().expect("filtered to entries with roots"),
+                entry.repo_store_dir.clone(),
+            )
+        })
         .collect();
 
     if stale.is_empty() {

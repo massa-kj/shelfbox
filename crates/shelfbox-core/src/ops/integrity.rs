@@ -57,7 +57,7 @@ fn check_repo_root_in_index(ctx: &RepoContext) -> Result<bool> {
     let idx = index::load(&ctx.config.store)?;
     Ok(idx
         .get(&ctx.repo_id)
-        .map(|e| e.root == ctx.repo_root)
+        .map(|e| e.root.as_deref() == Some(ctx.repo_root.as_path()))
         .unwrap_or(false))
 }
 
@@ -296,7 +296,7 @@ fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: b
     let idx = index::load(&ctx.config.store)?;
     let already_correct = idx
         .get(&ctx.repo_id)
-        .map(|e| e.root == ctx.repo_root)
+        .map(|e| e.root.as_deref() == Some(ctx.repo_root.as_path()))
         .unwrap_or(false);
 
     if already_correct {
@@ -317,24 +317,24 @@ fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: b
     let existing = idx.get(&ctx.repo_id).cloned();
     let git_dir = existing
         .as_ref()
-        .map(|e| e.git_dir.clone())
-        .unwrap_or_else(|| ctx.repo_root.join(".git"));
+        .and_then(|e| e.git_dir.clone())
+        .unwrap_or_else(|| ctx.git_common_dir.clone());
     let git_common_dir = existing
         .as_ref()
-        .map(|e| e.git_common_dir.clone())
+        .and_then(|e| e.git_common_dir.clone())
         .unwrap_or_else(|| git_dir.clone());
     let store_dir = existing
         .as_ref()
-        .map(|e| e.store_dir.clone())
+        .map(|e| e.repo_store_dir.clone())
         .unwrap_or_else(|| ctx.repo_id.clone());
 
     idx.upsert(
         &ctx.repo_id,
         index::RepoEntry {
-            root: ctx.repo_root.clone(),
-            git_dir,
-            git_common_dir,
-            store_dir,
+            root: Some(ctx.repo_root.clone()),
+            git_dir: Some(git_dir),
+            git_common_dir: Some(git_common_dir),
+            repo_store_dir: store_dir,
             last_seen_at: context::now_iso8601(),
         },
     );
