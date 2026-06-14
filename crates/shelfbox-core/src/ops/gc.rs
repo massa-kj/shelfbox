@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     error::{AppError, Result},
@@ -115,7 +118,40 @@ pub fn run(store_root: &Path, dry_run: bool) -> Result<GcReport> {
     for (repo_store_dir, candidates) in by_repo {
         let repo_store = store_root.join("repos").join(&repo_store_dir);
 
+        let mut mf = manifest::load(&repo_store)?;
+        let before = mf.items.len();
+        let planned_ids: HashSet<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.item_id.as_str())
+            .collect();
+        let collectible_ids: HashSet<String> = mf
+            .items
+            .iter()
+            .filter(|item| {
+                item.ownership_state == OwnershipState::Orphaned
+                    && planned_ids.contains(item.item_id.as_str())
+            })
+            .map(|item| item.item_id.clone())
+            .collect();
+
+        if collectible_ids.is_empty() {
+            continue;
+        }
+
+        mf.items.retain(|item| {
+            item.ownership_state != OwnershipState::Orphaned
+                || !collectible_ids.contains(&item.item_id)
+        });
+
+        if mf.items.len() != before {
+            manifest::save(&repo_store, &mf)?;
+            report.manifests_updated += 1;
+        }
+
         for candidate in &candidates {
+            if !collectible_ids.contains(&candidate.item_id) {
+                continue;
+            }
             if !candidate.store_exists {
                 report.missing_items += 1;
                 continue;
@@ -124,20 +160,6 @@ pub fn run(store_root: &Path, dry_run: bool) -> Result<GcReport> {
             remove_store_path(&candidate.absolute_store_path)?;
             report.deleted_items += 1;
             report.bytes_reclaimed += candidate.size_bytes;
-        }
-
-        let mut mf = manifest::load(&repo_store)?;
-        let before = mf.items.len();
-        mf.items.retain(|item| {
-            item.ownership_state != OwnershipState::Orphaned
-                || !candidates
-                    .iter()
-                    .any(|candidate| candidate.item_id == item.item_id)
-        });
-
-        if mf.items.len() != before {
-            manifest::save(&repo_store, &mf)?;
-            report.manifests_updated += 1;
         }
     }
 
@@ -277,6 +299,62 @@ mod tests {
         assert!(!repo_store.join("items/old.env").exists());
         assert!(manifest.items.is_empty());
         assert!(repo_store.exists(), "repo store directory must remain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_save_failure_does_not_delete_orphaned_store_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let store = TempDir::new().unwrap();
+        let repo_store = write_repo(
+            store.path(),
+            "project",
+            "repo-1",
+            vec![item("old.env", OwnershipState::Orphaned)],
+        );
+        let store_file = repo_store.join("items/old.env");
+        let original_perms = std::fs::metadata(&repo_store).unwrap().permissions();
+        let mut readonly_perms = original_perms.clone();
+        readonly_perms.set_mode(0o500);
+        std::fs::set_permissions(&repo_store, readonly_perms).unwrap();
+
+        let result = run(store.path(), false);
+
+        std::fs::set_permissions(&repo_store, original_perms).unwrap();
+        assert!(result.is_err());
+        assert!(store_file.exists());
+        let manifest = manifest::load(&repo_store).unwrap();
+        assert_eq!(manifest.items.len(), 1);
+        assert_eq!(manifest.items[0].ownership_state, OwnershipState::Orphaned);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_failure_leaves_orphaned_file_unreferenced() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let store = TempDir::new().unwrap();
+        let repo_store = write_repo(
+            store.path(),
+            "project",
+            "repo-1",
+            vec![item("old.env", OwnershipState::Orphaned)],
+        );
+        let items_dir = repo_store.join("items");
+        let store_file = items_dir.join("old.env");
+        let original_perms = std::fs::metadata(&items_dir).unwrap().permissions();
+        let mut readonly_perms = original_perms.clone();
+        readonly_perms.set_mode(0o500);
+        std::fs::set_permissions(&items_dir, readonly_perms).unwrap();
+
+        let result = run(store.path(), false);
+
+        std::fs::set_permissions(&items_dir, original_perms).unwrap();
+        assert!(result.is_err());
+        assert!(store_file.exists());
+        let manifest = manifest::load(&repo_store).unwrap();
+        assert!(manifest.items.is_empty());
     }
 
     #[test]

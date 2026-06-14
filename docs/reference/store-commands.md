@@ -165,8 +165,12 @@ Delete 1 orphaned item(s), reclaiming 12 B? [y/N]
 ```
 
 Answer `y` or `yes` to delete. Any other answer leaves the store untouched.
-After deletion, the matching manifest entries are removed. Repository store
-directories remain in place.
+Before deleting store-side files, `store gc` first removes the matching
+`orphaned` entries from their manifests and saves those manifests. If a
+manifest cannot be saved, no store-side files from that repository are deleted.
+If a later file deletion fails, the leftover file is unreferenced by the
+manifest and can be inspected manually. Repository store directories remain in
+place.
 
 **Flags:**
 
