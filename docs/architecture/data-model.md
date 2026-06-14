@@ -178,8 +178,9 @@ These values are either local cache data, runtime behavior, or UI presentation.
 
 # identity_hints
 
-Hints are used only to rank and display reclaim candidates. They are never
-proof of identity and must never trigger automatic reclaim.
+Hints are used only to rank and display reclaim candidates, including
+best-effort CLI hints that suggest running `repo reclaim`. They are never proof
+of identity and must never trigger automatic reclaim.
 
 Fields:
 

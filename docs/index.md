@@ -32,7 +32,7 @@ Examples:
 * Recover after a repository move
 * Recover after a reclone
 * Repair broken symlinks
-* Rebuild a lost manifest
+* Rebuild a lost local index
 
 Use this document when you know what you want to achieve but do not yet know which command to use.
 

@@ -84,7 +84,9 @@ Responsible for:
 * Lock acquisition
 * Manifest loading
 
-Every command begins by building a context.
+Most item and repository operations begin by building a context. Commands such
+as `repo reclaim` first inspect the current Git checkout without creating a new
+`RepoId`, then build or update context only after explicit user intent.
 
 ---
 
@@ -162,6 +164,8 @@ shelfbox item add .env
 ```text
 CLI
  ↓
+best-effort reclaim hint check
+ ↓
 context::build()
  ↓
 ops::add()
@@ -176,6 +180,7 @@ Detailed flow for `shelfbox item add <PATH>`:
 ```text
 cli::run()
   -> cmd::item::run_item()
+      - optionally print explicit reclaim hint for positive candidates
   -> context::build(cwd, store_override, write=true)
       - discover repository root
       - load resolved configuration

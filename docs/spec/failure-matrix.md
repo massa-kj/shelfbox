@@ -30,7 +30,7 @@ Identity-changing actions require explicit user intent
 | 7 | Repository directory renamed | Local root changed but clone identity may still match | `repo status` / next operation | Normal operation or `repo repair` | `git_common_dir` match can reuse `RepoId` |
 | 8 | `repos/<repo-store-dir>` renamed | `index.json` points to old locator | `store verify` / load failure | `store rebuild-index` | Manifest `repo_id` remains identity |
 | 9 | `index.json` deleted | Local Git metadata cache is gone | Missing index or empty repo list | `store rebuild-index` then `repo reclaim` | Rebuild restores `repo_id` and `repo_store_dir` only |
-| 10 | Re-clone on same machine | New clone has no cache match | `repo status` shows no association | `repo reclaim` then `repo repair` | No automatic reclaim from hints |
+| 10 | Re-clone on same machine | New clone has no cache match | `item add` / `repo status` may print reclaim hint before using a fresh association | `repo reclaim` then `repo repair` | No automatic reclaim from hints |
 | 11 | PC migration | Only `repos/` is restored | Missing local cache | `store rebuild-index`, `repo reclaim`, `repo repair` | Main portability workflow |
 | 12 | Corrupted manifest | JSON parse fails | `store rebuild-index` / `store verify` | Restore manifest from backup or manual repair | Scanner reports and skips corrupted manifest where safe |
 | 13 | Duplicate `RepoId` | Two manifests claim same repository identity | Scanner duplicate check | Manual resolution | Rebuild/reclaim fail without mutation |
@@ -109,10 +109,10 @@ Expected result:
 | `manifest.json` writes are atomic | A crash mid-write leaves the previous manifest intact |
 | `index.json` writes are atomic | Same guarantee for the local cache |
 | `store_path` is repo-store-relative | Manifests are portable across store locations and machines |
-| `identity_hints` are not proof | Candidate ranking does not imply identity |
+| `identity_hints` are not proof | Candidate ranking and hints do not imply identity |
 | Reclaim is explicit | Association changes require user intent |
 | Repair is ownership-neutral | Local integration can be fixed without changing ownership |
-| GC is conservative | Only confirmed `orphaned` items may be deleted |
+| GC is conservative | Only confirmed `orphaned` items may be deleted, and manifests are saved before file removal |
 
 ---
 

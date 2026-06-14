@@ -69,13 +69,13 @@ See:
 
 ---
 
-# Recover After Manifest Loss
+# Recover After Local Index Loss
 
 Symptoms:
 
 ```text
-manifest.json missing
-items still exist in store
+index.json missing or empty
+repos/*/manifest.json still exists
 ```
 
 Recovery:
@@ -86,8 +86,11 @@ shelfbox repo reclaim
 shelfbox repo repair
 ```
 
-If `manifest.json` is missing, restore it from backup before rebuilding the
-index. `repos/` is the canonical store; `index.json` is only a local cache.
+`repos/` is the canonical store; `index.json` is only a local cache.
+
+If `manifest.json` itself is missing or corrupted, restore it from backup or
+repair it manually before running `store rebuild-index`. shelfbox cannot infer
+canonical ownership safely from loose files under `items/` alone.
 
 See:
 
@@ -136,6 +139,10 @@ shelfbox store rebuild-index
 shelfbox repo reclaim
 shelfbox repo repair
 ```
+
+`item add` and `repo status` may print a reclaim hint when the new clone has no
+local cache match but existing manifests match by hints. The hint is only a
+guide; run `repo reclaim` to attach the clone explicitly.
 
 See:
 

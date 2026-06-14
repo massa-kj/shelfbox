@@ -32,7 +32,9 @@ Requirements:
 
 * Git
 * Rust 1.75+ (source installation)
-* Linux or macOS
+* Linux, macOS, or Windows
+
+On Windows, symlink creation requires Developer Mode or an elevated shell.
 
 ---
 
@@ -148,6 +150,9 @@ A file that has been moved into the store and is represented by a symlink in the
 
 ### Repository Identity
 
-Each repository registered with shelfbox has its own logical identity. This enables recovery after repository moves and reclones.
+Each repository registered with shelfbox has its own logical identity. This
+enables recovery after repository moves and explicit reclaim after reclones.
+Matching repository names or remotes may produce reclaim hints, but they do not
+automatically attach a clone to an existing identity.
 
 See `spec/ownership-model.md` for details.

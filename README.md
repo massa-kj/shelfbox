@@ -54,7 +54,7 @@ Anyone can move a file and create a symlink manually. What shelfbox adds is **tr
 
 - broken or missing symlinks
 - missing `.git/info/exclude` entries
-- stale records left after a reclone
+- lost local associations after a reclone
 - store entries with no corresponding repository
 
 Run `shelfbox repo repair` to repair the current repository's shelf, or `shelfbox repo reclaim` to re-associate a clone with an existing shelf after restoring `repos/`.
@@ -109,10 +109,11 @@ Requires Rust 1.75+ and Git.
 
 ## More features
 
-- **Group shelving** — shelve all files in a directory together and restore as a group: [`item add <dir>/`](docs/user-guide.md#item-add-path)
+- **Directory shelving** — shelve eligible files under a directory; each file remains an independent item: [`item add <PATH>`](docs/reference/item-commands.md#item-add-path)
 - **Recovery after reclone** — re-associate a new clone with an existing shelf after restoring `repos/`: [`repo reclaim`](docs/reference/repo-commands.md#repo-reclaim)
+- **Store recovery** — rebuild local cache files from canonical manifests: [`store rebuild-index`](docs/reference/store-commands.md#store-rebuild-index)
 
-See [docs/user-guide.md](docs/user-guide.md) for the full command reference.
+See [docs/index.md](docs/index.md) for the full documentation set.
 
 ## Configuration
 
