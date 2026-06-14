@@ -165,7 +165,8 @@ pub fn execute_reclaim(
             ))
         })?;
 
-    let mut manifest = target.manifest;
+    let original_manifest = target.manifest;
+    let mut manifest = original_manifest.clone();
     let repo_store_dir = target.repo_store_dir;
     let repo_store = store_root.join("repos").join(&repo_store_dir);
     let now = context::now_iso8601();
@@ -202,8 +203,11 @@ pub fn execute_reclaim(
         },
     );
 
-    index::save(store_root, &idx)?;
     crate::store::manifest::save(&repo_store, &manifest)?;
+    if let Err(err) = index::save(store_root, &idx) {
+        let _ = crate::store::manifest::save(&repo_store, &original_manifest);
+        return Err(err);
+    }
 
     Ok(ReclaimOutcome {
         repo_id: target_repo_id.to_string(),
@@ -584,6 +588,36 @@ mod tests {
             Some("current")
         );
         assert!(loaded.identity_hints.last_attached_at.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_reclaim_rolls_back_manifest_when_index_save_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root);
+        let mut manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
+        manifest.add(item("repo-1", "item-1", OwnershipState::Unreachable));
+        write_manifest(store.path(), "target", &manifest, true);
+
+        let original_manifest =
+            std::fs::read_to_string(store.path().join("repos/target/manifest.json")).unwrap();
+        let original_perms = std::fs::metadata(store.path()).unwrap().permissions();
+        let mut readonly_perms = original_perms.clone();
+        readonly_perms.set_mode(0o500);
+        std::fs::set_permissions(store.path(), readonly_perms).unwrap();
+
+        let result = execute_reclaim(store.path(), &current, "repo-1");
+
+        std::fs::set_permissions(store.path(), original_perms).unwrap();
+        assert!(result.is_err());
+        assert!(!index::index_path(store.path()).exists());
+        assert_eq!(
+            std::fs::read_to_string(store.path().join("repos/target/manifest.json")).unwrap(),
+            original_manifest
+        );
     }
 
     #[test]
