@@ -120,6 +120,7 @@ Performs conservative garbage collection.
 ```sh
 shelfbox store gc
 shelfbox store gc --dry-run
+shelfbox store gc --yes
 ```
 
 **Restriction:**
@@ -141,6 +142,9 @@ unreachable
 It must not delete an entire repository store directory just because no current
 Git clone is associated with that `RepoId`.
 
+`store gc` scans `repos/*/manifest.json` directly. `index.json` is not a
+deletion source; local reachability is only context for humans.
+
 **Index reachability rules:**
 
 * `root: None` means unassociated or rebuilt from manifests; it is normal after
@@ -150,8 +154,23 @@ Git clone is associated with that `RepoId`.
 * Even when the local clone is unreachable, only confirmed `orphaned` items may
   be deleted.
 
+Typical output:
+
+```text
+Orphaned items eligible for deletion:
+  repos/my-project/items/old.env [01ABC...] - 12 B
+Total: 1 item(s), 12 B.
+Protected: 3 attached, 1 detached, 2 unreachable.
+Delete 1 orphaned item(s), reclaiming 12 B? [y/N]
+```
+
+Answer `y` or `yes` to delete. Any other answer leaves the store untouched.
+After deletion, the matching manifest entries are removed. Repository store
+directories remain in place.
+
 **Flags:**
 
 | Flag | Description |
 |---|---|
 | `--dry-run` | Print what would be deleted without prompting or writing. |
+| `--yes` | Delete planned orphaned items without prompting. |

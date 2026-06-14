@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -6,7 +7,7 @@ use clap::Subcommand;
 use shelfbox_core::{
     config::Config,
     ops,
-    store::{index, manifest, manifest::OwnershipState, meta},
+    store::{index, manifest, meta},
 };
 
 // ── store subcommands ──────────────────────────────────────────────────────────────────────────
@@ -21,7 +22,7 @@ pub enum StoreCommand {
     /// Exit codes: 0 = all OK, 2 = issues found.
     Verify,
 
-    /// Delete store entries for repositories that no longer exist.
+    /// Delete explicitly orphaned store items.
     Gc {
         /// Print what would be deleted without making any changes.
         #[arg(long)]
@@ -202,85 +203,35 @@ fn cmd_store_verify(store_override: Option<&Path>) -> Result<ExitCode> {
 
 fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
     let cfg = Config::load(store_override)?;
-    let mut idx = index::load(&cfg.store)?;
+    let plan = ops::gc::plan(&cfg.store)?;
 
-    // Collect repos whose root directory no longer exists on disk.
-    let stale: Vec<(String, std::path::PathBuf, String)> = idx
-        .iter()
-        .filter(|(_id, entry)| entry.root.as_ref().is_some_and(|root| !root.exists()))
-        .map(|(id, entry)| {
-            (
-                id.to_owned(),
-                entry.root.clone().expect("filtered to entries with roots"),
-                entry.repo_store_dir.clone(),
-            )
-        })
-        .collect();
-
-    if stale.is_empty() {
-        println!("Nothing to clean up.");
+    if plan.candidates.is_empty() {
+        println!("No orphaned items found.");
+        print_gc_protected_summary(&plan);
         return Ok(());
     }
 
-    println!("Stale entries ({}):", stale.len());
-    for (id, root, store_dir) in &stale {
-        let repo_store = cfg.store.join("repos").join(store_dir);
-        let reclaimable = count_reclaimable_items(&repo_store);
-        if reclaimable > 0 {
-            println!(
-                "  {} [{}] — {} reclaimable item(s), protected from GC",
-                root.display(),
-                id,
-                reclaimable
-            );
-        } else {
-            println!("  {} [{}]", root.display(), id);
-        }
-    }
+    print_gc_plan(&plan);
 
     if dry_run {
-        println!("Dry run — no changes made.");
+        println!("Dry run - no changes made.");
         return Ok(());
     }
 
-    if !yes {
-        println!("Run with --yes to remove eligible entries.");
-        println!("note: repos with reclaimable items are always skipped — run 'shelfbox repo reclaim' from a current clone first.");
+    if !yes && !confirm_store_gc(plan.candidates.len(), planned_bytes(&plan))? {
+        println!("No changes made.");
         return Ok(());
     }
 
-    // Remove store data and index entries.
-    // Repos with reclaimable items are skipped regardless of --yes (spec §7.5 / §9.2).
-    let mut removed = 0;
-    let mut skipped = 0;
-    for (id, root, store_dir) in &stale {
-        let repo_store = cfg.store.join("repos").join(store_dir);
-        let reclaimable = count_reclaimable_items(&repo_store);
-        if reclaimable > 0 {
-            eprintln!(
-                "warning: skipping '{}' [{}]: {} reclaimable item(s) \
-                 — run 'shelfbox repo reclaim' from a current clone first",
-                root.display(),
-                id,
-                reclaimable
-            );
-            skipped += 1;
-            continue;
-        }
-        if repo_store.exists() {
-            std::fs::remove_dir_all(&repo_store)
-                .map_err(|e| anyhow::anyhow!("failed to remove {}: {e}", repo_store.display()))?;
-        }
-        idx.remove(id);
-        println!("Removed: {}", root.display());
-        removed += 1;
-    }
+    let report = ops::gc::run(&cfg.store, false)?;
 
-    if removed > 0 {
-        index::save(&cfg.store, &idx)?;
-    }
-
-    println!("Done. {removed} removed, {skipped} skipped (reclaimable).");
+    println!(
+        "Deleted {} orphaned item(s), {} already missing, reclaimed {}.",
+        report.deleted_items,
+        report.missing_items,
+        human_bytes(report.bytes_reclaimed)
+    );
+    println!("Updated {} manifest(s).", report.manifests_updated);
 
     Ok(())
 }
@@ -353,18 +304,53 @@ fn cmd_store_migrate_manifests(store_override: Option<&Path>, dry_run: bool) -> 
     Ok(())
 }
 
-/// Returns the number of items in `repo_store`'s manifest that are protected
-/// from GC — i.e., in a state other than `Orphaned`.
-fn count_reclaimable_items(repo_store: &std::path::Path) -> usize {
-    if !repo_store.exists() {
-        return 0;
+fn print_gc_plan(plan: &ops::gc::GcPlan) {
+    println!("Orphaned items eligible for deletion:");
+    for item in &plan.candidates {
+        let missing = if item.store_exists { "" } else { " (missing)" };
+        println!(
+            "  repos/{}/{} [{}] - {}{}",
+            item.repo_store_dir,
+            item.store_path,
+            item.repo_id,
+            human_bytes(item.size_bytes),
+            missing
+        );
     }
-    manifest::load(repo_store)
-        .map(|mf| {
-            mf.items
-                .iter()
-                .filter(|i| !matches!(i.ownership_state, OwnershipState::Orphaned))
-                .count()
-        })
-        .unwrap_or(0)
+    println!(
+        "Total: {} item(s), {}.",
+        plan.candidates.len(),
+        human_bytes(planned_bytes(plan))
+    );
+    print_gc_protected_summary(plan);
+}
+
+fn print_gc_protected_summary(plan: &ops::gc::GcPlan) {
+    let protected = plan.protected_attached + plan.protected_detached + plan.protected_unreachable;
+    if protected == 0 {
+        return;
+    }
+
+    println!(
+        "Protected: {} attached, {} detached, {} unreachable.",
+        plan.protected_attached, plan.protected_detached, plan.protected_unreachable
+    );
+}
+
+fn planned_bytes(plan: &ops::gc::GcPlan) -> u64 {
+    plan.candidates.iter().map(|item| item.size_bytes).sum()
+}
+
+fn confirm_store_gc(item_count: usize, bytes: u64) -> Result<bool> {
+    print!(
+        "Delete {item_count} orphaned item(s), reclaiming {}? [y/N] ",
+        human_bytes(bytes)
+    );
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let answer = input.trim();
+
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }

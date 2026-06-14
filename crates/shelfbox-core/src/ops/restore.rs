@@ -22,8 +22,7 @@ use super::path::repo_relative_string;
 ///
 /// # keep_store
 /// When `true`, only the manifest entry is removed.  The symlink and the
-/// store-side item are left in place, making the store item an orphan that
-/// will be collected by `repo gc`.
+/// store-side item are left in place, and the item is marked `Detached`.
 ///
 /// # Errors
 ///
@@ -45,8 +44,8 @@ pub fn restore(
     // ── keep_store fast path ─────────────────────────────────────────────────
     // Transition the item to Detached: preserve the manifest entry for
     // ownership tracking while leaving the symlink and store item intact.
-    // The item will NOT be auto-collected by `repo gc`; the user must
-    // explicitly confirm GC for detached items.
+    // The item will NOT be auto-collected by `store gc`; detached items are
+    // protected from conservative GC.
     if keep_store {
         if !ctx.manifest.contains(&rel_str) {
             return Err(AppError::NotManagedLink {
