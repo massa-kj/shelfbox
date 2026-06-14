@@ -11,6 +11,7 @@
 | **`store_path` is repo-store-relative** | Relative paths such as `items/.env` keep `manifest.json` portable across machines and store relocations. |
 | **No absolute paths in `manifest.json`** | Absolute paths are local machine cache data. They belong in `index.json` and may be absent after `store rebuild-index`. |
 | **Identity hints are hints only** | `remote_hints`, `repo_name_hints`, and `last_attached_at` are used for display and candidate ranking. They are never proof of identity and never trigger automatic reclaim. |
+| **Remote hints use host/path format** | Remote URLs are normalized to `host/org/repo` style before entering `remote_hints` (for example `github.com/org/repo`). Scheme, user, query, fragment, and `.git` suffixes are discarded; local/file URLs are not stored as remote hints. |
 | **Explicit reclaim instead of automatic identity detection** | A new clone receives a new `RepoId` unless the user explicitly runs `repo reclaim`. This prevents remote URL or name matches from silently merging unrelated repositories. |
 | **Reclaim does not transfer ownership** | `repo reclaim` associates the current clone with an existing `RepoId`; it does not move items, copy items, change ownership state, repair symlinks, or rewrite excludes. |
 | **Repair is ownership-neutral** | `repo repair` and `item repair` restore local integration but never assign a different `RepoId` or change item ownership state. |

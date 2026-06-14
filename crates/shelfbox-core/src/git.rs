@@ -162,12 +162,8 @@ pub fn git_common_dir(repo_root: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Returns the `origin` remote URL for the repository, or `None` if no
-/// remote named `origin` is configured.
-///
-/// Used only for informational purposes in the manifest; a missing remote
-/// must never block any operation.
-pub fn get_remote_url(repo_root: &Path) -> Result<Option<String>> {
+/// Returns the URL of the `origin` remote, if configured.
+pub fn remote_url(repo_root: &Path) -> Result<Option<String>> {
     match run_git(&["remote", "get-url", "origin"], repo_root) {
         Ok(url) if !url.is_empty() => Ok(Some(url)),
         Ok(_) => Ok(None),
@@ -175,6 +171,14 @@ pub fn get_remote_url(repo_root: &Path) -> Result<Option<String>> {
         Err(AppError::GitCommand { .. }) => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// Returns the `origin` remote URL for the repository, or `None` if no
+/// remote named `origin` is configured.
+///
+/// Kept as a compatibility wrapper; new call sites should use [`remote_url`].
+pub fn get_remote_url(repo_root: &Path) -> Result<Option<String>> {
+    remote_url(repo_root)
 }
 
 /// Normalizes a Git remote URL to `host/org/repo` form.
@@ -198,7 +202,8 @@ pub fn normalize_remote_hint(url: &str) -> Option<String> {
         .trim_end_matches('/');
 
     let (host, path) = if let Some((scheme, rest)) = without_query.split_once("://") {
-        if scheme.is_empty() {
+        let scheme = scheme.to_ascii_lowercase();
+        if !matches!(scheme.as_str(), "http" | "https" | "ssh" | "git") {
             return None;
         }
         let rest = rest.trim_start_matches('/');
@@ -325,25 +330,77 @@ mod tests {
     }
 
     #[test]
-    fn get_remote_url_returns_none_for_repo_without_remote() {
+    fn remote_url_returns_none_for_repo_without_remote() {
         let dir = init_repo();
-        let result = get_remote_url(dir.path()).unwrap();
+        let result = remote_url(dir.path()).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
-    fn normalize_remote_hint_supports_common_remote_forms() {
-        assert_eq!(
-            normalize_remote_hint("git@github.com:org/repo.git"),
-            Some("github.com/org/repo".into())
-        );
+    fn remote_url_returns_origin_url_when_configured() {
+        let dir = init_repo();
+        StdCommand::new("git")
+            .args(["remote", "add", "origin", "git@github.com:org/repo.git"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let result = remote_url(dir.path()).unwrap();
+
+        assert_eq!(result, Some("git@github.com:org/repo.git".into()));
+    }
+
+    #[test]
+    fn normalize_remote_hint_supports_https_with_git_suffix() {
         assert_eq!(
             normalize_remote_hint("https://github.com/org/repo.git"),
             Some("github.com/org/repo".into())
         );
+    }
+
+    #[test]
+    fn normalize_remote_hint_supports_ssh_shorthand() {
         assert_eq!(
-            normalize_remote_hint("ssh://git@github.com/org/repo.git"),
+            normalize_remote_hint("git@github.com:org/repo.git"),
             Some("github.com/org/repo".into())
+        );
+    }
+
+    #[test]
+    fn normalize_remote_hint_supports_ssh_url() {
+        assert_eq!(
+            normalize_remote_hint("ssh://git@host/path/repo"),
+            Some("host/path/repo".into())
+        );
+    }
+
+    #[test]
+    fn normalize_remote_hint_supports_url_without_git_suffix() {
+        assert_eq!(
+            normalize_remote_hint("https://gitlab.com/org/repo"),
+            Some("gitlab.com/org/repo".into())
+        );
+    }
+
+    #[test]
+    fn normalize_remote_hint_rejects_empty_or_non_parseable_values() {
+        assert_eq!(normalize_remote_hint(""), None);
+        assert_eq!(normalize_remote_hint("not a remote"), None);
+        assert_eq!(normalize_remote_hint("file:///tmp/repo.git"), None);
+    }
+
+    #[test]
+    fn get_remote_url_wraps_remote_url_for_compatibility() {
+        let dir = init_repo();
+        StdCommand::new("git")
+            .args(["remote", "add", "origin", "https://github.com/org/repo"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            get_remote_url(dir.path()).unwrap(),
+            Some("https://github.com/org/repo".into())
         );
     }
 }
