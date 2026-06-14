@@ -6,6 +6,7 @@ pub mod list;
 pub mod migrate_manifest;
 pub mod move_item;
 pub(crate) mod path;
+pub mod rebuild_index;
 pub mod relink;
 pub mod repair;
 pub mod restore;

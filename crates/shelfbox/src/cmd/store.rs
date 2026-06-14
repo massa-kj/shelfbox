@@ -32,6 +32,13 @@ pub enum StoreCommand {
         yes: bool,
     },
 
+    /// Rebuild index.json from repository manifests.
+    RebuildIndex {
+        /// Print what would be indexed without writing index.json.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Explicitly migrate legacy manifests to the current schema.
     MigrateManifests {
         /// Print what would be converted without writing manifests.
@@ -55,6 +62,10 @@ pub fn run_store(
         StoreCommand::Verify => cmd_store_verify(store_override),
         StoreCommand::Gc { dry_run, yes } => {
             cmd_store_gc(store_override, dry_run, yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        StoreCommand::RebuildIndex { dry_run } => {
+            cmd_store_rebuild_index(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         StoreCommand::MigrateManifests { dry_run } => {
@@ -270,6 +281,42 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
     }
 
     println!("Done. {removed} removed, {skipped} skipped (reclaimable).");
+
+    Ok(())
+}
+
+fn cmd_store_rebuild_index(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
+    let cfg = Config::load(store_override)?;
+    let report = ops::rebuild_index::run(&cfg.store, dry_run)?;
+
+    for warning in &report.warnings {
+        eprintln!("Warning: {}", warning.message);
+    }
+
+    let warning_count = report.warnings.len();
+    let noun = if warning_count == 1 {
+        "warning"
+    } else {
+        "warnings"
+    };
+
+    if dry_run {
+        println!("Dry run - no index written.");
+        println!(
+            "Would rebuild index: {} repositories, {} {}",
+            report.repositories, warning_count, noun
+        );
+    } else if warning_count == 0 {
+        println!(
+            "Rebuilt index: {} repositories, 0 errors",
+            report.repositories
+        );
+    } else {
+        println!(
+            "Rebuilt index: {} repositories, {} {}",
+            report.repositories, warning_count, noun
+        );
+    }
 
     Ok(())
 }

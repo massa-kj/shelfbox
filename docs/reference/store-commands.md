@@ -60,6 +60,14 @@ shelfbox store rebuild-index --dry-run
 4. Reports corrupted manifests and skips them.
 5. Writes a new `index.json`.
 
+If one or more manifests cannot be parsed, shelfbox warns and indexes the
+remaining valid manifests:
+
+```text
+Warning: failed to parse repos/corrupted/manifest.json: ...
+Rebuilt index: 2 repositories, 1 warning
+```
+
 Rebuilt entries contain:
 
 ```text
