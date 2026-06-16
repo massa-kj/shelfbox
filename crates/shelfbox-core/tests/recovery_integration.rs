@@ -117,7 +117,7 @@ fn move_repository_path_reuses_repoid_via_git_common_dir() {
 
     let idx = index::load(store.path()).unwrap();
     let entry = idx.get(&repo_id).unwrap();
-    assert_eq!(entry.root.as_deref(), Some(moved_worktree.as_path()));
+    assert_eq!(entry.root.as_deref(), Some(moved_ctx.repo_root.as_path()));
     assert_eq!(moved_ctx.manifest.items.len(), 2);
 }
 
@@ -154,7 +154,7 @@ fn rename_repository_directory_reuses_repoid_via_git_common_dir() {
 
     let idx = index::load(store.path()).unwrap();
     let entry = idx.get(&repo_id).unwrap();
-    assert_eq!(entry.root.as_deref(), Some(renamed_worktree.as_path()));
+    assert_eq!(entry.root.as_deref(), Some(renamed_ctx.repo_root.as_path()));
     assert_eq!(renamed_ctx.manifest.items.len(), 2);
 }
 
