@@ -99,6 +99,13 @@ curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
+Linux installs use the musl binary by default for wider compatibility. To use
+the GNU libc binary instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | LINUX_LIBC=gnu sh
+```
+
 ### From source
 
 ```sh

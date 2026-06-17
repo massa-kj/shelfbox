@@ -7,6 +7,7 @@
 # Environment variables:
 #   VERSION      — tag to install (e.g. v0.1.0). Defaults to the latest release.
 #   INSTALL_DIR  — directory to place the binary. Defaults to ~/.local/bin.
+#   LINUX_LIBC   — libc flavor for Linux: musl (default) or gnu.
 
 set -eu
 
@@ -42,8 +43,18 @@ esac
 # ── Map OS + arch → Rust target triple ───────────────────────────────────────
 
 case "${OS}-${ARCH}" in
-    linux-x86_64)   TARGET="x86_64-unknown-linux-gnu"  ;;
-    linux-aarch64)  TARGET="aarch64-unknown-linux-gnu" ;;
+    linux-x86_64 | linux-aarch64)
+        LINUX_LIBC="${LINUX_LIBC:-musl}"
+        case "$LINUX_LIBC" in
+            musl | gnu) ;;
+            *)
+                echo "error: unsupported LINUX_LIBC: $LINUX_LIBC" >&2
+                echo "       Expected 'musl' or 'gnu'." >&2
+                exit 1
+                ;;
+        esac
+        TARGET="${ARCH}-unknown-linux-${LINUX_LIBC}"
+        ;;
     darwin-x86_64)  TARGET="x86_64-apple-darwin"       ;;
     darwin-aarch64) TARGET="aarch64-apple-darwin"      ;;
 esac

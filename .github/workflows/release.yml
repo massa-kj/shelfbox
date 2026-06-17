@@ -9,6 +9,9 @@ env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: shelfbox
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build (${{ matrix.target }})
@@ -18,17 +21,27 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
+            use_cross: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04
             use_cross: true
           - target: x86_64-apple-darwin
             os: macos-15-intel
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-15
+          - target: x86_64-pc-windows-msvc
+            os: windows-2025
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -63,11 +76,25 @@ jobs:
         shell: bash
         run: |
           staging="shelfbox-${{ github.ref_name }}-${{ matrix.target }}"
+          binary="shelfbox"
+          asset="${staging}.tar.gz"
+
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            binary="shelfbox.exe"
+            asset="${staging}.zip"
+          fi
+
           mkdir "$staging"
-          cp "target/${{ matrix.target }}/release/shelfbox" "$staging/"
+          cp "target/${{ matrix.target }}/release/${binary}" "$staging/"
           cp README.md LICENSE "$staging/"
-          tar czf "${staging}.tar.gz" "$staging"
-          echo "ASSET=${staging}.tar.gz" >> "$GITHUB_ENV"
+
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '${staging}' -DestinationPath '${asset}'"
+          else
+            tar czf "${asset}" "$staging"
+          fi
+
+          echo "ASSET=${asset}" >> "$GITHUB_ENV"
 
       - name: Generate checksum
         shell: bash
@@ -93,6 +120,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
