@@ -88,22 +88,32 @@ shelfbox item restore CLAUDE.local.md
 
 ### Pre-built binary (recommended)
 
+Linux/macOS:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | sh
 ```
 
-Installs to `~/.local/bin` by default. To specify a version or directory:
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.ps1 | iex
+```
+
+The Unix installer uses `~/.local/bin` by default. The PowerShell installer uses
+`%LOCALAPPDATA%\Programs\shelfbox\bin`. To specify a version or directory on
+Linux/macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | VERSION=v0.1.0 sh
-curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | INSTALL_DIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
 Linux installs use the musl binary by default for wider compatibility. To use
 the GNU libc binary instead:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | LINUX_LIBC=gnu sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | LINUX_LIBC=gnu sh
 ```
 
 ### From source

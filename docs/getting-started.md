@@ -18,8 +18,16 @@ The file remains visible at its original path through a symlink, while the real 
 
 ### Pre-built binary
 
+Linux/macOS:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.ps1 | iex
 ```
 
 ### From source
