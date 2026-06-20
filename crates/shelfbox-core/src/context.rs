@@ -132,7 +132,8 @@ pub struct RepoContext {
     pub config: Config,
 
     /// Advisory file lock on `<store>/.lock`, held for this context's lifetime.
-    /// `None` only in unit-test contexts that construct `RepoContext` directly.
+    /// `None` in unit-test contexts and read-only contexts that must not
+    /// create lock files.
     _store_lock: Option<StoreLock>,
 }
 
@@ -143,6 +144,18 @@ pub struct CurrentGitContext {
     pub git_dir: PathBuf,
     pub git_common_dir: PathBuf,
     pub remote_hint: Option<String>,
+}
+
+/// Read-only repository lookup result.
+///
+/// This separates Git/config discovery from identity-changing repository
+/// creation. A missing association is represented by `repo: None` instead of
+/// allocating a new `RepoId`.
+#[derive(Debug)]
+pub struct ReadOnlyRepoContext {
+    pub current: CurrentGitContext,
+    pub config: Config,
+    pub repo: Option<RepoContext>,
 }
 
 impl RepoContext {
@@ -236,7 +249,56 @@ pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<R
     })
 }
 
+/// Resolves the current Git checkout against the existing store without
+/// creating store metadata, a lock file, an index entry, a `RepoId`, or a
+/// manifest.
+pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<ReadOnlyRepoContext> {
+    let config = Config::load(store_override)?;
+    let current = current_git_context(cwd)?;
+    let repo = resolve_repo_read_only(&config, &current)?;
+
+    Ok(ReadOnlyRepoContext {
+        current,
+        config,
+        repo,
+    })
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+fn resolve_repo_read_only(
+    config: &Config,
+    current: &CurrentGitContext,
+) -> Result<Option<RepoContext>> {
+    if !index::index_path(&config.store).is_file() {
+        return Ok(None);
+    }
+
+    let index = index::load(&config.store)?;
+    let Some(repo_id) = resolve_existing_repo(current, &index) else {
+        return Ok(None);
+    };
+
+    let Some(entry) = index.get(&repo_id) else {
+        return Ok(None);
+    };
+
+    let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
+    if !manifest::manifest_path(&repo_store).is_file() {
+        return Ok(None);
+    }
+
+    let manifest = manifest::load(&repo_store)?;
+    Ok(Some(RepoContext {
+        repo_root: current.repo_root.clone(),
+        repo_id,
+        repo_store,
+        git_common_dir: current.git_common_dir.clone(),
+        manifest,
+        config: config.clone(),
+        _store_lock: None,
+    }))
+}
 
 /// Resolves (or creates) the repo ID and loads (or initialises) the manifest.
 ///

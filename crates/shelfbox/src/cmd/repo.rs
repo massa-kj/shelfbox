@@ -250,9 +250,21 @@ fn cmd_repo_status(
 ) -> Result<ExitCode> {
     warn_reclaim_candidates_if_unassociated(cwd, store_override);
 
-    let ctx =
-        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
-    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
+    let read_only = context::build_read_only(cwd, store_override)
+        .context("failed to initialise read-only repo context")?;
+    let fmt = OutputFormat::resolve(format, &read_only.config.default_format);
+    let Some(ctx) = read_only.repo else {
+        let report = empty_repo_status_report();
+        match fmt {
+            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+            OutputFormat::Plain => print_repo_status_plain(&report),
+            OutputFormat::Table => {
+                print_repo_status(&report, verbose, &read_only.current.repo_root)
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
+
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     let report = ops::integrity::check(&ctx, &link, &ignore)?;
@@ -276,6 +288,14 @@ fn cmd_repo_status(
         OutputFormat::Table => print_repo_status(&report, verbose, &ctx.repo_root),
     }
     Ok(classify_integrity_exit(&report))
+}
+
+fn empty_repo_status_report() -> IntegrityReport {
+    IntegrityReport {
+        items: Vec::new(),
+        orphan_store_items: Vec::new(),
+        repo_root_matches_index: true,
+    }
 }
 
 fn cmd_repo_repair(

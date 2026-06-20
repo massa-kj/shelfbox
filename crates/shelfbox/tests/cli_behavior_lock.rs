@@ -271,10 +271,54 @@ fn repo_status_exit_codes_are_locked_for_associated_repo() {
     assert_eq!(output.stderr, "");
 }
 
+#[test]
+fn repo_status_for_unassociated_repo_does_not_initialize_store() {
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let before = snapshot_tree(store.path());
+
+    let output = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["repo", "status", "--format", "plain"]),
+    );
+
+    output.assert_code(0);
+    assert_eq!(output.stdout, "");
+    assert_eq!(output.stderr, "");
+    assert_eq!(snapshot_tree(store.path()), before);
+    assert_absent(store.path(), "meta.json");
+    assert_absent(store.path(), "index.json");
+    assert_absent(store.path(), "repos");
+    assert_absent(store.path(), ".lock");
+
+    let output = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["doctor", "--format", "plain"]),
+    );
+
+    output.assert_code(0);
+    assert_eq!(output.stdout, "");
+    assert_eq!(output.stderr, "");
+    assert_eq!(snapshot_tree(store.path()), before);
+    assert_absent(store.path(), "meta.json");
+    assert_absent(store.path(), "index.json");
+    assert_absent(store.path(), "repos");
+    assert_absent(store.path(), ".lock");
+}
+
 fn row_by_key<'a>(rows: &'a [Value], key: &str) -> &'a Value {
     rows.iter()
         .find(|row| row["key"] == key)
         .unwrap_or_else(|| panic!("missing config list row for {key}"))
+}
+
+fn assert_absent(root: &Path, rel: &str) {
+    assert!(
+        !root.join(rel).exists(),
+        "expected {} to remain absent",
+        root.join(rel).display()
+    );
 }
 
 fn store_args<const N: usize>(store: &Path, args: [&str; N]) -> Vec<OsString> {

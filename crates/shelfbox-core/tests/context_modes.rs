@@ -2,8 +2,12 @@ use std::path::PathBuf;
 
 use shelfbox_core::{
     context::{self, CurrentGitContext},
-    store::index::{Index, RepoEntry},
+    store::{
+        index::{self, Index, RepoEntry},
+        manifest,
+    },
 };
+use tempfile::TempDir;
 
 mod common;
 
@@ -16,6 +20,50 @@ fn current_git_context_does_not_mutate_repo_tree() {
 
     assert_eq!(current.repo_root, repo.path());
     assert_eq!(common::snapshot_tree(repo.path()), before);
+}
+
+#[test]
+fn read_only_context_for_unassociated_repo_does_not_initialize_store() {
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let before = common::snapshot_tree(store.path());
+
+    let read_only = context::build_read_only(repo.path(), Some(store.path())).unwrap();
+
+    assert_eq!(read_only.current.repo_root, repo.path());
+    assert_eq!(read_only.config.store, store.path());
+    assert!(read_only.repo.is_none());
+    assert_eq!(common::snapshot_tree(store.path()), before);
+    assert_absent(store.path(), "meta.json");
+    assert_absent(store.path(), "index.json");
+    assert_absent(store.path(), "repos");
+    assert_absent(store.path(), ".lock");
+}
+
+#[test]
+fn read_only_context_loads_associated_repo_without_writing() {
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+
+    {
+        let ctx = context::build(repo.path(), Some(store.path()), true).unwrap();
+        manifest::save(&ctx.repo_store, &ctx.manifest).unwrap();
+    }
+
+    let before = common::snapshot_tree(store.path());
+    let index_before = std::fs::read_to_string(index::index_path(store.path())).unwrap();
+
+    let read_only = context::build_read_only(repo.path(), Some(store.path())).unwrap();
+
+    let ctx = read_only.repo.expect("associated repo should resolve");
+    assert_eq!(ctx.repo_root, repo.path());
+    assert_eq!(ctx.config.store, store.path());
+    assert_eq!(common::snapshot_tree(store.path()), before);
+    assert_eq!(
+        std::fs::read_to_string(index::index_path(store.path())).unwrap(),
+        index_before,
+        "read-only context must not update last_seen_at"
+    );
 }
 
 #[test]
@@ -87,4 +135,12 @@ fn entry(root: Option<&str>, git_common_dir: Option<&str>, repo_store_dir: &str)
         repo_store_dir: repo_store_dir.to_string(),
         last_seen_at: "2026-04-29T00:00:00Z".into(),
     }
+}
+
+fn assert_absent(root: &std::path::Path, rel: &str) {
+    assert!(
+        !root.join(rel).exists(),
+        "expected {} to remain absent",
+        root.join(rel).display()
+    );
 }
