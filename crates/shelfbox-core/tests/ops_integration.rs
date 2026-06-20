@@ -111,6 +111,8 @@ fn add_dry_run_makes_no_changes() {
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
 
     ops::add::add(&mut ctx, &file_path, true, &link, &ignore).unwrap();
 
@@ -133,6 +135,8 @@ fn add_dry_run_makes_no_changes() {
         !ctx.repo_store.join("items").exists(),
         "dry-run must not create store items"
     );
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 #[test]
@@ -153,6 +157,8 @@ fn restore_dry_run_makes_no_changes() {
     // Actually shelve the file first.
     ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
     assert_eq!(ctx.manifest.items.len(), 1);
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
 
     // Dry-run restore.
     ops::restore::restore(&mut ctx, &file_path, true, false, false, &link, &ignore).unwrap();
@@ -168,6 +174,8 @@ fn restore_dry_run_makes_no_changes() {
     );
     // Manifest must still contain the item.
     assert_eq!(ctx.manifest.items.len(), 1);
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 #[test]
@@ -350,6 +358,43 @@ fn restore_keep_store_leaves_symlink_and_store_item() {
             .is_symlink(),
         "symlink must still be in place after keep_store restore"
     );
+}
+
+#[test]
+fn relink_dry_run_makes_no_changes() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("detached.txt");
+    std::fs::write(&file_path, "keep me detached").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    ops::restore::restore(&mut ctx, &file_path, false, false, true, &link, &ignore).unwrap();
+    assert_eq!(
+        ctx.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Detached
+    );
+
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
+
+    let outcome = ops::relink::relink(&mut ctx, &file_path, true, &link).unwrap();
+
+    assert_eq!(outcome, ops::relink::RelinkOutcome::WouldRelink);
+    assert_eq!(
+        ctx.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Detached,
+        "dry-run must not update in-memory ownership state"
+    );
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 // ── doctor ────────────────────────────────────────────────────────────────────
@@ -781,12 +826,16 @@ fn repair_dry_run_makes_no_changes() {
 
     ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
     std::fs::remove_file(&file_path).unwrap();
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
 
     let outcome = ops::repair::repair(&ctx, &file_path, &link, true, false).unwrap();
     assert_eq!(outcome, ops::repair::RepairOutcome::LinkRecreated);
 
     // Symlink must NOT have been recreated in dry-run mode.
     assert!(!file_path.exists(), "dry-run must not recreate the symlink");
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 #[test]
@@ -995,6 +1044,8 @@ fn repo_repair_dry_run_makes_no_file_writes() {
     let manifest_before = std::fs::read_to_string(&manifest_path).unwrap();
     let index_before = std::fs::read_to_string(&index_path).unwrap();
     let exclude_before = std::fs::read_to_string(&exclude_path).unwrap();
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
 
     let report = ops::repair::repair_repo(&mut ctx, &link, true, false).unwrap();
 
@@ -1012,6 +1063,8 @@ fn repo_repair_dry_run_makes_no_file_writes() {
         std::fs::read_to_string(&exclude_path).unwrap(),
         exclude_before
     );
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 // ── doctor --fix ──────────────────────────────────────────────────────────────
@@ -1244,6 +1297,8 @@ fn doctor_fix_dry_run_makes_no_changes() {
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(&exclude_path, stripped).unwrap();
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
 
     let report = ops::integrity::fix(&mut ctx, &link, &ignore, false, true).unwrap();
 
@@ -1262,6 +1317,8 @@ fn doctor_fix_dry_run_makes_no_changes() {
         !ignore.has_entry(repo_dir.path(), "dryrun_fix.txt").unwrap(),
         "dry-run must not restore the exclude entry"
     );
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 // ── doctor --fix: manifest rebuild (Phase 3) ──────────────────────────────────
@@ -1522,6 +1579,8 @@ fn doctor_fix_rebuild_dry_run_does_not_persist() {
     let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
     // yes=true so rebuild is attempted; dry_run=true so nothing is written.
     let report = ops::integrity::fix(&mut ctx, &link, &ignore, true, true).unwrap();
 
@@ -1546,6 +1605,8 @@ fn doctor_fix_rebuild_dry_run_does_not_persist() {
         !manifest_path.exists(),
         "dry-run must not write the manifest file"
     );
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 #[test]
@@ -1798,6 +1859,8 @@ fn move_item_dry_run_makes_no_changes() {
     ops::add::add(&mut ctx, &old_path, false, &link, &ignore).unwrap();
 
     let new_path = repo_dir.path().join("renamed.txt");
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
     ops::move_item::move_item(&mut ctx, &old_path, &new_path, true, &link, &ignore).unwrap();
 
     // Symlink at old path must still be present.
@@ -1817,4 +1880,6 @@ fn move_item_dry_run_makes_no_changes() {
     // Manifest must be unchanged.
     assert!(ctx.manifest.contains("original.txt"));
     assert!(!ctx.manifest.contains("renamed.txt"));
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }

@@ -3,7 +3,8 @@
 /// Rust integration test files are separate crates; placing helpers here
 /// avoids duplicating git setup code across `ops_integration.rs`,
 /// `chaos_integration.rs`, and `scenario_integration.rs`.
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Component, Path};
 use std::process::Command as StdCommand;
 use std::sync::OnceLock;
 
@@ -117,4 +118,77 @@ pub fn create_file_symlink(target: &Path, link_path: &Path) {
             target.display()
         )
     });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeSnapshot {
+    entries: BTreeMap<String, TreeEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TreeEntry {
+    Dir,
+    File(String),
+    Symlink(String),
+}
+
+#[allow(dead_code)]
+pub fn snapshot_tree(root: &Path) -> TreeSnapshot {
+    let mut snapshot = TreeSnapshot {
+        entries: BTreeMap::new(),
+    };
+    if root.exists() {
+        snapshot_tree_inner(root, root, &mut snapshot);
+    }
+    snapshot
+}
+
+fn snapshot_tree_inner(root: &Path, path: &Path, snapshot: &mut TreeSnapshot) {
+    let mut entries: Vec<_> = std::fs::read_dir(path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    entries.sort();
+
+    for entry_path in entries {
+        let metadata = std::fs::symlink_metadata(&entry_path)
+            .unwrap_or_else(|err| panic!("failed to stat {}: {err}", entry_path.display()));
+        let rel = normalize_relative_path(root, &entry_path);
+
+        if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&entry_path).unwrap_or_else(|err| {
+                panic!("failed to read link {}: {err}", entry_path.display())
+            });
+            snapshot
+                .entries
+                .insert(rel, TreeEntry::Symlink(normalize_path_for_display(&target)));
+        } else if metadata.is_dir() {
+            snapshot.entries.insert(rel, TreeEntry::Dir);
+            snapshot_tree_inner(root, &entry_path, snapshot);
+        } else {
+            let contents = std::fs::read_to_string(&entry_path).unwrap_or_else(|_| {
+                String::from_utf8_lossy(&std::fs::read(&entry_path).unwrap()).into_owned()
+            });
+            snapshot.entries.insert(rel, TreeEntry::File(contents));
+        }
+    }
+}
+
+fn normalize_relative_path(root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    normalize_path_for_display(rel)
+}
+
+fn normalize_path_for_display(path: &Path) -> String {
+    path.components()
+        .map(|component| match component {
+            Component::Normal(part) => part.to_string_lossy().into_owned(),
+            Component::RootDir => String::new(),
+            Component::Prefix(prefix) => prefix.as_os_str().to_string_lossy().into_owned(),
+            Component::CurDir | Component::ParentDir => {
+                component.as_os_str().to_string_lossy().into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
