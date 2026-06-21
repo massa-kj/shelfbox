@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Subcommand;
 use shelfbox_core::{
+    api,
     config::Config,
-    ops,
     store::{index, manifest, meta},
 };
 
@@ -203,7 +203,7 @@ fn cmd_store_verify(store_override: Option<&Path>) -> Result<ExitCode> {
 
 fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
     let cfg = Config::load(store_override)?;
-    let plan = ops::gc::plan(&cfg.store)?;
+    let plan = api::store::gc_plan(&cfg.store)?;
 
     if plan.candidates.is_empty() {
         println!("No orphaned items found.");
@@ -223,7 +223,7 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
         return Ok(());
     }
 
-    let report = ops::gc::run(&cfg.store, false)?;
+    let report = api::store::gc_run(&cfg.store, false)?;
 
     println!(
         "Deleted {} orphaned item(s), {} already missing, reclaimed {}.",
@@ -238,7 +238,7 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
 
 fn cmd_store_rebuild_index(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
     let cfg = Config::load(store_override)?;
-    let report = ops::rebuild_index::run(&cfg.store, dry_run)?;
+    let report = api::store::rebuild_index(&cfg.store, dry_run)?;
 
     for warning in &report.warnings {
         eprintln!("Warning: {}", warning.message);
@@ -274,7 +274,7 @@ fn cmd_store_rebuild_index(store_override: Option<&Path>, dry_run: bool) -> Resu
 
 fn cmd_store_migrate_manifests(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
     let cfg = Config::load(store_override)?;
-    let report = ops::migrate_manifest::run(&cfg.store, dry_run)?;
+    let report = api::store::migrate_manifests(&cfg.store, dry_run)?;
 
     if dry_run {
         println!("Dry run - no manifests written.");
@@ -304,7 +304,7 @@ fn cmd_store_migrate_manifests(store_override: Option<&Path>, dry_run: bool) -> 
     Ok(())
 }
 
-fn print_gc_plan(plan: &ops::gc::GcPlan) {
+fn print_gc_plan(plan: &api::store::GcPlan) {
     println!("Orphaned items eligible for deletion:");
     for item in &plan.candidates {
         let missing = if item.store_exists { "" } else { " (missing)" };
@@ -325,7 +325,7 @@ fn print_gc_plan(plan: &ops::gc::GcPlan) {
     print_gc_protected_summary(plan);
 }
 
-fn print_gc_protected_summary(plan: &ops::gc::GcPlan) {
+fn print_gc_protected_summary(plan: &api::store::GcPlan) {
     let protected = plan.protected_attached + plan.protected_detached + plan.protected_unreachable;
     if protected == 0 {
         return;
@@ -337,7 +337,7 @@ fn print_gc_protected_summary(plan: &ops::gc::GcPlan) {
     );
 }
 
-fn planned_bytes(plan: &ops::gc::GcPlan) -> u64 {
+fn planned_bytes(plan: &api::store::GcPlan) -> u64 {
     plan.candidates.iter().map(|item| item.size_bytes).sum()
 }
 

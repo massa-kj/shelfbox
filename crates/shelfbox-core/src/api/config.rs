@@ -1,0 +1,1 @@
+//! Transitional configuration-operation facade.

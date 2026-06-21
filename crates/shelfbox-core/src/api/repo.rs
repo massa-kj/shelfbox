@@ -1,0 +1,1 @@
+//! Transitional repository-operation facade.
