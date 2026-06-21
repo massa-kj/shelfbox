@@ -130,7 +130,7 @@ pub fn scan(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
 }
 
 // ── Helper: OwnershipState must be Clone for the loop above ──────────────────
-// OwnershipState derives Clone in manifest.rs; verify here at compile time.
+// Verify the domain type's clone requirement at compile time.
 const _: fn() = || {
     fn _assert_clone<T: Clone>() {}
     _assert_clone::<OwnershipState>();

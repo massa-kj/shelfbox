@@ -6,33 +6,7 @@ use crate::error::{AppError, Result};
 
 // ── Data model ────────────────────────────────────────────────────────────────
 
-/// Ownership state of a shelved item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OwnershipState {
-    /// Active owner; symlink valid or repairable.
-    Attached,
-    /// Intentionally unlinked via `restore --keep-store`; store item retained.
-    Detached,
-    /// Manifest exists, but no current Git clone is associated with the RepoId.
-    Unreachable,
-    /// No deterministic claimant; eligible for confirmed conservative GC.
-    Orphaned,
-}
-
-/// Candidate-ranking hints. These are never proof of identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct IdentityHints {
-    /// Normalized remote hints, e.g. `github.com/org/repo`.
-    #[serde(default)]
-    pub remote_hints: Vec<String>,
-    /// Recent repository directory names, most recent first.
-    #[serde(default)]
-    pub repo_name_hints: Vec<String>,
-    /// Last successful explicit association or repair timestamp.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_attached_at: Option<String>,
-}
+pub use crate::domain::{manifest::IdentityHints, ownership::OwnershipState};
 
 /// A single shelved item recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
