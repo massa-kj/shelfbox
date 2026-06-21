@@ -5,11 +5,8 @@ pub use crate::{
         CurrentGitContext, ExplicitReclaimContext, ReadOnlyRepoContext, RepoContext, StoreAccess,
         StoreContext,
     },
-    ops::{
-        detect_transitions::TransitionReport,
-        integrity::IntegrityReport,
-        reclaim::{CandidateState, ReclaimCandidate, ReclaimOutcome},
-    },
+    ops::{detect_transitions::TransitionReport, integrity::IntegrityReport},
+    plan::repo_reclaim::{CandidateState, ReclaimCandidate, ReclaimOutcome, ReclaimPlan},
     plan::repo_repair::{RepairRepoReport, RepoRepairPlan, RepoRepairSymlinkAction},
     store::{
         index::{Index, RepoEntry},
@@ -96,6 +93,10 @@ pub fn build_reclaim_candidates(
     index: &Index,
 ) -> Result<Vec<ReclaimCandidate>> {
     reclaim::build_candidates(store_root, current_repo_root, current_remote_hint, index)
+}
+
+pub fn plan_reclaim(ctx: &ExplicitReclaimContext) -> Result<ReclaimPlan> {
+    reclaim::plan_reclaim(&ctx.config.store, &ctx.current, &ctx.target_repo_id)
 }
 
 pub fn execute_reclaim(ctx: &ExplicitReclaimContext) -> Result<ReclaimOutcome> {

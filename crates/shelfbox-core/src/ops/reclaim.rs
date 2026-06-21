@@ -14,31 +14,9 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReclaimCandidate {
-    pub repo_store_dir: String,
-    pub repo_id: String,
-    pub score: i32,
-    pub reasons: Vec<String>,
-    pub item_count: usize,
-    pub state: CandidateState,
-    pub remote_hints: Vec<String>,
-    pub last_attached_at: Option<String>,
-    pub repo_name_hints: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CandidateState {
-    Unreachable,
-    Detached,
-    AttachedElsewhere,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReclaimOutcome {
-    pub repo_id: String,
-    pub repo_store_dir: String,
-}
+pub use crate::plan::repo_reclaim::{
+    CandidateState, ReclaimCandidate, ReclaimOutcome, ReclaimPlan,
+};
 
 pub fn build_candidates(
     store_root: &Path,
@@ -127,6 +105,17 @@ pub fn execute_reclaim(
     current: &CurrentGitContext,
     target_repo_id: &str,
 ) -> Result<ReclaimOutcome> {
+    let plan = plan_reclaim(store_root, current, target_repo_id)?;
+    execute_reclaim_plan(store_root, &plan)
+}
+
+/// Builds the explicit metadata changes needed to associate this checkout with
+/// an existing `RepoId`.
+pub fn plan_reclaim(
+    store_root: &Path,
+    current: &CurrentGitContext,
+    target_repo_id: &str,
+) -> Result<ReclaimPlan> {
     let scan = scanner::scan(store_root)?;
     if let Some(error) = scan.errors.first() {
         match error {
@@ -165,22 +154,10 @@ pub fn execute_reclaim(
             ))
         })?;
 
-    let original_manifest = target.manifest;
-    let mut manifest = original_manifest.clone();
     let repo_store_dir = target.repo_store_dir;
-    let repo_store = store_root.join("repos").join(&repo_store_dir);
     let now = context::now_iso8601();
-
-    if let Some(name) = current.repo_root.file_name().and_then(|name| name.to_str()) {
-        manifest.add_repo_name_hint(name);
-    }
-    if let Some(remote_hint) = &current.remote_hint {
-        manifest.add_remote_hint(remote_hint);
-    }
-    manifest.touch_attached_at(now.clone());
-
-    let mut idx = index::load(store_root)?;
-    let current_association_ids: Vec<String> = idx
+    let idx = index::load(store_root)?;
+    let mut removed_association_ids: Vec<String> = idx
         .iter()
         .filter(|(repo_id, entry)| {
             *repo_id != target_repo_id
@@ -189,17 +166,85 @@ pub fn execute_reclaim(
         })
         .map(|(repo_id, _)| repo_id.to_string())
         .collect();
-    for repo_id in current_association_ids {
-        idx.remove(&repo_id);
+    removed_association_ids.sort();
+
+    Ok(ReclaimPlan {
+        repo_id: target_repo_id.to_string(),
+        repo_store_dir: repo_store_dir.clone(),
+        repo_store: store_root.join("repos").join(&repo_store_dir),
+        current_root: current.repo_root.clone(),
+        current_git_dir: current.git_dir.clone(),
+        current_git_common_dir: current.git_common_dir.clone(),
+        removed_association_ids,
+        repo_name_hint: current
+            .repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned),
+        remote_hint: current.remote_hint.clone(),
+        attached_at: now.clone(),
+        last_seen_at: now,
+    })
+}
+
+/// Executes a reclaim plan by updating only the target manifest identity hints
+/// and local index associations.
+pub fn execute_reclaim_plan(store_root: &Path, plan: &ReclaimPlan) -> Result<ReclaimOutcome> {
+    let repo_store = store_root.join("repos").join(&plan.repo_store_dir);
+    if plan.repo_store != repo_store {
+        return Err(AppError::Internal(format!(
+            "cannot reclaim: plan repo_store '{}' does not match expected '{}'",
+            plan.repo_store.display(),
+            repo_store.display()
+        )));
+    }
+
+    let original_manifest = crate::store::manifest::load(&repo_store)?;
+    if original_manifest.repo_id != plan.repo_id {
+        return Err(AppError::Internal(format!(
+            "cannot reclaim: plan repo_id '{}' does not match manifest repo_id '{}'",
+            plan.repo_id, original_manifest.repo_id
+        )));
+    }
+
+    let mut manifest = original_manifest.clone();
+    if let Some(name) = &plan.repo_name_hint {
+        manifest.add_repo_name_hint(name);
+    }
+    if let Some(remote_hint) = &plan.remote_hint {
+        manifest.add_remote_hint(remote_hint);
+    }
+    manifest.touch_attached_at(plan.attached_at.clone());
+
+    let mut idx = index::load(store_root)?;
+    let mut current_association_ids: Vec<String> = idx
+        .iter()
+        .filter(|(repo_id, entry)| {
+            *repo_id != plan.repo_id
+                && (entry.root.as_deref() == Some(plan.current_root.as_path())
+                    || entry.git_common_dir.as_deref()
+                        == Some(plan.current_git_common_dir.as_path()))
+        })
+        .map(|(repo_id, _)| repo_id.to_string())
+        .collect();
+    current_association_ids.sort();
+    if current_association_ids != plan.removed_association_ids {
+        return Err(AppError::Internal(
+            "cannot reclaim: store index changed since reclaim plan was built".into(),
+        ));
+    }
+
+    for repo_id in &plan.removed_association_ids {
+        idx.remove(repo_id);
     }
     idx.upsert(
-        target_repo_id,
+        &plan.repo_id,
         RepoEntry {
-            repo_store_dir: repo_store_dir.clone(),
-            root: Some(current.repo_root.clone()),
-            git_dir: Some(current.git_dir.clone()),
-            git_common_dir: Some(current.git_common_dir.clone()),
-            last_seen_at: now,
+            repo_store_dir: plan.repo_store_dir.clone(),
+            root: Some(plan.current_root.clone()),
+            git_dir: Some(plan.current_git_dir.clone()),
+            git_common_dir: Some(plan.current_git_common_dir.clone()),
+            last_seen_at: plan.last_seen_at.clone(),
         },
     );
 
@@ -210,8 +255,8 @@ pub fn execute_reclaim(
     }
 
     Ok(ReclaimOutcome {
-        repo_id: target_repo_id.to_string(),
-        repo_store_dir,
+        repo_id: plan.repo_id.clone(),
+        repo_store_dir: plan.repo_store_dir.clone(),
     })
 }
 
@@ -547,6 +592,103 @@ mod tests {
 
         check_reclaim_precondition(None).unwrap();
         check_reclaim_precondition(Some(&manifest)).unwrap();
+    }
+
+    #[test]
+    fn plan_reclaim_reports_explicit_mutations_without_writing() {
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root.clone());
+        let manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
+        write_manifest(store.path(), "target", &manifest, true);
+
+        let mut idx = Index::new();
+        idx.upsert(
+            "old-current",
+            RepoEntry {
+                root: Some(root.clone()),
+                git_dir: Some(root.join(".git")),
+                git_common_dir: Some(root.join(".git")),
+                repo_store_dir: "old-current".into(),
+                last_seen_at: "2026-04-29T00:00:00Z".into(),
+            },
+        );
+        idx.upsert(
+            "other",
+            RepoEntry {
+                root: Some(root.join("other")),
+                git_dir: None,
+                git_common_dir: None,
+                repo_store_dir: "other".into(),
+                last_seen_at: "2026-04-29T00:00:00Z".into(),
+            },
+        );
+        index::save(store.path(), &idx).unwrap();
+
+        let manifest_path = store.path().join("repos/target/manifest.json");
+        let index_path = index::index_path(store.path());
+        let manifest_before = std::fs::read_to_string(&manifest_path).unwrap();
+        let index_before = std::fs::read_to_string(&index_path).unwrap();
+
+        let plan = plan_reclaim(store.path(), &current, "repo-1").unwrap();
+
+        assert_eq!(plan.repo_id, "repo-1");
+        assert_eq!(plan.repo_store_dir, "target");
+        assert_eq!(plan.repo_store, store.path().join("repos/target"));
+        assert_eq!(plan.current_root, root);
+        assert_eq!(plan.current_git_dir, plan.current_root.join(".git"));
+        assert_eq!(plan.current_git_common_dir, plan.current_root.join(".git"));
+        assert_eq!(plan.removed_association_ids, vec!["old-current"]);
+        assert_eq!(plan.repo_name_hint.as_deref(), Some("current"));
+        assert_eq!(
+            plan.remote_hint.as_deref(),
+            Some("github.com/example/current")
+        );
+        assert_eq!(plan.last_seen_at, plan.attached_at);
+
+        assert_eq!(
+            std::fs::read_to_string(manifest_path).unwrap(),
+            manifest_before
+        );
+        assert_eq!(std::fs::read_to_string(index_path).unwrap(), index_before);
+    }
+
+    #[test]
+    fn execute_reclaim_plan_rejects_stale_index_without_writing() {
+        let store = TempDir::new().unwrap();
+        let (_base, root) = current_repo_root("current");
+        let current = current_context(root.clone());
+        let manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
+        write_manifest(store.path(), "target", &manifest, true);
+
+        let plan = plan_reclaim(store.path(), &current, "repo-1").unwrap();
+
+        let mut idx = Index::new();
+        idx.upsert(
+            "late-current",
+            RepoEntry {
+                root: Some(root),
+                git_dir: None,
+                git_common_dir: Some(plan.current_git_common_dir.clone()),
+                repo_store_dir: "late-current".into(),
+                last_seen_at: "2026-04-29T00:00:00Z".into(),
+            },
+        );
+        index::save(store.path(), &idx).unwrap();
+
+        let manifest_path = store.path().join("repos/target/manifest.json");
+        let index_path = index::index_path(store.path());
+        let manifest_before = std::fs::read_to_string(&manifest_path).unwrap();
+        let index_before = std::fs::read_to_string(&index_path).unwrap();
+
+        let err = execute_reclaim_plan(store.path(), &plan).unwrap_err();
+
+        assert!(err.to_string().contains("store index changed"));
+        assert_eq!(
+            std::fs::read_to_string(manifest_path).unwrap(),
+            manifest_before
+        );
+        assert_eq!(std::fs::read_to_string(index_path).unwrap(), index_before);
     }
 
     #[test]
