@@ -422,7 +422,8 @@ fn cmd_repo_reclaim(
         }
     };
 
-    let outcome = repo::execute_reclaim(&config.store, &current, &repo_id)?;
+    let reclaim_ctx = repo::build_explicit_reclaim(cwd, store_override, repo_id)?;
+    let outcome = repo::execute_reclaim(&reclaim_ctx)?;
     println!(
         "Associated with {}. Run `shelfbox repo repair` to restore symlinks.",
         outcome.repo_id

@@ -356,6 +356,63 @@ fn repo_repair_for_unassociated_repo_refuses_without_initializing_store() {
 }
 
 #[test]
+fn repo_reclaim_explicit_target_updates_association_without_repairing_symlinks() {
+    if !common::require_symlink_support() {
+        return;
+    }
+
+    let fixture = CliFixture::new();
+    let original = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let item_path = original.path().join("secret.txt");
+    std::fs::write(&item_path, "secret").unwrap();
+
+    fixture
+        .run(
+            original.path(),
+            store_args(store.path(), ["item", "add", "secret.txt"]),
+        )
+        .assert_success();
+    let repo_id = single_repo_id(store.path());
+
+    let reclone = common::init_git_repo();
+    let output = fixture.run(
+        reclone.path(),
+        store_args_slice(
+            store.path(),
+            &["repo", "reclaim", "--repo-id", repo_id.as_str()],
+        ),
+    );
+
+    output.assert_success();
+    assert_eq!(
+        output.stdout,
+        format!("Associated with {repo_id}. Run `shelfbox repo repair` to restore symlinks.\n")
+    );
+    assert_eq!(output.stderr, "");
+    assert!(
+        !reclone.path().join("secret.txt").exists(),
+        "repo reclaim must not repair repo-side symlinks"
+    );
+
+    let index_json: Value =
+        serde_json::from_str(&std::fs::read_to_string(store.path().join("index.json")).unwrap())
+            .unwrap();
+    let repo_entry = &index_json["repos"][repo_id.as_str()];
+    assert_eq!(repo_entry["root"], reclone.path().display().to_string());
+    let repo_store_dir = repo_entry["repo_store_dir"]
+        .as_str()
+        .expect("repo entry should record repo_store_dir");
+    assert!(store
+        .path()
+        .join("repos")
+        .join(repo_store_dir)
+        .join("items")
+        .join("secret.txt")
+        .exists());
+}
+
+#[test]
 fn read_only_cli_commands_do_not_update_last_seen_at() {
     if !common::require_symlink_support() {
         return;
@@ -434,6 +491,18 @@ fn store_args_slice(store: &Path, args: &[&str]) -> Vec<OsString> {
     let mut out = vec![OsString::from("--store"), store.as_os_str().to_os_string()];
     out.extend(args.iter().map(OsString::from));
     out
+}
+
+fn single_repo_id(store: &Path) -> String {
+    let index_json: Value =
+        serde_json::from_str(&std::fs::read_to_string(store.join("index.json")).unwrap())
+            .expect("index.json should be valid JSON");
+    let repos = index_json
+        .get("repos")
+        .and_then(Value::as_object)
+        .expect("index.json should contain repos object");
+    assert_eq!(repos.len(), 1, "expected exactly one repo in index");
+    repos.keys().next().unwrap().to_string()
 }
 
 fn write_v3_manifest(store: &Path, repo_store_dir: &str, repo_id: &str) {

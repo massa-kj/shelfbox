@@ -25,14 +25,6 @@ use crate::{
     },
 };
 
-pub fn build_context(
-    cwd: &Path,
-    store_override: Option<&Path>,
-    write: bool,
-) -> Result<RepoContext> {
-    context::build(cwd, store_override, write)
-}
-
 pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
     context::build_create_or_load(cwd, store_override)
 }

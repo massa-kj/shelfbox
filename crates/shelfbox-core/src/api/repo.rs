@@ -1,7 +1,10 @@
 use std::path::Path;
 
 pub use crate::{
-    context::{CurrentGitContext, ReadOnlyRepoContext, RepoContext, StoreAccess, StoreContext},
+    context::{
+        CurrentGitContext, ExplicitReclaimContext, ReadOnlyRepoContext, RepoContext, StoreAccess,
+        StoreContext,
+    },
     ops::{
         detect_transitions::TransitionReport,
         integrity::IntegrityReport,
@@ -44,14 +47,6 @@ pub fn resolve_existing_repo(current: &CurrentGitContext, index: &Index) -> Opti
     context::resolve_existing_repo(current, index)
 }
 
-pub fn build_context(
-    cwd: &Path,
-    store_override: Option<&Path>,
-    write: bool,
-) -> Result<RepoContext> {
-    context::build(cwd, store_override, write)
-}
-
 pub fn build_store_context(
     store_override: Option<&Path>,
     access: StoreAccess,
@@ -65,6 +60,14 @@ pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result
 
 pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<ReadOnlyRepoContext> {
     context::build_read_only(cwd, store_override)
+}
+
+pub fn build_explicit_reclaim(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    target_repo_id: impl Into<String>,
+) -> Result<ExplicitReclaimContext> {
+    context::build_explicit_reclaim(cwd, store_override, target_repo_id)
 }
 
 pub fn integrity_check(ctx: &RepoContext) -> Result<IntegrityReport> {
@@ -95,10 +98,6 @@ pub fn build_reclaim_candidates(
     reclaim::build_candidates(store_root, current_repo_root, current_remote_hint, index)
 }
 
-pub fn execute_reclaim(
-    store_root: &Path,
-    current: &CurrentGitContext,
-    repo_id: &str,
-) -> Result<ReclaimOutcome> {
-    reclaim::execute_reclaim(store_root, current, repo_id)
+pub fn execute_reclaim(ctx: &ExplicitReclaimContext) -> Result<ReclaimOutcome> {
+    reclaim::execute_reclaim(&ctx.config.store, &ctx.current, &ctx.target_repo_id)
 }

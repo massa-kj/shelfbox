@@ -177,6 +177,17 @@ pub struct ReadOnlyRepoContext {
     pub repo: Option<RepoContext>,
 }
 
+/// Explicit repository reclaim target.
+///
+/// Reclaim is the only path that may associate the current checkout with an
+/// existing `RepoId` without creating a fresh identity.
+#[derive(Debug, Clone)]
+pub struct ExplicitReclaimContext {
+    pub current: CurrentGitContext,
+    pub config: Config,
+    pub target_repo_id: String,
+}
+
 impl RepoContext {
     /// Root of the `items/` subdirectory inside [`repo_store`].
     pub fn items_dir(&self) -> PathBuf {
@@ -316,6 +327,21 @@ pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<Read
         current,
         config: store_context.config,
         repo,
+    })
+}
+
+pub fn build_explicit_reclaim(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    target_repo_id: impl Into<String>,
+) -> Result<ExplicitReclaimContext> {
+    let config = Config::load(store_override)?;
+    let current = current_git_context(cwd)?;
+
+    Ok(ExplicitReclaimContext {
+        current,
+        config,
+        target_repo_id: target_repo_id.into(),
     })
 }
 
