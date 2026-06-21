@@ -301,7 +301,7 @@ fn cmd_repo_repair(
     let associated_repo_id = repo::resolve_existing_repo(&current, &idx)
         .ok_or_else(|| anyhow::anyhow!("Run `shelfbox repo reclaim` first"))?;
 
-    let mut ctx = repo::build_context(cwd, store_override, true)
+    let mut ctx = repo::build_create_or_load(cwd, store_override)
         .context("failed to initialise repo context")?;
     if ctx.repo_id != associated_repo_id {
         anyhow::bail!("Run `shelfbox repo reclaim` first");
@@ -313,8 +313,12 @@ fn cmd_repo_repair(
 }
 
 fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
-    let ctx = repo::build_context(cwd, store_override, false)
-        .context("failed to initialise repo context")?;
+    let read_only = repo::build_read_only(cwd, store_override)
+        .context("failed to initialise read-only repo context")?;
+    let Some(ctx) = read_only.repo else {
+        println!("no unreferenced current-repository store files found");
+        return Ok(());
+    };
     // Use check() to inspect unreferenced store files without deleting them.
     let report = repo::integrity_check(&ctx)?;
 

@@ -307,6 +307,109 @@ fn repo_status_for_unassociated_repo_does_not_initialize_store() {
     assert_absent(store.path(), ".lock");
 }
 
+#[test]
+fn read_only_item_and_repo_gc_commands_do_not_initialize_absent_store() {
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let before = snapshot_tree(store.path());
+
+    for (command, expected_stdout) in [
+        (vec!["item", "list", "--format", "plain"], ""),
+        (vec!["item", "status", "--format", "plain"], ""),
+        (vec!["item", "info", "missing.txt", "--format", "plain"], ""),
+        (
+            vec!["repo", "gc", "--dry-run"],
+            "no unreferenced current-repository store files found\n",
+        ),
+    ] {
+        let output = fixture.run(repo.path(), store_args_slice(store.path(), &command));
+
+        output.assert_code(0);
+        assert_eq!(output.stdout, expected_stdout);
+        assert_eq!(output.stderr, "");
+        assert_eq!(snapshot_tree(store.path()), before);
+        assert_absent(store.path(), "meta.json");
+        assert_absent(store.path(), "index.json");
+        assert_absent(store.path(), "repos");
+        assert_absent(store.path(), ".lock");
+    }
+}
+
+#[test]
+fn repo_repair_for_unassociated_repo_refuses_without_initializing_store() {
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let before = snapshot_tree(store.path());
+
+    let output = fixture.run(repo.path(), store_args(store.path(), ["repo", "repair"]));
+
+    output.assert_code(255);
+    assert!(output.stderr.contains("Run `shelfbox repo reclaim` first"));
+    assert_eq!(output.stdout, "");
+    assert_eq!(snapshot_tree(store.path()), before);
+    assert_absent(store.path(), "meta.json");
+    assert_absent(store.path(), "index.json");
+    assert_absent(store.path(), "repos");
+    assert_absent(store.path(), ".lock");
+}
+
+#[test]
+fn read_only_cli_commands_do_not_update_last_seen_at() {
+    if !common::require_symlink_support() {
+        return;
+    }
+
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let item_path = repo.path().join("secret.txt");
+    std::fs::write(&item_path, "secret").unwrap();
+
+    fixture
+        .run(
+            repo.path(),
+            store_args(store.path(), ["item", "add", "secret.txt"]),
+        )
+        .assert_success();
+
+    let index_path = store.path().join("index.json");
+    let mut index_json: Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap())
+            .expect("index.json should be valid JSON");
+    let repos = index_json
+        .get_mut("repos")
+        .and_then(Value::as_object_mut)
+        .expect("index.json should contain repos object");
+    for entry in repos.values_mut() {
+        entry["last_seen_at"] = Value::String("2026-01-01T00:00:00Z".to_string());
+    }
+    std::fs::write(
+        &index_path,
+        serde_json::to_string_pretty(&index_json).unwrap(),
+    )
+    .unwrap();
+
+    let index_before = std::fs::read_to_string(&index_path).unwrap();
+    for command in [
+        vec!["item", "list", "--format", "plain"],
+        vec!["item", "status", "--format", "plain"],
+        vec!["item", "info", "secret.txt", "--format", "plain"],
+        vec!["repo", "status", "--format", "plain"],
+        vec!["repo", "gc", "--dry-run"],
+        vec!["doctor", "--format", "plain"],
+    ] {
+        let output = fixture.run(repo.path(), store_args_slice(store.path(), &command));
+        output.assert_code(0);
+        assert_eq!(
+            std::fs::read_to_string(&index_path).unwrap(),
+            index_before,
+            "{command:?} must not update last_seen_at"
+        );
+    }
+}
+
 fn row_by_key<'a>(rows: &'a [Value], key: &str) -> &'a Value {
     rows.iter()
         .find(|row| row["key"] == key)
@@ -324,6 +427,12 @@ fn assert_absent(root: &Path, rel: &str) {
 fn store_args<const N: usize>(store: &Path, args: [&str; N]) -> Vec<OsString> {
     let mut out = vec![OsString::from("--store"), store.as_os_str().to_os_string()];
     out.extend(args.into_iter().map(OsString::from));
+    out
+}
+
+fn store_args_slice(store: &Path, args: &[&str]) -> Vec<OsString> {
+    let mut out = vec![OsString::from("--store"), store.as_os_str().to_os_string()];
+    out.extend(args.iter().map(OsString::from));
     out
 }
 

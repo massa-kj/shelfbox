@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 pub use crate::{
-    context::RepoContext,
+    context::{ReadOnlyRepoContext, RepoContext},
     error::AppError,
     ops::{
         add::{DirItemOutcome, DirectoryAddResult, SkipReason},
@@ -17,11 +17,11 @@ pub use crate::{
 use crate::{
     context,
     error::Result,
-    ignore::GitInfoExclude,
+    ignore::{GitInfoExclude, IgnoreBackend},
     link::DefaultLinkStrategy,
     ops::{
-        add, info as info_ops, list as list_ops, move_item as move_item_ops, relink as relink_ops,
-        repair as repair_ops, restore, status as status_ops,
+        add, info as info_ops, list as list_ops, move_item as move_item_ops, path as path_ops,
+        relink as relink_ops, repair as repair_ops, restore, status as status_ops,
     },
 };
 
@@ -31,6 +31,14 @@ pub fn build_context(
     write: bool,
 ) -> Result<RepoContext> {
     context::build(cwd, store_override, write)
+}
+
+pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
+    context::build_create_or_load(cwd, store_override)
+}
+
+pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<ReadOnlyRepoContext> {
+    context::build_read_only(cwd, store_override)
 }
 
 pub fn add_file(ctx: &mut RepoContext, abs_path: &Path, dry_run: bool) -> Result<()> {
@@ -129,4 +137,22 @@ pub fn info(ctx: &RepoContext, abs_path: &Path) -> Result<ItemInfo> {
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     info_ops::info(ctx, abs_path, &link, &ignore)
+}
+
+pub fn info_read_only(read_only: &ReadOnlyRepoContext, abs_path: &Path) -> Result<ItemInfo> {
+    if let Some(ctx) = &read_only.repo {
+        return info(ctx, abs_path);
+    }
+
+    let rel_str = path_ops::repo_relative_string(&read_only.current.repo_root, abs_path)?;
+    let ignore = GitInfoExclude;
+    Ok(ItemInfo {
+        path: rel_str.clone(),
+        repo_root: read_only.current.repo_root.clone(),
+        store_path: None,
+        link_target: fs::read_link(abs_path).ok(),
+        symlink_ok: false,
+        tracked: false,
+        in_exclude: ignore.has_entry(&read_only.current.repo_root, &rel_str)?,
+    })
 }

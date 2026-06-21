@@ -189,7 +189,7 @@ fn cmd_add(
 ) -> Result<()> {
     warn_reclaim_candidates_if_unassociated(cwd, store_override);
 
-    let mut ctx = item::build_context(cwd, store_override, true)
+    let mut ctx = item::build_create_or_load(cwd, store_override)
         .context("failed to initialise repo context")?;
 
     for path in paths {
@@ -310,7 +310,7 @@ fn cmd_restore(
     keep_ignore: bool,
     keep_store: bool,
 ) -> Result<()> {
-    let mut ctx = item::build_context(cwd, store_override, true)
+    let mut ctx = item::build_create_or_load(cwd, store_override)
         .context("failed to initialise repo context")?;
 
     for path in paths {
@@ -392,9 +392,18 @@ fn cmd_list(
     format: Option<OutputFormat>,
     verbose: bool,
 ) -> Result<()> {
-    let ctx = item::build_context(cwd, store_override, false)
-        .context("failed to initialise repo context")?;
-    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
+    let read_only = item::build_read_only(cwd, store_override)
+        .context("failed to initialise read-only repo context")?;
+    let fmt = OutputFormat::resolve(format, &read_only.config.default_format);
+    let Some(ctx) = read_only.repo else {
+        let items: &[item::Item] = &[];
+        match fmt {
+            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(items)?),
+            OutputFormat::Plain => print_list_plain(items),
+            OutputFormat::Table => println!("(no shelved items)"),
+        }
+        return Ok(());
+    };
     let items = item::list(&ctx);
 
     match fmt {
@@ -411,9 +420,18 @@ fn cmd_status(
     format: Option<OutputFormat>,
     verbose: bool,
 ) -> Result<ExitCode> {
-    let ctx = item::build_context(cwd, store_override, false)
-        .context("failed to initialise repo context")?;
-    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
+    let read_only = item::build_read_only(cwd, store_override)
+        .context("failed to initialise read-only repo context")?;
+    let fmt = OutputFormat::resolve(format, &read_only.config.default_format);
+    let Some(ctx) = read_only.repo else {
+        let statuses: Vec<item::ItemStatus> = Vec::new();
+        match fmt {
+            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&statuses)?),
+            OutputFormat::Plain => print_status_plain(&statuses),
+            OutputFormat::Table => println!("(no shelved items)"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
     let statuses = item::status(&ctx)?;
 
     match fmt {
@@ -431,7 +449,7 @@ fn cmd_repair(
     dry_run: bool,
     force: bool,
 ) -> Result<()> {
-    let ctx = item::build_context(cwd, store_override, true)
+    let ctx = item::build_create_or_load(cwd, store_override)
         .context("failed to initialise repo context")?;
 
     for path in paths {
@@ -468,7 +486,7 @@ fn cmd_relink(
     paths: &[PathBuf],
     dry_run: bool,
 ) -> Result<()> {
-    let mut ctx = item::build_context(cwd, store_override, true)
+    let mut ctx = item::build_create_or_load(cwd, store_override)
         .context("failed to initialise repo context")?;
 
     for path in paths {
@@ -497,7 +515,7 @@ fn cmd_move(
 ) -> Result<()> {
     let old_abs = resolve_path(cwd, old);
     let new_abs = resolve_path(cwd, new_path);
-    let mut ctx = item::build_context(cwd, store_override, true)
+    let mut ctx = item::build_create_or_load(cwd, store_override)
         .context("failed to initialise repo context")?;
     item::move_item(&mut ctx, &old_abs, &new_abs, dry_run)
         .with_context(|| format!("move '{}' → '{}' failed", old.display(), new_path.display()))?;
@@ -650,11 +668,11 @@ fn cmd_info(
     path: &Path,
     format: Option<OutputFormat>,
 ) -> Result<()> {
-    let ctx = item::build_context(cwd, store_override, false)
-        .context("failed to initialise repo context")?;
-    let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
+    let read_only = item::build_read_only(cwd, store_override)
+        .context("failed to initialise read-only repo context")?;
+    let fmt = OutputFormat::resolve(format, &read_only.config.default_format);
     let abs = resolve_path(cwd, path);
-    let item_info = item::info(&ctx, &abs)?;
+    let item_info = item::info_read_only(&read_only, &abs)?;
 
     match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&item_info)?),

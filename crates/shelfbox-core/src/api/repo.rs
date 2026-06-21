@@ -1,7 +1,7 @@
 use std::path::Path;
 
 pub use crate::{
-    context::{CurrentGitContext, ReadOnlyRepoContext, RepoContext},
+    context::{CurrentGitContext, ReadOnlyRepoContext, RepoContext, StoreAccess, StoreContext},
     ops::{
         detect_transitions::TransitionReport,
         integrity::IntegrityReport,
@@ -50,6 +50,17 @@ pub fn build_context(
     write: bool,
 ) -> Result<RepoContext> {
     context::build(cwd, store_override, write)
+}
+
+pub fn build_store_context(
+    store_override: Option<&Path>,
+    access: StoreAccess,
+) -> Result<StoreContext> {
+    context::build_store_context(store_override, access)
+}
+
+pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
+    context::build_create_or_load(cwd, store_override)
 }
 
 pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<ReadOnlyRepoContext> {

@@ -63,9 +63,9 @@ impl Drop for StoreLock {
     }
 }
 
-fn acquire_store_lock(lock_path: &Path, write: bool) -> Result<StoreLock> {
+fn acquire_store_lock(lock_path: &Path, access: StoreAccess, create: bool) -> Result<StoreLock> {
     let file = std::fs::OpenOptions::new()
-        .create(true)
+        .create(create)
         .read(true)
         .write(true)
         .truncate(false)
@@ -80,18 +80,21 @@ fn acquire_store_lock(lock_path: &Path, write: bool) -> Result<StoreLock> {
     let lock_ref: &'static mut FdRwLock<std::fs::File> =
         unsafe { &mut *(rw_lock.as_mut() as *mut _) };
 
-    let guard = if write {
-        let g = lock_ref.write().map_err(|e| AppError::StoreLocked {
-            lock_path: lock_path.to_path_buf(),
-            source: Box::new(e),
-        })?;
-        StoreLockGuard::Write(ManuallyDrop::new(g))
-    } else {
-        let g = lock_ref.read().map_err(|e| AppError::StoreLocked {
-            lock_path: lock_path.to_path_buf(),
-            source: Box::new(e),
-        })?;
-        StoreLockGuard::Read(ManuallyDrop::new(g))
+    let guard = match access {
+        StoreAccess::Write => {
+            let g = lock_ref.write().map_err(|e| AppError::StoreLocked {
+                lock_path: lock_path.to_path_buf(),
+                source: Box::new(e),
+            })?;
+            StoreLockGuard::Write(ManuallyDrop::new(g))
+        }
+        StoreAccess::ReadOnly => {
+            let g = lock_ref.read().map_err(|e| AppError::StoreLocked {
+                lock_path: lock_path.to_path_buf(),
+                source: Box::new(e),
+            })?;
+            StoreLockGuard::Read(ManuallyDrop::new(g))
+        }
     };
 
     Ok(StoreLock {
@@ -134,6 +137,22 @@ pub struct RepoContext {
     /// Advisory file lock on `<store>/.lock`, held for this context's lifetime.
     /// `None` in unit-test contexts and read-only contexts that must not
     /// create lock files.
+    _store_lock: Option<StoreLock>,
+}
+
+/// Store access mode for context construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreAccess {
+    /// Inspect existing store state without creating store files.
+    ReadOnly,
+    /// Acquire write access and allow store initialization.
+    Write,
+}
+
+/// Store-level context independent of any repository identity decision.
+#[derive(Debug)]
+pub struct StoreContext {
+    pub config: Config,
     _store_lock: Option<StoreLock>,
 }
 
@@ -223,15 +242,51 @@ pub fn resolve_existing_repo(current: &CurrentGitContext, index: &Index) -> Opti
 /// `doctor --fix`, `repair`). Read-only commands (`list`, `status`, `doctor`)
 /// should pass `false`.
 pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<RepoContext> {
+    let access = if write {
+        StoreAccess::Write
+    } else {
+        StoreAccess::ReadOnly
+    };
+    build_create_or_load_with_access(cwd, store_override, access)
+}
+
+/// Builds a [`RepoContext`] for commands that may create or load a repo identity.
+pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
+    build_create_or_load_with_access(cwd, store_override, StoreAccess::Write)
+}
+
+/// Loads store configuration and, when safe, an advisory store lock without
+/// deciding which repository identity should be used.
+pub fn build_store_context(
+    store_override: Option<&Path>,
+    access: StoreAccess,
+) -> Result<StoreContext> {
     let config = Config::load(store_override)?;
+    let store_lock = match access {
+        StoreAccess::ReadOnly => acquire_existing_read_lock(&config.store)?,
+        StoreAccess::Write => {
+            meta::ensure_store_meta(&config.store)?;
+            let lock_path = config.store.join(".lock");
+            Some(acquire_store_lock(&lock_path, StoreAccess::Write, true)?)
+        }
+    };
 
-    // Ensure the store has a meta.json identity file before anything else.
-    meta::ensure_store_meta(&config.store)?;
+    Ok(StoreContext {
+        config,
+        _store_lock: store_lock,
+    })
+}
 
-    // Acquire an advisory lock on the store so concurrent invocations do not
-    // interleave index and manifest writes.
-    let lock_path = config.store.join(".lock");
-    let store_lock = acquire_store_lock(&lock_path, write)?;
+fn build_create_or_load_with_access(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    access: StoreAccess,
+) -> Result<RepoContext> {
+    let store_context = build_initialized_store_context(store_override, access)?;
+    let StoreContext {
+        config,
+        _store_lock: store_lock,
+    } = store_context;
 
     // Phase 3 will fill in git::find_repo_root(); we call it via crate::git.
     let repo_root = crate::git::find_repo_root(cwd)?;
@@ -245,7 +300,7 @@ pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<R
         git_common_dir,
         manifest,
         config,
-        _store_lock: Some(store_lock),
+        _store_lock: store_lock,
     })
 }
 
@@ -253,18 +308,52 @@ pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<R
 /// creating store metadata, a lock file, an index entry, a `RepoId`, or a
 /// manifest.
 pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<ReadOnlyRepoContext> {
-    let config = Config::load(store_override)?;
+    let store_context = build_store_context(store_override, StoreAccess::ReadOnly)?;
     let current = current_git_context(cwd)?;
-    let repo = resolve_repo_read_only(&config, &current)?;
+    let repo = resolve_repo_read_only(&store_context.config, &current)?;
 
     Ok(ReadOnlyRepoContext {
         current,
-        config,
+        config: store_context.config,
         repo,
     })
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+fn build_initialized_store_context(
+    store_override: Option<&Path>,
+    access: StoreAccess,
+) -> Result<StoreContext> {
+    let config = Config::load(store_override)?;
+
+    // Ensure the store has a meta.json identity file before acquiring the lock,
+    // preserving the compatibility behavior of `build(..., false)`.
+    meta::ensure_store_meta(&config.store)?;
+
+    let lock_path = config.store.join(".lock");
+    let store_lock = acquire_store_lock(&lock_path, access, true)?;
+
+    Ok(StoreContext {
+        config,
+        _store_lock: Some(store_lock),
+    })
+}
+
+fn acquire_existing_read_lock(store_root: &Path) -> Result<Option<StoreLock>> {
+    let lock_path = store_root.join(".lock");
+    if !lock_path.is_file() {
+        return Ok(None);
+    }
+
+    match acquire_store_lock(&lock_path, StoreAccess::ReadOnly, false) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
 
 fn resolve_repo_read_only(
     config: &Config,

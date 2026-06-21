@@ -91,8 +91,16 @@ fn cmd_debug(cwd: &Path, store_override: Option<&Path>, allow_sensitive: bool) -
 
     // Attempt to build repo context if we are inside a git repo.
     println!("\n[context]");
-    match repo::build_context(cwd, store_override, false) {
-        Ok(ctx) => {
+    match repo::build_read_only(cwd, store_override) {
+        Ok(read_only) => {
+            let Some(ctx) = read_only.repo else {
+                println!(
+                    "  repo_root   = {}",
+                    display_path(&read_only.current.repo_root, allow_sensitive)
+                );
+                println!("  (not associated with this store)");
+                return Ok(());
+            };
             println!("  repo_id     = {}", ctx.repo_id);
             println!(
                 "  repo_root   = {}",
