@@ -453,6 +453,61 @@ fn repo_repair_for_unassociated_repo_refuses_without_initializing_store() {
 }
 
 #[test]
+fn repo_repair_dry_run_reports_plan_without_writing() {
+    if !common::require_symlink_support() {
+        return;
+    }
+
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let item_path = repo.path().join("repo-dry.txt");
+    std::fs::write(&item_path, "secret").unwrap();
+
+    fixture
+        .run(
+            repo.path(),
+            store_args(store.path(), ["item", "add", "repo-dry.txt"]),
+        )
+        .assert_success();
+    let repo_store = store
+        .path()
+        .join("repos")
+        .join(single_repo_store_dir(store.path()));
+    std::fs::remove_file(&item_path).unwrap();
+    let repo_before = snapshot_tree(repo.path());
+    let store_before = snapshot_tree(store.path());
+
+    let output = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["repo", "repair", "--dry-run"]),
+    );
+
+    output.assert_success();
+    assert_eq!(output.stderr, "");
+    let normalized = common::normalize_output(
+        &output.stdout,
+        &[(&repo_store, "<repo-store>"), (repo.path(), "<repo>")],
+    );
+    assert_eq!(
+        normalized,
+        concat!(
+            "[dry-run] repair 'repo-dry.txt'\n",
+            "  recreate symlink <repo>/repo-dry.txt → <repo-store>/items/repo-dry.txt\n",
+            "repo repair:\n",
+            "  symlinks would repair: 1\n",
+            "  symlinks already healthy: 0\n",
+            "  symlinks failed: 0\n",
+            "  exclude: already current\n",
+            "  index: already current\n",
+            "  identity hints: would update\n"
+        )
+    );
+    assert_eq!(snapshot_tree(repo.path()), repo_before);
+    assert_eq!(snapshot_tree(store.path()), store_before);
+}
+
+#[test]
 fn repo_reclaim_explicit_target_updates_association_without_repairing_symlinks() {
     if !common::require_symlink_support() {
         return;

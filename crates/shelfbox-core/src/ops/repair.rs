@@ -5,11 +5,14 @@ use crate::{
     error::{AppError, Result},
     ignore::GitInfoExclude,
     link::LinkStrategy,
+    plan::repo_repair::{RepoRepairPlan, RepoRepairSymlinkAction},
     store::{
         index::{self, RepoEntry},
         manifest::{self, OwnershipState},
     },
 };
+
+pub use crate::plan::repo_repair::RepairRepoReport;
 
 use super::path::repo_relative_string;
 
@@ -24,16 +27,6 @@ pub enum RepairOutcome {
     StoreMissing,
     /// The path is not recorded in the manifest.
     NotManaged,
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct RepairRepoReport {
-    pub symlinks_repaired: usize,
-    pub symlinks_already_healthy: usize,
-    pub symlinks_failed: Vec<(String, String)>,
-    pub exclude_updated: bool,
-    pub index_updated: bool,
-    pub hints_updated: bool,
 }
 
 /// Attempts to repair the symlink for a single shelved item.
@@ -59,51 +52,70 @@ pub fn repair(
     dry_run: bool,
     force: bool,
 ) -> Result<RepairOutcome> {
-    // ── Resolve repo-relative path ────────────────────────────────────────
-    let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
+    let action = build_repair_action(ctx, abs_path, link, force)?;
 
-    // ── Must be in the manifest ───────────────────────────────────────────
-    let item = match ctx.manifest.get(&rel_str) {
-        Some(i) => i,
-        None => return Ok(RepairOutcome::NotManaged),
+    // ── Dry-run ───────────────────────────────────────────────────────────
+    if dry_run {
+        if let RepoRepairSymlinkAction::Recreate {
+            path,
+            abs_path,
+            store_path,
+        } = &action
+        {
+            println!("[dry-run] repair '{path}'");
+            println!(
+                "  recreate symlink {} → {}",
+                abs_path.display(),
+                store_path.display()
+            );
+        }
+        return Ok(repair_outcome(&action));
+    }
+
+    // ── Execute ───────────────────────────────────────────────────────────
+    execute_repair_action(&action, link)?;
+    Ok(repair_outcome(&action))
+}
+
+fn build_repair_action(
+    ctx: &RepoContext,
+    abs_path: &Path,
+    link: &dyn LinkStrategy,
+    force: bool,
+) -> Result<RepoRepairSymlinkAction> {
+    let path = repo_relative_string(&ctx.repo_root, abs_path)?;
+
+    let item = match ctx.manifest.get(&path) {
+        Some(item) => item,
+        None => return Ok(RepoRepairSymlinkAction::NotManaged { path }),
     };
     let store_path = ctx.repo_store.join(&item.store_path);
 
-    // ── Store item must exist ─────────────────────────────────────────────
     if !store_path.exists() {
-        return Ok(RepairOutcome::StoreMissing);
+        return Ok(RepoRepairSymlinkAction::StoreMissing { path });
     }
 
-    // ── Already healthy? ──────────────────────────────────────────────────
     if link.is_managed_link(abs_path, &ctx.config.store) {
-        return Ok(RepairOutcome::AlreadyHealthy);
+        return Ok(RepoRepairSymlinkAction::AlreadyHealthy { path });
     }
 
-    // ── Safety: refuse to overwrite a regular file ────────────────────────
     // A non-symlink entry at the repo path means the user may have placed
-    // their own file there.  Overwriting it silently would cause data loss.
-    // `abs_path.exists()` follows symlinks, so dangling symlinks (correctly
-    // identified as links by `is_link()`) are not caught here.
+    // their own file there. Overwriting it silently would cause data loss.
     if !link.is_link(abs_path) && abs_path.exists() {
         return Err(AppError::PathIsRegularFile {
             path: abs_path.to_path_buf(),
         });
     }
 
-    // ── Safety: refuse to silently overwrite a wrong-target symlink ───────
-    // A symlink that exists but points outside the managed store is ambiguous:
-    // it could be a stale link from a reclone, a different machine's store, or
-    // a copied repo.  Overwriting it silently would mask those situations.
-    // Require --force to proceed.
+    // A wrong-target symlink is ambiguous and requires an explicit --force.
     if !force {
         if let Ok(actual_target) = link.read_target(abs_path) {
-            // Resolve relative symlinks against the link's parent directory.
             let abs_actual = if actual_target.is_absolute() {
                 actual_target.clone()
             } else {
                 abs_path
                     .parent()
-                    .map(|p| p.join(&actual_target))
+                    .map(|parent| parent.join(&actual_target))
                     .unwrap_or_else(|| actual_target.clone())
             };
             return Err(AppError::RepairSymlinkTargetMismatch {
@@ -114,29 +126,114 @@ pub fn repair(
         }
     }
 
-    // ── Dry-run ───────────────────────────────────────────────────────────
-    if dry_run {
-        println!("[dry-run] repair '{rel_str}'");
-        println!(
-            "  recreate symlink {} → {}",
-            abs_path.display(),
-            store_path.display()
-        );
-        return Ok(RepairOutcome::LinkRecreated);
-    }
+    Ok(RepoRepairSymlinkAction::Recreate {
+        path,
+        abs_path: abs_path.to_path_buf(),
+        store_path,
+    })
+}
 
-    // ── Execute ───────────────────────────────────────────────────────────
-    // Remove a stale/invalid symlink if one exists at the repo path.
-    // By this point any non-symlink obstruction has already been rejected
-    // above, so `is_link()` is the correct predicate here.
+fn execute_repair_action(action: &RepoRepairSymlinkAction, link: &dyn LinkStrategy) -> Result<()> {
+    let RepoRepairSymlinkAction::Recreate {
+        abs_path,
+        store_path,
+        ..
+    } = action
+    else {
+        return Ok(());
+    };
+
+    // Remove a stale/invalid symlink if one exists at the repo path. By this
+    // point any non-symlink obstruction has already been rejected above.
     if link.is_link(abs_path) {
         link.remove(abs_path)?;
     }
 
-    // Recreate the symlink pointing at the store item.
-    link.create(&store_path, abs_path)?;
+    link.create(store_path, abs_path)
+}
 
-    Ok(RepairOutcome::LinkRecreated)
+fn repair_outcome(action: &RepoRepairSymlinkAction) -> RepairOutcome {
+    match action {
+        RepoRepairSymlinkAction::Recreate { .. } => RepairOutcome::LinkRecreated,
+        RepoRepairSymlinkAction::AlreadyHealthy { .. } => RepairOutcome::AlreadyHealthy,
+        RepoRepairSymlinkAction::StoreMissing { .. } => RepairOutcome::StoreMissing,
+        RepoRepairSymlinkAction::NotManaged { .. } | RepoRepairSymlinkAction::Failed { .. } => {
+            RepairOutcome::NotManaged
+        }
+    }
+}
+
+fn build_repo_repair_plan(
+    ctx: &RepoContext,
+    link: &dyn LinkStrategy,
+    force: bool,
+    current: &context::CurrentGitContext,
+    idx: &index::Index,
+) -> Result<RepoRepairPlan> {
+    let attached_paths: Vec<String> = ctx
+        .manifest
+        .items
+        .iter()
+        .filter(|item| item.ownership_state == OwnershipState::Attached)
+        .map(|item| item.path.clone())
+        .collect();
+
+    let mut symlink_actions = Vec::new();
+    for path in &attached_paths {
+        let abs_path = ctx.repo_root.join(path);
+        match build_repair_action(ctx, &abs_path, link, force) {
+            Ok(action) => symlink_actions.push(action),
+            Err(err) => symlink_actions.push(RepoRepairSymlinkAction::Failed {
+                path: path.clone(),
+                reason: err.to_string(),
+            }),
+        }
+    }
+
+    let ignore = GitInfoExclude;
+    let exclude_updated = !ignore.entries_match(&ctx.repo_root, attached_paths.clone())?;
+    let index_updated = idx
+        .get(&ctx.repo_id)
+        .map(|entry| {
+            entry.root.as_deref() != Some(current.repo_root.as_path())
+                || entry.git_dir.as_deref() != Some(current.git_dir.as_path())
+                || entry.git_common_dir.as_deref() != Some(current.git_common_dir.as_path())
+        })
+        .unwrap_or(true);
+    let hints_updated = if symlink_actions.iter().any(is_failed_repo_repair_action) {
+        false
+    } else {
+        identity_hints_need_update(ctx, current)
+    };
+
+    Ok(RepoRepairPlan {
+        symlink_actions,
+        exclude_paths: attached_paths,
+        exclude_updated,
+        index_updated,
+        hints_updated,
+    })
+}
+
+fn is_failed_repo_repair_action(action: &RepoRepairSymlinkAction) -> bool {
+    matches!(
+        action,
+        RepoRepairSymlinkAction::StoreMissing { .. }
+            | RepoRepairSymlinkAction::NotManaged { .. }
+            | RepoRepairSymlinkAction::Failed { .. }
+    )
+}
+
+fn identity_hints_need_update(ctx: &RepoContext, current: &context::CurrentGitContext) -> bool {
+    let mut planned = ctx.manifest.clone();
+    if let Some(name) = current.repo_root.file_name().and_then(|name| name.to_str()) {
+        planned.add_repo_name_hint(name);
+    }
+    if let Some(remote_hint) = &current.remote_hint {
+        planned.add_remote_hint(remote_hint);
+    }
+    planned.touch_attached_at(context::now_iso8601());
+    planned.identity_hints != ctx.manifest.identity_hints
 }
 
 /// Repairs local working tree integration for the repository already
@@ -161,78 +258,54 @@ pub fn repair_repo(
         ));
     }
 
-    let mut report = RepairRepoReport::default();
+    let plan = build_repo_repair_plan(ctx, link, force, &current, &idx)?;
+    let mut report = RepairRepoReport::from_plan(plan);
 
-    let attached_paths: Vec<String> = ctx
-        .manifest
-        .items
-        .iter()
-        .filter(|item| item.ownership_state == OwnershipState::Attached)
-        .map(|item| item.path.clone())
-        .collect();
+    if dry_run {
+        return Ok(report);
+    }
 
-    for path in &attached_paths {
-        let abs_path = ctx.repo_root.join(path);
-        match repair(ctx, &abs_path, link, dry_run, force) {
-            Ok(RepairOutcome::LinkRecreated) => report.symlinks_repaired += 1,
-            Ok(RepairOutcome::AlreadyHealthy) => report.symlinks_already_healthy += 1,
-            Ok(RepairOutcome::StoreMissing) => {
-                report
-                    .symlinks_failed
-                    .push((path.clone(), "store item missing".into()));
-            }
-            Ok(RepairOutcome::NotManaged) => {
-                report
-                    .symlinks_failed
-                    .push((path.clone(), "not managed".into()));
-            }
-            Err(err) => report.symlinks_failed.push((path.clone(), err.to_string())),
+    for action in &report.plan.symlink_actions {
+        if !matches!(action, RepoRepairSymlinkAction::Recreate { .. }) {
+            continue;
+        }
+
+        if let Err(err) = execute_repair_action(action, link) {
+            report.symlinks_repaired = report.symlinks_repaired.saturating_sub(1);
+            report
+                .symlinks_failed
+                .push((action.path().to_string(), err.to_string()));
         }
     }
 
     let ignore = GitInfoExclude;
-    if !ignore.entries_match(&ctx.repo_root, attached_paths.clone())? {
-        report.exclude_updated = true;
-        if !dry_run {
-            ignore.update_entries(&ctx.repo_root, attached_paths.clone())?;
-        }
+    if report.plan.exclude_updated {
+        ignore.update_entries(&ctx.repo_root, report.plan.exclude_paths.clone())?;
     }
 
     let mut idx = idx;
-    let entry = idx.get(&ctx.repo_id).cloned();
-    let index_needs_update = entry
-        .as_ref()
-        .map(|entry| {
-            entry.root.as_deref() != Some(current.repo_root.as_path())
-                || entry.git_dir.as_deref() != Some(current.git_dir.as_path())
-                || entry.git_common_dir.as_deref() != Some(current.git_common_dir.as_path())
-        })
-        .unwrap_or(true);
-    if index_needs_update {
-        report.index_updated = true;
-        if !dry_run {
-            let repo_store_dir = entry.map(|entry| entry.repo_store_dir).unwrap_or_else(|| {
-                ctx.repo_store
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| ctx.repo_id.clone())
-            });
-            idx.upsert(
-                &ctx.repo_id,
-                RepoEntry {
-                    root: Some(current.repo_root.clone()),
-                    git_dir: Some(current.git_dir.clone()),
-                    git_common_dir: Some(current.git_common_dir.clone()),
-                    repo_store_dir,
-                    last_seen_at: context::now_iso8601(),
-                },
-            );
-            index::save(&ctx.config.store, &idx)?;
-        }
+    if report.plan.index_updated {
+        let entry = idx.get(&ctx.repo_id).cloned();
+        let repo_store_dir = entry.map(|entry| entry.repo_store_dir).unwrap_or_else(|| {
+            ctx.repo_store
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ctx.repo_id.clone())
+        });
+        idx.upsert(
+            &ctx.repo_id,
+            RepoEntry {
+                root: Some(current.repo_root.clone()),
+                git_dir: Some(current.git_dir.clone()),
+                git_common_dir: Some(current.git_common_dir.clone()),
+                repo_store_dir,
+                last_seen_at: context::now_iso8601(),
+            },
+        );
+        index::save(&ctx.config.store, &idx)?;
     }
 
-    if report.symlinks_failed.is_empty() {
-        let before_hints = ctx.manifest.identity_hints.clone();
+    if report.symlinks_failed.is_empty() && report.plan.hints_updated {
         let now = context::now_iso8601();
         if let Some(name) = current.repo_root.file_name().and_then(|name| name.to_str()) {
             ctx.manifest.add_repo_name_hint(name);
@@ -241,12 +314,9 @@ pub fn repair_repo(
             ctx.manifest.add_remote_hint(remote_hint);
         }
         ctx.manifest.touch_attached_at(now);
-        report.hints_updated = ctx.manifest.identity_hints != before_hints;
-        if report.hints_updated && !dry_run {
-            manifest::save(&ctx.repo_store, &ctx.manifest)?;
-        } else if dry_run {
-            ctx.manifest.identity_hints = before_hints;
-        }
+        manifest::save(&ctx.repo_store, &ctx.manifest)?;
+    } else if !report.symlinks_failed.is_empty() {
+        report.hints_updated = false;
     }
 
     Ok(report)

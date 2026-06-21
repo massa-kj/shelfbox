@@ -13,6 +13,7 @@ use shelfbox_core::{
     ops,
     ops::integrity::FixResult,
     plan::item_restore::ItemRestoreAction,
+    plan::repo_repair::RepoRepairSymlinkAction,
     store,
 };
 
@@ -1093,6 +1094,12 @@ fn repo_repair_dry_run_makes_no_file_writes() {
     assert!(report.exclude_updated);
     assert!(report.index_updated);
     assert!(report.hints_updated);
+    assert_eq!(report.plan.exclude_paths, vec!["dry-repo.txt"]);
+    assert_eq!(report.plan.symlink_actions.len(), 1);
+    assert!(matches!(
+        &report.plan.symlink_actions[0],
+        RepoRepairSymlinkAction::Recreate { path, .. } if path == "dry-repo.txt"
+    ));
     assert!(file_path.symlink_metadata().is_err());
     assert_eq!(
         std::fs::read_to_string(&manifest_path).unwrap(),

@@ -503,6 +503,10 @@ fn candidate_state_label(state: repo::CandidateState) -> &'static str {
 }
 
 fn print_repo_repair_report(report: &repo::RepairRepoReport, dry_run: bool) {
+    if dry_run {
+        print_repo_repair_dry_run_plan(&report.plan);
+    }
+
     let repaired_label = if dry_run { "would repair" } else { "repaired" };
 
     println!("repo repair:");
@@ -527,6 +531,24 @@ fn print_repo_repair_report(report: &repo::RepairRepoReport, dry_run: bool) {
         "  identity hints: {}",
         repair_change_label(report.hints_updated, dry_run)
     );
+}
+
+fn print_repo_repair_dry_run_plan(plan: &repo::RepoRepairPlan) {
+    for action in &plan.symlink_actions {
+        if let repo::RepoRepairSymlinkAction::Recreate {
+            path,
+            abs_path,
+            store_path,
+        } = action
+        {
+            println!("[dry-run] repair '{path}'");
+            println!(
+                "  recreate symlink {} → {}",
+                abs_path.display(),
+                store_path.display()
+            );
+        }
+    }
 }
 
 fn repair_change_label(changed: bool, dry_run: bool) -> &'static str {

@@ -9,8 +9,8 @@ pub use crate::{
         detect_transitions::TransitionReport,
         integrity::IntegrityReport,
         reclaim::{CandidateState, ReclaimCandidate, ReclaimOutcome},
-        repair::RepairRepoReport,
     },
+    plan::repo_repair::{RepairRepoReport, RepoRepairPlan, RepoRepairSymlinkAction},
     store::{
         index::{Index, RepoEntry},
         manifest::{Manifest, OwnershipState},
