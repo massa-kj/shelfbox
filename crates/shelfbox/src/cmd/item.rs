@@ -3,20 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use shelfbox_core::{
-    context,
-    error::AppError,
-    ignore::GitInfoExclude,
-    link::DefaultLinkStrategy,
-    ops,
-    ops::{
-        add::{DirItemOutcome, SkipReason},
-        info::ItemInfo,
-        restore::NsRestoreItemOutcome,
-        status::ItemStatus,
-    },
-    store::manifest::Item,
-};
+use shelfbox_core::api::item;
 
 use crate::cmd::format::OutputFormat;
 use crate::cmd::util::{resolve_path, warn_reclaim_candidates_if_unassociated};
@@ -202,25 +189,23 @@ fn cmd_add(
 ) -> Result<()> {
     warn_reclaim_candidates_if_unassociated(cwd, store_override);
 
-    let mut ctx =
-        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
+    let mut ctx = item::build_context(cwd, store_override, true)
+        .context("failed to initialise repo context")?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
 
         if abs.is_dir() {
             // Directory namespace add: shelve all eligible files inside.
-            let result = ops::add::add_directory(&mut ctx, &abs, dry_run, &link, &ignore)
+            let result = item::add_directory(&mut ctx, &abs, dry_run)
                 .with_context(|| format!("add '{}' failed", path.display()))?;
             print_dir_add_result(&result);
         } else {
             // Single-file add.
-            match ops::add::add(&mut ctx, &abs, dry_run, &link, &ignore) {
+            match item::add_file(&mut ctx, &abs, dry_run) {
                 Ok(()) => {}
                 // Special-case: give the user an actionable hint for tracked files.
-                Err(AppError::PathIsTracked { path: ref p }) => {
+                Err(item::AppError::PathIsTracked { path: ref p }) => {
                     let rel = p
                         .strip_prefix(cwd)
                         .unwrap_or(p.as_path())
@@ -245,18 +230,23 @@ fn cmd_add(
 }
 
 /// Prints a human-readable summary of a directory add operation.
-fn print_dir_add_result(result: &ops::add::DirectoryAddResult) {
+fn print_dir_add_result(result: &item::DirectoryAddResult) {
     let added: Vec<&str> = result
         .results
         .iter()
-        .filter(|(_, o)| matches!(o, DirItemOutcome::Added | DirItemOutcome::WouldAdd))
+        .filter(|(_, o)| {
+            matches!(
+                o,
+                item::DirItemOutcome::Added | item::DirItemOutcome::WouldAdd
+            )
+        })
         .map(|(p, _)| p.as_str())
         .collect();
-    let skipped: Vec<(&str, &SkipReason)> = result
+    let skipped: Vec<(&str, &item::SkipReason)> = result
         .results
         .iter()
         .filter_map(|(p, o)| {
-            if let DirItemOutcome::Skipped(reason) = o {
+            if let item::DirItemOutcome::Skipped(reason) = o {
                 Some((p.as_str(), reason))
             } else {
                 None
@@ -266,14 +256,14 @@ fn print_dir_add_result(result: &ops::add::DirectoryAddResult) {
     let nested: Vec<&str> = result
         .results
         .iter()
-        .filter(|(_, o)| matches!(o, DirItemOutcome::NestedGitRepo))
+        .filter(|(_, o)| matches!(o, item::DirItemOutcome::NestedGitRepo))
         .map(|(p, _)| p.as_str())
         .collect();
     let failed: Vec<(&str, &str)> = result
         .results
         .iter()
         .filter_map(|(p, o)| {
-            if let DirItemOutcome::Failed(msg) = o {
+            if let item::DirItemOutcome::Failed(msg) = o {
                 Some((p.as_str(), msg.as_str()))
             } else {
                 None
@@ -284,7 +274,7 @@ fn print_dir_add_result(result: &ops::add::DirectoryAddResult) {
     let is_dry_run = result
         .results
         .iter()
-        .any(|(_, o)| matches!(o, DirItemOutcome::WouldAdd));
+        .any(|(_, o)| matches!(o, item::DirItemOutcome::WouldAdd));
     let prefix = if is_dry_run { "[dry-run] " } else { "" };
 
     println!(
@@ -320,10 +310,8 @@ fn cmd_restore(
     keep_ignore: bool,
     keep_store: bool,
 ) -> Result<()> {
-    let mut ctx =
-        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
+    let mut ctx = item::build_context(cwd, store_override, true)
+        .context("failed to initialise repo context")?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
@@ -343,28 +331,13 @@ fn cmd_restore(
                 format!("{rel}/")
             };
 
-            let result = ops::restore::restore_namespace(
-                &mut ctx,
-                &ns_path,
-                dry_run,
-                keep_ignore,
-                keep_store,
-                &link,
-                &ignore,
-            )
-            .with_context(|| format!("restore namespace '{}' failed", ns_path))?;
+            let result =
+                item::restore_namespace(&mut ctx, &ns_path, dry_run, keep_ignore, keep_store)
+                    .with_context(|| format!("restore namespace '{}' failed", ns_path))?;
             print_ns_restore_result(&result);
         } else {
-            ops::restore::restore(
-                &mut ctx,
-                &abs,
-                dry_run,
-                keep_ignore,
-                keep_store,
-                &link,
-                &ignore,
-            )
-            .with_context(|| format!("restore '{}' failed", path.display()))?;
+            item::restore_file(&mut ctx, &abs, dry_run, keep_ignore, keep_store)
+                .with_context(|| format!("restore '{}' failed", path.display()))?;
             if !dry_run {
                 println!("restored: {}", path.display());
             }
@@ -374,11 +347,11 @@ fn cmd_restore(
 }
 
 /// Prints a human-readable summary of a namespace restore operation.
-fn print_ns_restore_result(result: &ops::restore::NamespaceRestoreResult) {
+fn print_ns_restore_result(result: &item::NamespaceRestoreResult) {
     let is_dry_run = result
         .results
         .iter()
-        .any(|(_, o)| matches!(o, NsRestoreItemOutcome::WouldRestore));
+        .any(|(_, o)| matches!(o, item::NsRestoreItemOutcome::WouldRestore));
     let prefix = if is_dry_run { "[dry-run] " } else { "" };
 
     let restored = result
@@ -387,14 +360,14 @@ fn print_ns_restore_result(result: &ops::restore::NamespaceRestoreResult) {
         .filter(|(_, o)| {
             matches!(
                 o,
-                NsRestoreItemOutcome::Restored | NsRestoreItemOutcome::WouldRestore
+                item::NsRestoreItemOutcome::Restored | item::NsRestoreItemOutcome::WouldRestore
             )
         })
         .count();
     let failed = result
         .results
         .iter()
-        .filter(|(_, o)| matches!(o, NsRestoreItemOutcome::Failed(_)))
+        .filter(|(_, o)| matches!(o, item::NsRestoreItemOutcome::Failed(_)))
         .count();
 
     println!(
@@ -403,9 +376,9 @@ fn print_ns_restore_result(result: &ops::restore::NamespaceRestoreResult) {
     );
     for (path, outcome) in &result.results {
         match outcome {
-            NsRestoreItemOutcome::Restored => println!("  {}restored: {path}", prefix),
-            NsRestoreItemOutcome::WouldRestore => println!("  {}restore: {path}", prefix),
-            NsRestoreItemOutcome::Failed(msg) => eprintln!("  fail: {path}: {msg}"),
+            item::NsRestoreItemOutcome::Restored => println!("  {}restored: {path}", prefix),
+            item::NsRestoreItemOutcome::WouldRestore => println!("  {}restore: {path}", prefix),
+            item::NsRestoreItemOutcome::Failed(msg) => eprintln!("  fail: {path}: {msg}"),
         }
     }
     if result.namespace_removed {
@@ -419,10 +392,10 @@ fn cmd_list(
     format: Option<OutputFormat>,
     verbose: bool,
 ) -> Result<()> {
-    let ctx =
-        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let ctx = item::build_context(cwd, store_override, false)
+        .context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
-    let items = ops::list::list(&ctx);
+    let items = item::list(&ctx);
 
     match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(items)?),
@@ -438,12 +411,10 @@ fn cmd_status(
     format: Option<OutputFormat>,
     verbose: bool,
 ) -> Result<ExitCode> {
-    let ctx =
-        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let ctx = item::build_context(cwd, store_override, false)
+        .context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
-    let statuses = ops::status::status(&ctx, &link, &ignore)?;
+    let statuses = item::status(&ctx)?;
 
     match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&statuses)?),
@@ -460,31 +431,30 @@ fn cmd_repair(
     dry_run: bool,
     force: bool,
 ) -> Result<()> {
-    let ctx =
-        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
+    let ctx = item::build_context(cwd, store_override, true)
+        .context("failed to initialise repo context")?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        match ops::repair::repair(&ctx, &abs, &link, dry_run, force)
+        match item::repair(&ctx, &abs, dry_run, force)
             .with_context(|| format!("repair '{}' failed", path.display()))?
         {
-            ops::repair::RepairOutcome::LinkRecreated => {
+            item::RepairOutcome::LinkRecreated => {
                 if !dry_run {
                     println!("repaired: {}", path.display());
                 }
             }
-            ops::repair::RepairOutcome::AlreadyHealthy => {
+            item::RepairOutcome::AlreadyHealthy => {
                 println!("ok (no repair needed): {}", path.display());
             }
-            ops::repair::RepairOutcome::StoreMissing => {
+            item::RepairOutcome::StoreMissing => {
                 eprintln!(
                     "error: store item missing for '{}' — data may be lost. \
                      Restore manually and re-add.",
                     path.display()
                 );
             }
-            ops::repair::RepairOutcome::NotManaged => {
+            item::RepairOutcome::NotManaged => {
                 eprintln!("error: '{}' is not managed by shelfbox", path.display());
             }
         }
@@ -498,22 +468,21 @@ fn cmd_relink(
     paths: &[PathBuf],
     dry_run: bool,
 ) -> Result<()> {
-    let mut ctx =
-        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
+    let mut ctx = item::build_context(cwd, store_override, true)
+        .context("failed to initialise repo context")?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        match ops::relink::relink(&mut ctx, &abs, dry_run, &link)
+        match item::relink(&mut ctx, &abs, dry_run)
             .with_context(|| format!("relink '{}' failed", path.display()))?
         {
-            ops::relink::RelinkOutcome::Relinked => {
+            item::RelinkOutcome::Relinked => {
                 println!("relinked: {}", path.display());
             }
-            ops::relink::RelinkOutcome::StateUpdated => {
+            item::RelinkOutcome::StateUpdated => {
                 println!("relinked (symlink already correct): {}", path.display());
             }
-            ops::relink::RelinkOutcome::WouldRelink => {}
+            item::RelinkOutcome::WouldRelink => {}
         }
     }
     Ok(())
@@ -528,11 +497,9 @@ fn cmd_move(
 ) -> Result<()> {
     let old_abs = resolve_path(cwd, old);
     let new_abs = resolve_path(cwd, new_path);
-    let mut ctx =
-        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
-    ops::move_item::move_item(&mut ctx, &old_abs, &new_abs, dry_run, &link, &ignore)
+    let mut ctx = item::build_context(cwd, store_override, true)
+        .context("failed to initialise repo context")?;
+    item::move_item(&mut ctx, &old_abs, &new_abs, dry_run)
         .with_context(|| format!("move '{}' → '{}' failed", old.display(), new_path.display()))?;
     if !dry_run {
         println!("moved: {} → {}", old.display(), new_path.display());
@@ -543,13 +510,13 @@ fn cmd_move(
 // ── Human-readable formatters ───────────────────────────────────────────────────────────────────
 
 /// Plain format: one path per line.
-fn print_list_plain(items: &[Item]) {
+fn print_list_plain(items: &[item::Item]) {
     for item in items {
         println!("{}", item.path);
     }
 }
 
-fn print_list(items: &[Item], verbose: bool, ctx: &context::RepoContext) {
+fn print_list(items: &[item::Item], verbose: bool, ctx: &item::RepoContext) {
     if items.is_empty() {
         println!("(no shelved items)");
         return;
@@ -574,7 +541,7 @@ fn print_list(items: &[Item], verbose: bool, ctx: &context::RepoContext) {
 }
 
 /// Plain format: `label path [issue,issue,...]`
-fn print_status_plain(statuses: &[ItemStatus]) {
+fn print_status_plain(statuses: &[item::ItemStatus]) {
     for s in statuses {
         let (label, issues) = classify_status(s);
         if issues.is_empty() {
@@ -585,7 +552,7 @@ fn print_status_plain(statuses: &[ItemStatus]) {
     }
 }
 
-fn print_status(statuses: &[ItemStatus], verbose: bool, ctx: &context::RepoContext) {
+fn print_status(statuses: &[item::ItemStatus], verbose: bool, ctx: &item::RepoContext) {
     if statuses.is_empty() {
         println!("(no shelved items)");
         return;
@@ -620,7 +587,7 @@ fn print_status(statuses: &[ItemStatus], verbose: bool, ctx: &context::RepoConte
 ///   or Git can see the file — the primary shelfbox contract is broken).
 /// - WARN:  exclude entry missing but Git still ignores the file for now.
 /// - OK:    all checks pass.
-fn classify_status(s: &ItemStatus) -> (&'static str, Vec<&'static str>) {
+fn classify_status(s: &item::ItemStatus) -> (&'static str, Vec<&'static str>) {
     let mut issues: Vec<&'static str> = Vec::new();
 
     if !s.link_exists {
@@ -659,7 +626,7 @@ fn classify_status(s: &ItemStatus) -> (&'static str, Vec<&'static str>) {
 /// - 2: structural ERROR (broken/missing symlink, missing store item, git-tracked)
 /// - 1: WARN only (exclude entry missing)
 /// - 0: all clear
-fn classify_status_exit(statuses: &[ItemStatus]) -> ExitCode {
+fn classify_status_exit(statuses: &[item::ItemStatus]) -> ExitCode {
     let has_error = statuses
         .iter()
         .any(|s| !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked);
@@ -683,13 +650,11 @@ fn cmd_info(
     path: &Path,
     format: Option<OutputFormat>,
 ) -> Result<()> {
-    let ctx =
-        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
+    let ctx = item::build_context(cwd, store_override, false)
+        .context("failed to initialise repo context")?;
     let fmt = OutputFormat::resolve(format, &ctx.config.default_format);
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
     let abs = resolve_path(cwd, path);
-    let item_info = ops::info::info(&ctx, &abs, &link, &ignore)?;
+    let item_info = item::info(&ctx, &abs)?;
 
     match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&item_info)?),
@@ -703,7 +668,7 @@ fn cmd_info(
     Ok(())
 }
 
-fn print_info_table(info: &ItemInfo) {
+fn print_info_table(info: &item::ItemInfo) {
     println!("{:<14} {}", "path:", info.path);
     println!("{:<14} {}", "repo_root:", info.repo_root.display());
     println!(

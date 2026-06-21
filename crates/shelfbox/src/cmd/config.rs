@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use clap::Subcommand;
 use serde::Serialize;
-use shelfbox_core::config::{config_file_path, set_key, Config};
+use shelfbox_core::api::config;
 
 use crate::cmd::format::OutputFormat;
 
@@ -102,7 +102,7 @@ pub fn run_config(
 // ── subcommand implementations ─────────────────────────────────────────────────────────────────
 
 fn cmd_config_path() -> Result<()> {
-    match config_file_path() {
+    match config::config_file_path() {
         Some(p) => println!("{}", p.display()),
         None => eprintln!("could not determine config file path"),
     }
@@ -111,7 +111,7 @@ fn cmd_config_path() -> Result<()> {
 
 fn cmd_config_get(key: &str, show_source: bool, store_override: Option<&Path>) -> Result<()> {
     let _ = find_key(key).ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
-    let resolved = Config::load_resolved(store_override)?;
+    let resolved = config::load_resolved(store_override)?;
 
     let (value, source) = match key {
         "store" => (resolved.store.display().to_string(), resolved.store_source),
@@ -132,7 +132,7 @@ fn cmd_config_get(key: &str, show_source: bool, store_override: Option<&Path>) -
 }
 
 fn cmd_config_list(format: OutputFormat, store_override: Option<&Path>) -> Result<()> {
-    let resolved = Config::load_resolved(store_override)?;
+    let resolved = config::load_resolved(store_override)?;
 
     struct Row {
         key: &'static str,
@@ -244,7 +244,7 @@ fn cmd_config_explain(key: &str) -> Result<()> {
 }
 
 fn cmd_config_set(key: &str, value: &str) -> Result<()> {
-    set_key(key, value)?;
+    config::set_key(key, value)?;
     println!("set {key} = {value}");
     Ok(())
 }

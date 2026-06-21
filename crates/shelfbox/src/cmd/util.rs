@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use shelfbox_core::{config::Config, context, ops, store::index};
+use shelfbox_core::api::repo;
 
 /// Resolves `path` to an absolute path without following symlinks.
 ///
@@ -36,21 +36,21 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 /// Prints a best-effort reclaim hint when this clone has no local index match
 /// but existing manifests contain positive-scoring candidates.
 pub fn warn_reclaim_candidates_if_unassociated(cwd: &Path, store_override: Option<&Path>) {
-    let Ok(config) = Config::load(store_override) else {
+    let Ok(config) = repo::load_config(store_override) else {
         return;
     };
-    let Ok(current) = context::current_git_context(cwd) else {
+    let Ok(current) = repo::current_git_context(cwd) else {
         return;
     };
-    let Ok(idx) = index::load(&config.store) else {
+    let Ok(idx) = repo::load_index(&config.store) else {
         return;
     };
 
-    if context::resolve_existing_repo(&current, &idx).is_some() {
+    if repo::resolve_existing_repo(&current, &idx).is_some() {
         return;
     }
 
-    let Ok(candidates) = ops::reclaim::build_candidates(
+    let Ok(candidates) = repo::build_reclaim_candidates(
         &config.store,
         &current.repo_root,
         current.remote_hint.as_deref(),

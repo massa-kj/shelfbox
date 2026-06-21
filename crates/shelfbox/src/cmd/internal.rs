@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::CommandFactory;
 use clap::Subcommand;
 use clap_complete::Shell;
-use shelfbox_core::{config::Config, context, store::index};
+use shelfbox_core::api::{config, repo};
 
 // ── internal subcommands ────────────────────────────────────────────────────────────────────────
 
@@ -69,11 +69,11 @@ fn display_path(path: &Path, allow_sensitive: bool) -> String {
 }
 
 fn cmd_debug(cwd: &Path, store_override: Option<&Path>, allow_sensitive: bool) -> Result<()> {
-    let cfg = Config::load(store_override)?;
+    let cfg = config::load(store_override)?;
     println!("[config]");
     println!("  store = {}", display_path(&cfg.store, allow_sensitive));
 
-    let idx = index::load(&cfg.store)?;
+    let idx = repo::load_index(&cfg.store)?;
     println!("\n[index]");
     let mut entries: Vec<_> = idx.iter().collect();
     entries.sort_by_key(|(_, e)| e.last_seen_at.as_str());
@@ -91,7 +91,7 @@ fn cmd_debug(cwd: &Path, store_override: Option<&Path>, allow_sensitive: bool) -
 
     // Attempt to build repo context if we are inside a git repo.
     println!("\n[context]");
-    match context::build(cwd, store_override, false) {
+    match repo::build_context(cwd, store_override, false) {
         Ok(ctx) => {
             println!("  repo_id     = {}", ctx.repo_id);
             println!(

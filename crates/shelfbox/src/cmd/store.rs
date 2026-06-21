@@ -4,11 +4,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use shelfbox_core::{
-    api,
-    config::Config,
-    store::{index, manifest, meta},
-};
+use shelfbox_core::api;
 
 // ── store subcommands ──────────────────────────────────────────────────────────────────────────
 
@@ -119,16 +115,16 @@ fn human_bytes(bytes: u64) -> String {
 // ── subcommand implementations ─────────────────────────────────────────────────────────────────
 
 fn cmd_store_info(store_override: Option<&Path>) -> Result<()> {
-    let cfg = Config::load(store_override)?;
-    let idx = index::load(&cfg.store)?;
-    let store_meta = meta::load_store_meta(&cfg.store)?;
+    let cfg = api::store::load_config(store_override)?;
+    let idx = api::store::load_index(&cfg.store)?;
+    let store_meta = api::store::load_store_meta(&cfg.store)?;
 
     let mut total_items: usize = 0;
     let mut repo_count: usize = 0;
     for (_id, entry) in idx.iter() {
         repo_count += 1;
         let repo_store = cfg.store.join("repos").join(&entry.repo_store_dir);
-        if let Ok(mf) = manifest::load(&repo_store) {
+        if let Ok(mf) = api::store::load_manifest(&repo_store) {
             total_items += mf.items.len();
         }
     }
@@ -153,14 +149,14 @@ fn cmd_store_info(store_override: Option<&Path>) -> Result<()> {
 }
 
 fn cmd_store_verify(store_override: Option<&Path>) -> Result<ExitCode> {
-    let cfg = Config::load(store_override)?;
-    let idx = index::load(&cfg.store)?;
+    let cfg = api::store::load_config(store_override)?;
+    let idx = api::store::load_index(&cfg.store)?;
 
     let mut issues: usize = 0;
 
     for (_id, entry) in idx.iter() {
         let repo_store = cfg.store.join("repos").join(&entry.repo_store_dir);
-        let mf = match manifest::load(&repo_store) {
+        let mf = match api::store::load_manifest(&repo_store) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!(
@@ -202,7 +198,7 @@ fn cmd_store_verify(store_override: Option<&Path>) -> Result<ExitCode> {
 }
 
 fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
-    let cfg = Config::load(store_override)?;
+    let cfg = api::store::load_config(store_override)?;
     let plan = api::store::gc_plan(&cfg.store)?;
 
     if plan.candidates.is_empty() {
@@ -237,7 +233,7 @@ fn cmd_store_gc(store_override: Option<&Path>, dry_run: bool, yes: bool) -> Resu
 }
 
 fn cmd_store_rebuild_index(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
-    let cfg = Config::load(store_override)?;
+    let cfg = api::store::load_config(store_override)?;
     let report = api::store::rebuild_index(&cfg.store, dry_run)?;
 
     for warning in &report.warnings {
@@ -273,7 +269,7 @@ fn cmd_store_rebuild_index(store_override: Option<&Path>, dry_run: bool) -> Resu
 }
 
 fn cmd_store_migrate_manifests(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
-    let cfg = Config::load(store_override)?;
+    let cfg = api::store::load_config(store_override)?;
     let report = api::store::migrate_manifests(&cfg.store, dry_run)?;
 
     if dry_run {

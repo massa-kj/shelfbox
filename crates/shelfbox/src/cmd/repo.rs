@@ -5,15 +5,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde::Serialize;
-use shelfbox_core::{
-    config::Config,
-    context,
-    ignore::GitInfoExclude,
-    link::DefaultLinkStrategy,
-    ops,
-    ops::integrity::IntegrityReport,
-    store::{index, manifest, manifest::OwnershipState},
-};
+use shelfbox_core::api::repo;
 
 use crate::cmd::{format::OutputFormat, util::warn_reclaim_candidates_if_unassociated};
 
@@ -121,7 +113,7 @@ struct RepoSummary {
     last_seen_at: String,
 }
 
-fn repo_entry_name(entry: &index::RepoEntry) -> String {
+fn repo_entry_name(entry: &repo::RepoEntry) -> String {
     entry
         .root
         .as_ref()
@@ -140,14 +132,14 @@ fn cmd_repo_list(
     format: Option<OutputFormat>,
     verbose: bool,
 ) -> Result<()> {
-    let config = Config::load(store_override).context("failed to load config")?;
-    let idx = index::load(&config.store).context("failed to load store index")?;
+    let config = repo::load_config(store_override).context("failed to load config")?;
+    let idx = repo::load_index(&config.store).context("failed to load store index")?;
 
     let mut rows: Vec<RepoSummary> = idx
         .iter()
         .map(|(_id, entry)| {
             let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
-            let item_count = manifest::load(&repo_store)
+            let item_count = repo::load_manifest(&repo_store)
                 .map(|m| m.items.len())
                 .unwrap_or(0);
             RepoSummary {
@@ -201,7 +193,7 @@ fn cmd_repo_list(
                 }
                 for (_, entry) in &entries {
                     let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
-                    let item_count = manifest::load(&repo_store)
+                    let item_count = repo::load_manifest(&repo_store)
                         .map(|m| m.items.len())
                         .unwrap_or(0);
                     let name = repo_entry_name(entry);
@@ -250,7 +242,7 @@ fn cmd_repo_status(
 ) -> Result<ExitCode> {
     warn_reclaim_candidates_if_unassociated(cwd, store_override);
 
-    let read_only = context::build_read_only(cwd, store_override)
+    let read_only = repo::build_read_only(cwd, store_override)
         .context("failed to initialise read-only repo context")?;
     let fmt = OutputFormat::resolve(format, &read_only.config.default_format);
     let Some(ctx) = read_only.repo else {
@@ -265,13 +257,11 @@ fn cmd_repo_status(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
-    let report = ops::integrity::check(&ctx, &link, &ignore)?;
+    let report = repo::integrity_check(&ctx)?;
 
     // Read-only scan: surface pending ownership transitions without writing.
     // Actual transitions happen in `repo repair` to keep status side-effect-free.
-    let pending = ops::detect_transitions::scan(&ctx, &ctx.config.clone()).unwrap_or_default();
+    let pending = repo::scan_transitions(&ctx, &ctx.config.clone()).unwrap_or_default();
     if !pending.is_empty() {
         eprintln!(
             "hint: {} item(s) in {} repo(s) may need ownership transition \
@@ -290,8 +280,8 @@ fn cmd_repo_status(
     Ok(classify_integrity_exit(&report))
 }
 
-fn empty_repo_status_report() -> IntegrityReport {
-    IntegrityReport {
+fn empty_repo_status_report() -> repo::IntegrityReport {
+    repo::IntegrityReport {
         items: Vec::new(),
         orphan_store_items: Vec::new(),
         repo_root_matches_index: true,
@@ -304,33 +294,29 @@ fn cmd_repo_repair(
     dry_run: bool,
     force: bool,
 ) -> Result<()> {
-    let config = Config::load(store_override).context("failed to load config")?;
+    let config = repo::load_config(store_override).context("failed to load config")?;
     let current =
-        context::current_git_context(cwd).context("failed to inspect current git repository")?;
-    let idx = index::load(&config.store).context("failed to load store index")?;
-    let associated_repo_id = context::resolve_existing_repo(&current, &idx)
+        repo::current_git_context(cwd).context("failed to inspect current git repository")?;
+    let idx = repo::load_index(&config.store).context("failed to load store index")?;
+    let associated_repo_id = repo::resolve_existing_repo(&current, &idx)
         .ok_or_else(|| anyhow::anyhow!("Run `shelfbox repo reclaim` first"))?;
 
-    let mut ctx =
-        context::build(cwd, store_override, true).context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
+    let mut ctx = repo::build_context(cwd, store_override, true)
+        .context("failed to initialise repo context")?;
     if ctx.repo_id != associated_repo_id {
         anyhow::bail!("Run `shelfbox repo reclaim` first");
     }
 
-    let report = ops::repair::repair_repo(&mut ctx, &link, dry_run, force)?;
+    let report = repo::repair_repo(&mut ctx, dry_run, force)?;
     print_repo_repair_report(&report, dry_run);
     Ok(())
 }
 
 fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bool) -> Result<()> {
-    let ctx =
-        context::build(cwd, store_override, false).context("failed to initialise repo context")?;
-    let link = DefaultLinkStrategy;
-    let ignore = GitInfoExclude;
-
+    let ctx = repo::build_context(cwd, store_override, false)
+        .context("failed to initialise repo context")?;
     // Use check() to inspect unreferenced store files without deleting them.
-    let report = ops::integrity::check(&ctx, &link, &ignore)?;
+    let report = repo::integrity_check(&ctx)?;
 
     // Inform the user about items protected from GC by their ownership state.
     // These are in the manifest and will never appear as FS orphans, but it is
@@ -339,13 +325,13 @@ fn cmd_repo_gc(cwd: &Path, store_override: Option<&Path>, dry_run: bool, yes: bo
         .manifest
         .items
         .iter()
-        .filter(|i| i.ownership_state == OwnershipState::Detached)
+        .filter(|i| i.ownership_state == repo::OwnershipState::Detached)
         .count();
     let unreachable_count = ctx
         .manifest
         .items
         .iter()
-        .filter(|i| i.ownership_state == OwnershipState::Unreachable)
+        .filter(|i| i.ownership_state == repo::OwnershipState::Unreachable)
         .count();
 
     if detached_count > 0 || unreachable_count > 0 {
@@ -387,30 +373,30 @@ fn cmd_repo_reclaim(
     store_override: Option<&Path>,
     requested_repo_id: Option<&str>,
 ) -> Result<()> {
-    let config = Config::load(store_override).context("failed to load config")?;
+    let config = repo::load_config(store_override).context("failed to load config")?;
     let current =
-        context::current_git_context(cwd).context("failed to inspect current git repository")?;
-    let idx = index::load(&config.store).context("failed to load store index")?;
+        repo::current_git_context(cwd).context("failed to inspect current git repository")?;
+    let idx = repo::load_index(&config.store).context("failed to load store index")?;
 
-    let current_manifest = match context::resolve_existing_repo(&current, &idx) {
+    let current_manifest = match repo::resolve_existing_repo(&current, &idx) {
         Some(repo_id) => {
             let entry = idx
                 .get(&repo_id)
                 .with_context(|| format!("index entry disappeared for repo_id {repo_id}"))?;
             let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
             Some(
-                manifest::load(&repo_store)
+                repo::load_manifest(&repo_store)
                     .with_context(|| format!("failed to load current manifest for {repo_id}"))?,
             )
         }
         None => None,
     };
-    ops::reclaim::check_reclaim_precondition(current_manifest.as_ref())?;
+    repo::check_reclaim_precondition(current_manifest.as_ref())?;
 
     let repo_id = if let Some(repo_id) = requested_repo_id {
         repo_id.to_string()
     } else {
-        let candidates = ops::reclaim::build_candidates(
+        let candidates = repo::build_reclaim_candidates(
             &config.store,
             &current.repo_root,
             current.remote_hint.as_deref(),
@@ -432,7 +418,7 @@ fn cmd_repo_reclaim(
         }
     };
 
-    let outcome = ops::reclaim::execute_reclaim(&config.store, &current, &repo_id)?;
+    let outcome = repo::execute_reclaim(&config.store, &current, &repo_id)?;
     println!(
         "Associated with {}. Run `shelfbox repo repair` to restore symlinks.",
         outcome.repo_id
@@ -443,7 +429,7 @@ fn cmd_repo_reclaim(
 
 // ── Human-readable formatters ───────────────────────────────────────────────────────────────────
 
-fn print_reclaim_candidates(candidates: &[ops::reclaim::ReclaimCandidate]) {
+fn print_reclaim_candidates(candidates: &[repo::ReclaimCandidate]) {
     println!("Reclaim candidates:");
     println!();
 
@@ -503,15 +489,15 @@ fn prompt_reclaim_selection(candidate_count: usize) -> Result<Option<usize>> {
     Ok(Some(selected - 1))
 }
 
-fn candidate_state_label(state: ops::reclaim::CandidateState) -> &'static str {
+fn candidate_state_label(state: repo::CandidateState) -> &'static str {
     match state {
-        ops::reclaim::CandidateState::Unreachable => "unreachable",
-        ops::reclaim::CandidateState::Detached => "detached",
-        ops::reclaim::CandidateState::AttachedElsewhere => "attached elsewhere",
+        repo::CandidateState::Unreachable => "unreachable",
+        repo::CandidateState::Detached => "detached",
+        repo::CandidateState::AttachedElsewhere => "attached elsewhere",
     }
 }
 
-fn print_repo_repair_report(report: &ops::repair::RepairRepoReport, dry_run: bool) {
+fn print_repo_repair_report(report: &repo::RepairRepoReport, dry_run: bool) {
     let repaired_label = if dry_run { "would repair" } else { "repaired" };
 
     println!("repo repair:");
@@ -546,7 +532,7 @@ fn repair_change_label(changed: bool, dry_run: bool) -> &'static str {
     }
 }
 
-fn print_repo_status(report: &IntegrityReport, verbose: bool, repo_root: &Path) {
+fn print_repo_status(report: &repo::IntegrityReport, verbose: bool, repo_root: &Path) {
     println!("repo: {}", repo_root.display());
 
     let total = report.items.len();
@@ -606,7 +592,7 @@ fn print_repo_status(report: &IntegrityReport, verbose: bool, repo_root: &Path) 
     println!("index root: [{root_label}]");
 }
 
-fn print_repo_status_plain(report: &IntegrityReport) {
+fn print_repo_status_plain(report: &repo::IntegrityReport) {
     for s in &report.items {
         let label = if s.ok { "OK" } else { "ERROR" };
         println!("{label} {}", s.path);
@@ -624,7 +610,7 @@ fn print_repo_status_plain(report: &IntegrityReport) {
 /// - 2: structural ERROR (broken/missing symlink, missing store item, git-tracked)
 /// - 1: WARN only (missing exclude entry, unreferenced store items, root mismatch)
 /// - 0: all clear
-fn classify_integrity_exit(report: &IntegrityReport) -> ExitCode {
+fn classify_integrity_exit(report: &repo::IntegrityReport) -> ExitCode {
     let has_error = report
         .items
         .iter()

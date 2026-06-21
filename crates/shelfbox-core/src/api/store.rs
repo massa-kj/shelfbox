@@ -1,5 +1,14 @@
 use std::path::Path;
 
+pub use crate::{
+    config::Config,
+    store::{
+        index::{Index, RepoEntry},
+        manifest::Manifest,
+        meta::StoreMeta,
+    },
+};
+
 pub use crate::ops::{
     gc::{GcCandidate, GcPlan, GcReport},
     migrate_manifest::{MigrationReport, MigrationSkip},
@@ -9,7 +18,24 @@ pub use crate::ops::{
 use crate::{
     error::Result,
     ops::{gc, migrate_manifest, rebuild_index},
+    store::{index, manifest, meta},
 };
+
+pub fn load_config(store_override: Option<&Path>) -> Result<Config> {
+    Config::load(store_override)
+}
+
+pub fn load_index(store_root: &Path) -> Result<Index> {
+    index::load(store_root)
+}
+
+pub fn load_manifest(repo_store: &Path) -> Result<Manifest> {
+    manifest::load(repo_store)
+}
+
+pub fn load_store_meta(store_root: &Path) -> Result<Option<StoreMeta>> {
+    meta::load_store_meta(store_root)
+}
 
 pub fn gc_plan(store_root: &Path) -> Result<GcPlan> {
     gc::plan(store_root)
