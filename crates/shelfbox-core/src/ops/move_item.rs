@@ -3,13 +3,11 @@ use std::path::Path;
 use crate::{
     context::{self, RepoContext},
     error::{AppError, Result},
-    git,
     ignore::IgnoreBackend,
     link::LinkStrategy,
+    plan::item_move::{ItemMovePlan, ItemMoveReport, ItemMoveWarning},
     store::manifest,
 };
-
-use super::path::{normalize_repo_relative, repo_relative_path};
 
 // ── Store-level rename helper ─────────────────────────────────────────────────
 
@@ -68,129 +66,70 @@ pub fn move_item(
     dry_run: bool,
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
-) -> Result<()> {
-    // ── Phase 1: validate ─────────────────────────────────────────────────
+) -> Result<ItemMoveReport> {
+    let plan = ItemMovePlan::build(ctx, old_abs, new_abs)?;
 
-    // Both paths must reside inside the repository root.
-    let old_rel = repo_relative_path(&ctx.repo_root, old_abs)?;
-    let new_rel = repo_relative_path(&ctx.repo_root, new_abs)?;
-
-    let old_rel_str = normalize_repo_relative(&old_rel);
-    let new_rel_str = normalize_repo_relative(&new_rel);
-
-    // Source must be managed.
-    let item = ctx
-        .manifest
-        .get(&old_rel_str)
-        .ok_or_else(|| AppError::NotManagedLink {
-            path: old_abs.to_path_buf(),
-        })?
-        .clone();
-
-    // Destination must not already be managed.
-    if ctx.manifest.contains(&new_rel_str) {
-        return Err(AppError::AlreadyManaged {
-            path: new_abs.to_path_buf(),
-        });
-    }
-
-    // Destination must not exist on the filesystem (prevents data loss).
-    if new_abs.exists() {
-        return Err(AppError::MoveDestinationExists {
-            path: new_abs.to_path_buf(),
-        });
-    }
-
-    // Destination must not be tracked by Git.
-    if git::is_tracked(&ctx.repo_root, new_abs)? {
-        return Err(AppError::PathIsTracked {
-            path: new_abs.to_path_buf(),
-        });
-    }
-
-    // Compute expected store paths.
-    let old_store_path = ctx.repo_store.join(&item.store_path);
-    let new_store_path_rel = format!("items/{new_rel_str}");
-    let new_store_path = ctx.repo_store.join(&new_store_path_rel);
-
-    // Source store item must exist.
-    if !old_store_path.exists() {
-        return Err(AppError::StoreMissing {
-            path: old_abs.to_path_buf(),
-            store_path: old_store_path.clone(),
-        });
-    }
-
-    // Source symlink must point to the expected store path.
-    // If it doesn't, the state is inconsistent and `item repair` should be
-    // run first.
-    match std::fs::read_link(old_abs) {
-        Ok(target) if target == old_store_path => {}
-        _ => {
-            return Err(AppError::MoveSourceSymlinkMismatch {
-                path: old_abs.to_path_buf(),
-            });
-        }
-    }
-
-    // ── Dry-run output ────────────────────────────────────────────────────
     if dry_run {
-        println!("[dry-run] move '{old_rel_str}' → '{new_rel_str}'");
-        println!(
-            "  store   {} → {}",
-            old_store_path.display(),
-            new_store_path.display()
-        );
-        println!("  symlink {} → {}", old_abs.display(), new_abs.display());
-        println!("  manifest: update path and store_path");
-        println!("  exclude:  remove '{old_rel_str}', add '{new_rel_str}'");
-        return Ok(());
+        return Ok(ItemMoveReport {
+            plan,
+            dry_run: true,
+            warnings: Vec::new(),
+        });
     }
 
     // ── Phase 2: store move ───────────────────────────────────────────────
-    rename_store_item(&old_store_path, &new_store_path)?;
+    rename_store_item(&plan.old_store_path, &plan.new_store_path)?;
 
     // ── Phase 3: link update ──────────────────────────────────────────────
     let link_result = (|| -> Result<()> {
-        link.remove(old_abs)?;
-        link.create(&new_store_path, new_abs)?;
+        link.remove(&plan.old_abs_path)?;
+        link.create(&plan.new_store_path, &plan.new_abs_path)?;
         Ok(())
     })();
 
     if let Err(e) = link_result {
         // Roll back the store move (best-effort).
-        let _ = rename_store_item(&new_store_path, &old_store_path);
+        let _ = rename_store_item(&plan.new_store_path, &plan.old_store_path);
         return Err(e);
     }
 
     // ── Phase 4: manifest rewrite ─────────────────────────────────────────
     let now = context::now_iso8601();
-    ctx.manifest
-        .rename(&old_rel_str, &new_rel_str, &new_store_path_rel, &now);
+    ctx.manifest.rename(
+        &plan.old_path,
+        &plan.new_path,
+        &plan.new_store_path_relative,
+        &now,
+    );
 
     if let Err(e) = manifest::save(&ctx.repo_store, &ctx.manifest) {
         // Roll back link update and store move (best-effort).
-        let _ = link.remove(new_abs);
-        let _ = link.create(&old_store_path, old_abs);
-        let _ = rename_store_item(&new_store_path, &old_store_path);
+        let _ = link.remove(&plan.new_abs_path);
+        let _ = link.create(&plan.old_store_path, &plan.old_abs_path);
+        let _ = rename_store_item(&plan.new_store_path, &plan.old_store_path);
         return Err(e);
     }
 
     // ── Phase 5: exclude rewrite ──────────────────────────────────────────
     // Failure is non-fatal: the file is still correctly shelved.
     // The user can run `shelfbox item repair` to restore the exclude entry.
-    if let Err(e) = ignore.remove_entries(&ctx.repo_root, &[&old_rel_str]) {
-        eprintln!(
-            "warning: failed to remove '{old_rel_str}' from .git/info/exclude: {e}\n\
-             hint: run 'shelfbox item repair' to restore the exclude entry"
-        );
+    let mut warnings = Vec::new();
+    if let Err(e) = ignore.remove_entries(&ctx.repo_root, &[&plan.old_path]) {
+        warnings.push(ItemMoveWarning::ExcludeRemoveFailed {
+            path: plan.old_path.clone(),
+            message: e.to_string(),
+        });
     }
-    if let Err(e) = ignore.add_entries(&ctx.repo_root, &[&new_rel_str]) {
-        eprintln!(
-            "warning: failed to add '{new_rel_str}' to .git/info/exclude: {e}\n\
-             hint: run 'shelfbox item repair' to restore the exclude entry"
-        );
+    if let Err(e) = ignore.add_entries(&ctx.repo_root, &[&plan.new_path]) {
+        warnings.push(ItemMoveWarning::ExcludeAddFailed {
+            path: plan.new_path.clone(),
+            message: e.to_string(),
+        });
     }
 
-    Ok(())
+    Ok(ItemMoveReport {
+        plan,
+        dry_run: false,
+        warnings,
+    })
 }

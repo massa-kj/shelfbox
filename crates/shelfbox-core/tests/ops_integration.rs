@@ -12,6 +12,7 @@ use shelfbox_core::{
     link::{DefaultLinkStrategy, LinkStrategy},
     ops,
     ops::integrity::FixResult,
+    plan::item_restore::ItemRestoreAction,
     store,
 };
 
@@ -161,7 +162,11 @@ fn restore_dry_run_makes_no_changes() {
     let store_before = common::snapshot_tree(store_dir.path());
 
     // Dry-run restore.
-    ops::restore::restore(&mut ctx, &file_path, true, false, false, &link, &ignore).unwrap();
+    let report =
+        ops::restore::restore(&mut ctx, &file_path, true, false, false, &link, &ignore).unwrap();
+    assert!(report.dry_run);
+    assert_eq!(report.plan.path, "notes.md");
+    assert_eq!(report.plan.action, ItemRestoreAction::RestoreFile);
 
     // Symlink must still be in place.
     assert!(
@@ -358,6 +363,41 @@ fn restore_keep_store_leaves_symlink_and_store_item() {
             .is_symlink(),
         "symlink must still be in place after keep_store restore"
     );
+}
+
+#[test]
+fn restore_keep_store_dry_run_reports_plan_and_makes_no_changes() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+
+    let file_path = repo_dir.path().join("keep-dry-run.txt");
+    std::fs::write(&file_path, "keep me").unwrap();
+
+    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
+
+    let report =
+        ops::restore::restore(&mut ctx, &file_path, true, false, true, &link, &ignore).unwrap();
+
+    assert!(report.dry_run);
+    assert_eq!(report.plan.path, "keep-dry-run.txt");
+    assert_eq!(report.plan.action, ItemRestoreAction::DetachKeepStore);
+    assert!(!report.plan.keep_ignore);
+    assert_eq!(
+        ctx.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Attached,
+        "dry-run must not update in-memory ownership state"
+    );
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
 }
 
 #[test]
@@ -1861,7 +1901,20 @@ fn move_item_dry_run_makes_no_changes() {
     let new_path = repo_dir.path().join("renamed.txt");
     let repo_before = common::snapshot_tree(repo_dir.path());
     let store_before = common::snapshot_tree(store_dir.path());
-    ops::move_item::move_item(&mut ctx, &old_path, &new_path, true, &link, &ignore).unwrap();
+    let report =
+        ops::move_item::move_item(&mut ctx, &old_path, &new_path, true, &link, &ignore).unwrap();
+    assert!(report.dry_run);
+    assert!(report.warnings.is_empty());
+    assert_eq!(report.plan.old_path, "original.txt");
+    assert_eq!(report.plan.new_path, "renamed.txt");
+    assert_eq!(
+        report.plan.old_store_path,
+        ctx.repo_store.join("items/original.txt")
+    );
+    assert_eq!(
+        report.plan.new_store_path,
+        ctx.repo_store.join("items/renamed.txt")
+    );
 
     // Symlink at old path must still be present.
     assert!(

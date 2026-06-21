@@ -5,24 +5,23 @@ use crate::{
     error::{AppError, Result},
     ignore::IgnoreBackend,
     link::LinkStrategy,
+    plan::item_restore::{ItemRestoreAction, ItemRestorePlan, ItemRestoreReport},
     store::manifest::{self, OwnershipState},
 };
-
-use super::path::repo_relative_string;
 
 /// Restores `abs_path` from the store: removes the symlink and moves the item
 /// back to its original location in the repository.
 ///
 /// # Dry-run
-/// When `dry_run` is `true`, prints what would happen without making changes.
+/// When `dry_run` is `true`, returns the validated plan without making changes.
 ///
 /// # keep_ignore
 /// When `true`, the `.git/info/exclude` entry is preserved after restoration
 /// (useful when the user plans to re-shelve the file shortly afterwards).
 ///
 /// # keep_store
-/// When `true`, only the manifest entry is removed.  The symlink and the
-/// store-side item are left in place, and the item is marked `Detached`.
+/// When `true`, the manifest entry is retained and marked `Detached`. The
+/// symlink and store-side item are left in place.
 ///
 /// # Errors
 ///
@@ -36,122 +35,56 @@ pub fn restore(
     keep_store: bool,
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
-) -> Result<()> {
-    // ── Validation ───────────────────────────────────────────────────────────
-    // Must be within the repository root.
-    let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
+) -> Result<ItemRestoreReport> {
+    let plan = ItemRestorePlan::build(ctx, abs_path, keep_ignore, keep_store, link)?;
 
-    // ── keep_store fast path ─────────────────────────────────────────────────
-    // Transition the item to Detached: preserve the manifest entry for
-    // ownership tracking while leaving the symlink and store item intact.
-    // The item will NOT be auto-collected by `store gc`; detached items are
-    // protected from conservative GC.
-    if keep_store {
-        if !ctx.manifest.contains(&rel_str) {
-            return Err(AppError::NotManagedLink {
-                path: abs_path.to_path_buf(),
-            });
-        }
-
-        if dry_run {
-            println!("[dry-run] restore --keep-store '{rel_str}'");
-            println!("  ownership_state: attached -> detached");
-            println!("  (symlink and store item left in place)");
-            if !keep_ignore {
-                println!("  remove from exclude: {rel_str}");
-            }
-            return Ok(());
-        }
-
-        let now = context::now_iso8601();
-        ctx.manifest
-            .set_ownership_state(&rel_str, OwnershipState::Detached, &now);
-        manifest::save(&ctx.repo_store, &ctx.manifest)?;
-
-        if !keep_ignore {
-            ignore.remove_entries(&ctx.repo_root, &[&rel_str])?;
-        }
-        return Ok(());
-    }
-
-    // ── Normal restore ───────────────────────────────────────────────────────
-    // Using symlink_metadata to distinguish the three cases without following
-    // the link, so we can give a precise error in each situation.
-    match std::fs::symlink_metadata(abs_path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            // It is a symlink: verify it points into the shelfbox store.
-            if !link.is_managed_link(abs_path, &ctx.config.store) {
-                return Err(AppError::NotManagedLink {
-                    path: abs_path.to_path_buf(),
-                });
-            }
-        }
-        Ok(_) => {
-            // A regular file or directory exists at the path: refuse to
-            // overwrite it to prevent data loss.
-            return Err(AppError::RestoreDestinationExists {
-                path: abs_path.to_path_buf(),
-            });
-        }
-        Err(_) => {
-            // Nothing at this path.
-            return Err(AppError::NotManagedLink {
-                path: abs_path.to_path_buf(),
-            });
-        }
-    }
-
-    // Resolve the absolute store path from the manifest entry.
-    let store_path = ctx
-        .manifest
-        .get(&rel_str)
-        .map(|i| ctx.repo_store.join(&i.store_path))
-        .ok_or_else(|| {
-            AppError::Internal(format!(
-                "symlink at '{}' points into store but is not recorded in the manifest",
-                abs_path.display()
-            ))
-        })?;
-
-    // Store item must exist (a missing item means the symlink is dangling).
-    if !store_path.exists() {
-        return Err(AppError::StoreMissing {
-            path: abs_path.to_path_buf(),
-            store_path: store_path.clone(),
+    if dry_run {
+        return Ok(ItemRestoreReport {
+            plan,
+            dry_run: true,
         });
     }
 
-    // ── Dry-run ──────────────────────────────────────────────────────────────
-    if dry_run {
-        println!("[dry-run] restore '{rel_str}'");
-        println!("  remove symlink {}", abs_path.display());
-        println!("  move   {} → {}", store_path.display(), abs_path.display());
-        if !keep_ignore {
-            println!("  remove from exclude: {rel_str}");
+    match &plan.action {
+        ItemRestoreAction::DetachKeepStore => {
+            // Transition the item to Detached: preserve the manifest entry for
+            // ownership tracking while leaving the symlink and store item
+            // intact. Detached items are protected from conservative GC.
+            let now = context::now_iso8601();
+            ctx.manifest
+                .set_ownership_state(&plan.path, OwnershipState::Detached, &now);
+            manifest::save(&ctx.repo_store, &ctx.manifest)?;
+
+            if !plan.keep_ignore {
+                ignore.remove_entries(&ctx.repo_root, &[&plan.path])?;
+            }
         }
-        return Ok(());
+        ItemRestoreAction::RestoreFile => {
+            // Remove the symlink.
+            link.remove(&plan.abs_path)?;
+
+            // Move the item back to the repository; recreate the symlink on
+            // failure.
+            if let Err(e) = std::fs::rename(&plan.store_path, &plan.abs_path) {
+                let _ = link.create(&plan.store_path, &plan.abs_path);
+                return Err(AppError::io(&plan.abs_path, e));
+            }
+
+            // Remove from the manifest and persist.
+            ctx.manifest.remove(&plan.path);
+            manifest::save(&ctx.repo_store, &ctx.manifest)?;
+
+            // Remove from the ignore backend unless the caller asked to keep it.
+            if !plan.keep_ignore {
+                ignore.remove_entries(&ctx.repo_root, &[&plan.path])?;
+            }
+        }
     }
 
-    // ── Execute ──────────────────────────────────────────────────────────────
-    // Remove the symlink.
-    link.remove(abs_path)?;
-
-    // Move the item back to the repository; recreate the symlink on failure.
-    if let Err(e) = std::fs::rename(&store_path, abs_path) {
-        let _ = link.create(&store_path, abs_path);
-        return Err(AppError::io(abs_path, e));
-    }
-
-    // Remove from the manifest and persist.
-    ctx.manifest.remove(&rel_str);
-    manifest::save(&ctx.repo_store, &ctx.manifest)?;
-
-    // Remove from the ignore backend unless the caller asked to keep it.
-    if !keep_ignore {
-        ignore.remove_entries(&ctx.repo_root, &[&rel_str])?;
-    }
-
-    Ok(())
+    Ok(ItemRestoreReport {
+        plan,
+        dry_run: false,
+    })
 }
 
 // ── Directory namespace restore ───────────────────────────────────────────────
@@ -230,7 +163,7 @@ pub fn restore_namespace(
     for member_path in &member_paths {
         let abs_path = ctx.repo_root.join(member_path);
         match restore(ctx, &abs_path, false, keep_ignore, keep_store, link, ignore) {
-            Ok(()) => results.push((member_path.clone(), NsRestoreItemOutcome::Restored)),
+            Ok(_) => results.push((member_path.clone(), NsRestoreItemOutcome::Restored)),
             Err(e) => results.push((
                 member_path.clone(),
                 NsRestoreItemOutcome::Failed(e.to_string()),

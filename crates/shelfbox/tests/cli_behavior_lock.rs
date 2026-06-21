@@ -173,6 +173,103 @@ fn store_gc_dry_run_reports_orphaned_items_without_writing() {
 }
 
 #[test]
+fn item_restore_keep_store_dry_run_reports_plan_without_writing() {
+    if !common::require_symlink_support() {
+        return;
+    }
+
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let item_path = repo.path().join("secret.txt");
+    std::fs::write(&item_path, "secret").unwrap();
+
+    fixture
+        .run(
+            repo.path(),
+            store_args(store.path(), ["item", "add", "secret.txt"]),
+        )
+        .assert_success();
+    let repo_before = snapshot_tree(repo.path());
+    let store_before = snapshot_tree(store.path());
+
+    let output = fixture.run(
+        repo.path(),
+        store_args(
+            store.path(),
+            ["item", "restore", "secret.txt", "--dry-run", "--keep-store"],
+        ),
+    );
+
+    output.assert_success();
+    assert_eq!(output.stderr, "");
+    assert_eq!(
+        output.stdout,
+        concat!(
+            "[dry-run] restore --keep-store 'secret.txt'\n",
+            "  ownership_state: attached -> detached\n",
+            "  (symlink and store item left in place)\n",
+            "  remove from exclude: secret.txt\n"
+        )
+    );
+    assert_eq!(snapshot_tree(repo.path()), repo_before);
+    assert_eq!(snapshot_tree(store.path()), store_before);
+}
+
+#[test]
+fn item_move_dry_run_reports_plan_without_writing() {
+    if !common::require_symlink_support() {
+        return;
+    }
+
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let item_path = repo.path().join("original.txt");
+    std::fs::write(&item_path, "secret").unwrap();
+
+    fixture
+        .run(
+            repo.path(),
+            store_args(store.path(), ["item", "add", "original.txt"]),
+        )
+        .assert_success();
+    let repo_store = store
+        .path()
+        .join("repos")
+        .join(single_repo_store_dir(store.path()));
+    let repo_before = snapshot_tree(repo.path());
+    let store_before = snapshot_tree(store.path());
+
+    let output = fixture.run(
+        repo.path(),
+        store_args(
+            store.path(),
+            ["item", "move", "original.txt", "renamed.txt", "--dry-run"],
+        ),
+    );
+
+    output.assert_success();
+    assert_eq!(output.stderr, "");
+    let normalized = common::normalize_output(
+        &output.stdout,
+        &[(&repo_store, "<repo-store>"), (repo.path(), "<repo>")],
+    );
+    assert_eq!(
+        normalized,
+        concat!(
+            "[dry-run] move 'original.txt' → 'renamed.txt'\n",
+            "  store   <repo-store>/items/original.txt → <repo-store>/items/renamed.txt\n",
+            "  symlink <repo>/original.txt → <repo>/renamed.txt\n",
+            "  manifest: update path and store_path\n",
+            "  exclude:  remove 'original.txt', add 'renamed.txt'\n"
+        )
+    );
+    assert_eq!(snapshot_tree(repo.path()), repo_before);
+    assert_eq!(snapshot_tree(store.path()), store_before);
+}
+
+#[test]
 fn item_status_exit_codes_are_locked_for_associated_repo() {
     if !common::require_symlink_support() {
         return;
@@ -503,6 +600,24 @@ fn single_repo_id(store: &Path) -> String {
         .expect("index.json should contain repos object");
     assert_eq!(repos.len(), 1, "expected exactly one repo in index");
     repos.keys().next().unwrap().to_string()
+}
+
+fn single_repo_store_dir(store: &Path) -> String {
+    let index_json: Value =
+        serde_json::from_str(&std::fs::read_to_string(store.join("index.json")).unwrap())
+            .expect("index.json should be valid JSON");
+    let repos = index_json
+        .get("repos")
+        .and_then(Value::as_object)
+        .expect("index.json should contain repos object");
+    assert_eq!(repos.len(), 1, "expected exactly one repo in index");
+    repos
+        .values()
+        .next()
+        .and_then(|entry| entry.get("repo_store_dir"))
+        .and_then(Value::as_str)
+        .expect("repo entry should record repo_store_dir")
+        .to_string()
 }
 
 fn write_v3_manifest(store: &Path, repo_store_dir: &str, repo_id: &str) {

@@ -336,9 +336,11 @@ fn cmd_restore(
                     .with_context(|| format!("restore namespace '{}' failed", ns_path))?;
             print_ns_restore_result(&result);
         } else {
-            item::restore_file(&mut ctx, &abs, dry_run, keep_ignore, keep_store)
+            let report = item::restore_file(&mut ctx, &abs, dry_run, keep_ignore, keep_store)
                 .with_context(|| format!("restore '{}' failed", path.display()))?;
-            if !dry_run {
+            if dry_run {
+                print_restore_report(&report);
+            } else {
                 println!("restored: {}", path.display());
             }
         }
@@ -383,6 +385,36 @@ fn print_ns_restore_result(result: &item::NamespaceRestoreResult) {
     }
     if result.namespace_removed {
         println!("namespace removed: {}", result.ns_path);
+    }
+}
+
+fn print_restore_report(report: &item::ItemRestoreReport) {
+    if !report.dry_run {
+        return;
+    }
+
+    let plan = &report.plan;
+    match &plan.action {
+        item::ItemRestoreAction::DetachKeepStore => {
+            println!("[dry-run] restore --keep-store '{}'", plan.path);
+            println!("  ownership_state: attached -> detached");
+            println!("  (symlink and store item left in place)");
+            if !plan.keep_ignore {
+                println!("  remove from exclude: {}", plan.path);
+            }
+        }
+        item::ItemRestoreAction::RestoreFile => {
+            println!("[dry-run] restore '{}'", plan.path);
+            println!("  remove symlink {}", plan.abs_path.display());
+            println!(
+                "  move   {} → {}",
+                plan.store_path.display(),
+                plan.abs_path.display()
+            );
+            if !plan.keep_ignore {
+                println!("  remove from exclude: {}", plan.path);
+            }
+        }
     }
 }
 
@@ -517,12 +549,52 @@ fn cmd_move(
     let new_abs = resolve_path(cwd, new_path);
     let mut ctx = item::build_create_or_load(cwd, store_override)
         .context("failed to initialise repo context")?;
-    item::move_item(&mut ctx, &old_abs, &new_abs, dry_run)
+    let report = item::move_item(&mut ctx, &old_abs, &new_abs, dry_run)
         .with_context(|| format!("move '{}' → '{}' failed", old.display(), new_path.display()))?;
+    print_move_report(&report);
     if !dry_run {
         println!("moved: {} → {}", old.display(), new_path.display());
     }
     Ok(())
+}
+
+fn print_move_report(report: &item::ItemMoveReport) {
+    if report.dry_run {
+        let plan = &report.plan;
+        println!("[dry-run] move '{}' → '{}'", plan.old_path, plan.new_path);
+        println!(
+            "  store   {} → {}",
+            plan.old_store_path.display(),
+            plan.new_store_path.display()
+        );
+        println!(
+            "  symlink {} → {}",
+            plan.old_abs_path.display(),
+            plan.new_abs_path.display()
+        );
+        println!("  manifest: update path and store_path");
+        println!(
+            "  exclude:  remove '{}', add '{}'",
+            plan.old_path, plan.new_path
+        );
+    }
+
+    for warning in &report.warnings {
+        match warning {
+            item::ItemMoveWarning::ExcludeRemoveFailed { path, message } => {
+                eprintln!(
+                    "warning: failed to remove '{path}' from .git/info/exclude: {message}\n\
+                     hint: run 'shelfbox item repair' to restore the exclude entry"
+                );
+            }
+            item::ItemMoveWarning::ExcludeAddFailed { path, message } => {
+                eprintln!(
+                    "warning: failed to add '{path}' to .git/info/exclude: {message}\n\
+                     hint: run 'shelfbox item repair' to restore the exclude entry"
+                );
+            }
+        }
+    }
 }
 
 // ── Human-readable formatters ───────────────────────────────────────────────────────────────────

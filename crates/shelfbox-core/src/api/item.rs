@@ -11,6 +11,10 @@ pub use crate::{
         restore::{NamespaceRestoreResult, NsRestoreItemOutcome},
         status::ItemStatus,
     },
+    plan::{
+        item_move::{ItemMovePlan, ItemMoveReport, ItemMoveWarning},
+        item_restore::{ItemRestoreAction, ItemRestorePlan, ItemRestoreReport},
+    },
     store::manifest::Item,
 };
 
@@ -55,7 +59,7 @@ pub fn restore_file(
     dry_run: bool,
     keep_ignore: bool,
     keep_store: bool,
-) -> Result<()> {
+) -> Result<ItemRestoreReport> {
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     restore::restore(
@@ -119,7 +123,7 @@ pub fn move_item(
     old_abs: &Path,
     new_abs: &Path,
     dry_run: bool,
-) -> Result<()> {
+) -> Result<ItemMoveReport> {
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     move_item_ops::move_item(ctx, old_abs, new_abs, dry_run, &link, &ignore)
