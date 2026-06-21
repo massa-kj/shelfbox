@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
     error::{AppError, Result},
@@ -11,44 +8,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationSkip {
-    pub repo_store_dir: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MigrationReport {
-    pub target_version: u32,
-    pub converted: BTreeMap<u32, usize>,
-    pub unchanged: BTreeMap<u32, usize>,
-    pub skipped: Vec<MigrationSkip>,
-    pub stale_to_unreachable: usize,
-    pub adopted_to_detached: usize,
-    pub namespace_entries_dropped: usize,
-    pub dry_run: bool,
-}
-
-impl MigrationReport {
-    pub fn converted_total(&self) -> usize {
-        self.converted.values().sum()
-    }
-
-    pub fn unchanged_total(&self) -> usize {
-        self.unchanged.values().sum()
-    }
-
-    fn add_converted(&mut self, source_version: u32, stats: &LegacyConversionStats) {
-        *self.converted.entry(source_version).or_default() += 1;
-        self.stale_to_unreachable += stats.stale_to_unreachable;
-        self.adopted_to_detached += stats.adopted_to_detached;
-        self.namespace_entries_dropped += stats.namespace_entries_dropped;
-    }
-
-    fn add_unchanged(&mut self, version: u32) {
-        *self.unchanged.entry(version).or_default() += 1;
-    }
-}
+pub use crate::plan::manifest_migration::{MigrationReport, MigrationSkip};
 
 struct PlannedWrite {
     repo_store: PathBuf,
@@ -124,7 +84,7 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
                 }
 
                 let (converted, stats) = legacy.into_current();
-                report.add_converted(V2Manifest::VERSION, &stats);
+                add_converted(&mut report, V2Manifest::VERSION, &stats);
                 planned_writes.push(PlannedWrite {
                     repo_store,
                     manifest: converted,
@@ -157,7 +117,7 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
                     )?;
                 }
 
-                report.add_unchanged(Manifest::CURRENT_VERSION);
+                add_unchanged(&mut report, Manifest::CURRENT_VERSION);
             }
             other => report.skipped.push(MigrationSkip {
                 repo_store_dir,
@@ -177,6 +137,17 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
     }
 
     Ok(report)
+}
+
+fn add_converted(report: &mut MigrationReport, source_version: u32, stats: &LegacyConversionStats) {
+    *report.converted.entry(source_version).or_default() += 1;
+    report.stale_to_unreachable += stats.stale_to_unreachable;
+    report.adopted_to_detached += stats.adopted_to_detached;
+    report.namespace_entries_dropped += stats.namespace_entries_dropped;
+}
+
+fn add_unchanged(report: &mut MigrationReport, version: u32) {
+    *report.unchanged.entry(version).or_default() += 1;
 }
 
 fn record_id(

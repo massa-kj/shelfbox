@@ -9,10 +9,10 @@ pub use crate::{
     },
 };
 
-pub use crate::ops::{
-    gc::{GcCandidate, GcPlan, GcReport},
-    migrate_manifest::{MigrationReport, MigrationSkip},
-    rebuild_index::{RebuildIndexReport, RebuildIndexWarning},
+pub use crate::plan::{
+    manifest_migration::{MigrationReport, MigrationSkip},
+    store_gc::{GcCandidate, GcPlan, GcReport},
+    store_rebuild_index::{RebuildIndexReport, RebuildIndexWarning},
 };
 
 use crate::{
