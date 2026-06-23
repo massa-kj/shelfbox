@@ -1,10 +1,12 @@
 use std::fmt;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::error::{AppError, Result};
+use crate::{
+    error::{AppError, Result},
+    storage::atomic_write::{self, ParentDirMode},
+};
 
 // ── Default store path ────────────────────────────────────────────────────────
 
@@ -251,17 +253,8 @@ pub fn set_key(key: &str, value: &str) -> Result<()> {
 /// `rename(2)`, so a crash mid-write cannot leave the config file truncated.
 fn write_config_atomic(path: &Path, contents: &str) -> Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-
     let tmp_path = parent.join(".shelfbox-config-write.tmp");
-    {
-        let mut f =
-            std::fs::File::create(&tmp_path).map_err(|e| AppError::io(tmp_path.clone(), e))?;
-        f.write_all(contents.as_bytes())
-            .map_err(|e| AppError::io(tmp_path.clone(), e))?;
-    }
-    std::fs::rename(&tmp_path, path).map_err(|e| AppError::io(path.to_path_buf(), e))?;
-    Ok(())
+    atomic_write::write_with_temp_path(path, &tmp_path, contents, ParentDirMode::Default)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -386,5 +379,21 @@ mod tests {
         assert_eq!(r.store_source, ConfigSource::Default);
         assert_eq!(r.default_format, None);
         assert_eq!(r.default_format_source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn write_config_atomic_replaces_file_and_cleans_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let tmp_path = dir.path().join(".shelfbox-config-write.tmp");
+
+        write_config_atomic(&path, "store = \"/tmp/a\"\n").unwrap();
+        write_config_atomic(&path, "default_format = \"json\"\n").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "default_format = \"json\"\n"
+        );
+        assert!(!tmp_path.exists());
     }
 }
