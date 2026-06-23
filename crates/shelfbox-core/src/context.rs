@@ -1,107 +1,18 @@
-use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 
-use fd_lock::{RwLock as FdRwLock, RwLockReadGuard, RwLockWriteGuard};
 use ulid::Ulid;
 
 use crate::{
     config::Config,
     error::{AppError, Result},
+    fs::lock::{self, StoreLock, StoreLockAccess},
+    storage::layout,
     store::{
         index::{self, Index, RepoEntry},
         manifest::{self, Manifest},
         meta,
     },
 };
-
-// ── Store-level advisory lock ─────────────────────────────────────────────────
-
-/// Guard variant held inside [`StoreLock`].
-enum StoreLockGuard {
-    Write(ManuallyDrop<RwLockWriteGuard<'static, std::fs::File>>),
-    Read(ManuallyDrop<RwLockReadGuard<'static, std::fs::File>>),
-}
-
-/// Advisory file lock held on `<store>/.lock` for the duration of a
-/// [`RepoContext`] lifetime.
-///
-/// Prevents concurrent write–write and write–read conflicts across multiple
-/// `shelfbox` processes accessing the same store directory.
-///
-/// # Implementation note
-///
-/// This is a self-referential struct: `guard` borrows from `rw_lock`.
-/// Heap allocation via `Box` gives `rw_lock` a stable address; `ManuallyDrop`
-/// lets us control the drop order (guard first, then lock) in the custom
-/// [`Drop`] implementation.
-struct StoreLock {
-    /// Dropped first — releases the OS advisory lock.
-    guard: StoreLockGuard,
-    /// Dropped second — closes the underlying file descriptor.
-    rw_lock: ManuallyDrop<Box<FdRwLock<std::fs::File>>>,
-}
-
-impl std::fmt::Debug for StoreLock {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StoreLock").finish_non_exhaustive()
-    }
-}
-
-impl Drop for StoreLock {
-    fn drop(&mut self) {
-        // SAFETY: Drop order is critical.
-        // 1. `guard` must be dropped first to release the OS advisory lock.
-        // 2. `rw_lock` is then dropped, closing the file descriptor.
-        // The `Box` was never moved or freed while the guard was alive.
-        unsafe {
-            match &mut self.guard {
-                StoreLockGuard::Write(g) => ManuallyDrop::drop(g),
-                StoreLockGuard::Read(g) => ManuallyDrop::drop(g),
-            }
-            ManuallyDrop::drop(&mut self.rw_lock);
-        }
-    }
-}
-
-fn acquire_store_lock(lock_path: &Path, access: StoreAccess, create: bool) -> Result<StoreLock> {
-    let file = std::fs::OpenOptions::new()
-        .create(create)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(lock_path)
-        .map_err(|e| AppError::io(lock_path, e))?;
-
-    let mut rw_lock = Box::new(FdRwLock::new(file));
-
-    // SAFETY: The `Box` gives `rw_lock` a stable heap address. The raw
-    // pointer is not moved or freed while the guard is alive (enforced by
-    // the custom `Drop` impl above which drops the guard before the Box).
-    let lock_ref: &'static mut FdRwLock<std::fs::File> =
-        unsafe { &mut *(rw_lock.as_mut() as *mut _) };
-
-    let guard = match access {
-        StoreAccess::Write => {
-            let g = lock_ref.write().map_err(|e| AppError::StoreLocked {
-                lock_path: lock_path.to_path_buf(),
-                source: Box::new(e),
-            })?;
-            StoreLockGuard::Write(ManuallyDrop::new(g))
-        }
-        StoreAccess::ReadOnly => {
-            let g = lock_ref.read().map_err(|e| AppError::StoreLocked {
-                lock_path: lock_path.to_path_buf(),
-                source: Box::new(e),
-            })?;
-            StoreLockGuard::Read(ManuallyDrop::new(g))
-        }
-    };
-
-    Ok(StoreLock {
-        guard,
-        rw_lock: ManuallyDrop::new(rw_lock),
-    })
-}
 
 // ── RepoContext ───────────────────────────────────────────────────────────────
 
@@ -277,8 +188,12 @@ pub fn build_store_context(
         StoreAccess::ReadOnly => acquire_existing_read_lock(&config.store)?,
         StoreAccess::Write => {
             meta::ensure_store_meta(&config.store)?;
-            let lock_path = config.store.join(".lock");
-            Some(acquire_store_lock(&lock_path, StoreAccess::Write, true)?)
+            let lock_path = layout::lock_path(&config.store);
+            Some(lock::acquire_store_lock(
+                &lock_path,
+                StoreLockAccess::Write,
+                true,
+            )?)
         }
     };
 
@@ -357,8 +272,8 @@ fn build_initialized_store_context(
     // preserving the compatibility behavior of `build(..., false)`.
     meta::ensure_store_meta(&config.store)?;
 
-    let lock_path = config.store.join(".lock");
-    let store_lock = acquire_store_lock(&lock_path, access, true)?;
+    let lock_path = layout::lock_path(&config.store);
+    let store_lock = lock::acquire_store_lock(&lock_path, lock_access(access), true)?;
 
     Ok(StoreContext {
         config,
@@ -367,17 +282,24 @@ fn build_initialized_store_context(
 }
 
 fn acquire_existing_read_lock(store_root: &Path) -> Result<Option<StoreLock>> {
-    let lock_path = store_root.join(".lock");
+    let lock_path = layout::lock_path(store_root);
     if !lock_path.is_file() {
         return Ok(None);
     }
 
-    match acquire_store_lock(&lock_path, StoreAccess::ReadOnly, false) {
+    match lock::acquire_store_lock(&lock_path, StoreLockAccess::ReadOnly, false) {
         Ok(lock) => Ok(Some(lock)),
         Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
             Ok(None)
         }
         Err(err) => Err(err),
+    }
+}
+
+fn lock_access(access: StoreAccess) -> StoreLockAccess {
+    match access {
+        StoreAccess::ReadOnly => StoreLockAccess::ReadOnly,
+        StoreAccess::Write => StoreLockAccess::Write,
     }
 }
 
@@ -398,7 +320,7 @@ fn resolve_repo_read_only(
         return Ok(None);
     };
 
-    let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
+    let repo_store = layout::repo_store_path(&config.store, &entry.repo_store_dir);
     if !manifest::manifest_path(&repo_store).is_file() {
         return Ok(None);
     }
@@ -471,7 +393,11 @@ fn resolve_repo(
         // First time this repository is seen: generate a new ULID and a
         // human-readable directory name.
         let id = Ulid::new().to_string();
-        let dir = allocate_repo_store_dir(store_root, &sanitize_name(&repo_name), &id)?;
+        let dir = layout::allocate_repo_store_dir(
+            store_root,
+            &layout::sanitize_repo_store_name(&repo_name),
+            &id,
+        )?;
         let entry = RepoEntry {
             root: Some(repo_root.to_path_buf()),
             git_dir: Some(git_dir.clone()),
@@ -484,7 +410,7 @@ fn resolve_repo(
         (id, dir)
     };
 
-    let repo_store = store_root.join("repos").join(&store_dir);
+    let repo_store = layout::repo_store_path(store_root, &store_dir);
 
     // Update `last_seen_at` on every access so doctor/status can detect
     // repositories that have vanished.
@@ -521,64 +447,7 @@ fn load_or_init_manifest(
     }
 }
 
-fn allocate_repo_store_dir(store_root: &Path, base_name: &str, repo_id: &str) -> Result<String> {
-    let repos_dir = store_root.join("repos");
-    let mut n = 1;
-    loop {
-        let candidate = if n == 1 {
-            base_name.to_string()
-        } else {
-            format!("{base_name}-{n}")
-        };
-
-        if repo_store_dir_available(&repos_dir, &candidate, repo_id)? {
-            return Ok(candidate);
-        }
-        n += 1;
-    }
-}
-
-fn repo_store_dir_available(repos_dir: &Path, candidate: &str, repo_id: &str) -> Result<bool> {
-    let repo_store = repos_dir.join(candidate);
-    if !repo_store.exists() {
-        return Ok(true);
-    }
-
-    let manifest_path = manifest::manifest_path(&repo_store);
-    let contents = match std::fs::read_to_string(&manifest_path) {
-        Ok(contents) => contents,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(AppError::io(manifest_path, e)),
-    };
-    let raw: serde_json::Value =
-        serde_json::from_str(&contents).map_err(|e| AppError::json(manifest_path, e))?;
-
-    Ok(raw.get("repo_id").and_then(|v| v.as_str()) == Some(repo_id))
-}
-
 // ── Utilities ─────────────────────────────────────────────────────────────────
-
-/// Converts a repository name to a filesystem-safe ASCII slug.
-///
-/// Non-alphanumeric characters are replaced with `-`; consecutive dashes are
-/// collapsed; leading and trailing dashes are stripped.  If the result would
-/// be empty, `"repo"` is returned as a safe fallback.
-fn sanitize_name(name: &str) -> String {
-    let slug: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let slug = slug
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "repo".into()
-    } else {
-        slug
-    }
-}
 
 /// Returns the current UTC time as a naïve ISO-8601 string.
 ///
@@ -698,53 +567,6 @@ mod tests {
 
         let rel = ctx.store_relative_path(&abs).unwrap();
         assert_eq!(rel, "notes/design.md");
-    }
-
-    #[test]
-    fn new_repo_store_dir_uses_sanitized_name_without_ulid() {
-        let store = tempfile::TempDir::new().unwrap();
-
-        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-1").unwrap();
-
-        assert_eq!(dir, "my-project");
-    }
-
-    #[test]
-    fn repo_store_dir_conflict_uses_numeric_suffix() {
-        let store = tempfile::TempDir::new().unwrap();
-        let existing = store.path().join("repos/my-project");
-        let manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
-        manifest::save(&existing, &manifest).unwrap();
-
-        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-2").unwrap();
-
-        assert_eq!(dir, "my-project-2");
-    }
-
-    #[test]
-    fn repo_store_dir_three_way_conflict_uses_next_numeric_suffix() {
-        let store = tempfile::TempDir::new().unwrap();
-        for (dir, repo_id) in [("my-project", "repo-1"), ("my-project-2", "repo-2")] {
-            let repo_store = store.path().join("repos").join(dir);
-            let manifest = Manifest::new(repo_id, "2026-04-29T00:00:00Z");
-            manifest::save(&repo_store, &manifest).unwrap();
-        }
-
-        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-3").unwrap();
-
-        assert_eq!(dir, "my-project-3");
-    }
-
-    #[test]
-    fn repo_store_dir_allows_existing_dir_with_same_repo_id() {
-        let store = tempfile::TempDir::new().unwrap();
-        let existing = store.path().join("repos/my-project");
-        let manifest = Manifest::new("repo-1", "2026-04-29T00:00:00Z");
-        manifest::save(&existing, &manifest).unwrap();
-
-        let dir = allocate_repo_store_dir(store.path(), "my-project", "repo-1").unwrap();
-
-        assert_eq!(dir, "my-project");
     }
 
     #[test]
