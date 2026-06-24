@@ -7,7 +7,7 @@ use clap::Subcommand;
 use serde::Serialize;
 use shelfbox_core::api::repo;
 
-use crate::cmd::{format::OutputFormat, util::warn_reclaim_candidates_if_unassociated};
+use crate::commands::{format::OutputFormat, util::warn_reclaim_candidates_if_unassociated};
 
 // ── repo subcommands ────────────────────────────────────────────────────────────────────────────
 

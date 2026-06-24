@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 mod cli;
-mod cmd;
+mod commands;
 
 fn main() -> ExitCode {
     match cli::run() {

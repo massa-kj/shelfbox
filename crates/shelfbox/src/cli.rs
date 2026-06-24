@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::cmd::{
+use crate::commands::{
     config::{run_config, ConfigCommand},
     format::OutputFormat,
     internal::{run_internal, InternalCommand},

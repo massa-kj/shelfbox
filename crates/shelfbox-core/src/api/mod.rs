@@ -1,8 +1,9 @@
 //! Public operational facade for CLI and downstream callers.
 //!
-//! The first phase keeps these modules thin and delegates to existing
-//! implementation modules. Later phases can move behavior behind this facade
-//! without forcing CLI call sites to keep importing internals directly.
+//! Callers should enter core behavior through this module instead of importing
+//! lower-level implementation modules. The facade owns stable operation
+//! groupings while context construction, storage I/O, Git integration,
+//! filesystem adapters, and policy decisions remain crate-private details.
 
 pub mod config;
 pub mod item;

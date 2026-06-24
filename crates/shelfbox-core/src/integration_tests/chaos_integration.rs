@@ -107,9 +107,9 @@ fn worktree_shelved_items_visible_from_linked_worktree() {
 
 // ── Index lost (failure matrix #4) ───────────────────────────────────────────
 
-/// When `index.json` is deleted, `context::build` creates a fresh index entry
-/// with a new ULID.  The old store directory is untouched (no data loss), but
-/// it becomes an orphan unreachable via the new context.
+/// When `index.json` is deleted, `context::build_create_or_load` creates a
+/// fresh index entry with a new ULID. The old store directory is untouched
+/// (no data loss), but it becomes an orphan unreachable via the new context.
 #[test]
 fn index_deleted_creates_fresh_context_with_empty_manifest() {
     if !require_symlink_support() {

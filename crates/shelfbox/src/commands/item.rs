@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use shelfbox_core::api::item;
 
-use crate::cmd::format::OutputFormat;
-use crate::cmd::util::{resolve_path, warn_reclaim_candidates_if_unassociated};
+use crate::commands::format::OutputFormat;
+use crate::commands::util::{resolve_path, warn_reclaim_candidates_if_unassociated};
 
 // ── item subcommands ────────────────────────────────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@ use clap::Subcommand;
 use serde::Serialize;
 use shelfbox_core::api::config;
 
-use crate::cmd::format::OutputFormat;
+use crate::commands::format::OutputFormat;
 
 // ── Static key metadata ─────────────────────────────────────────────────────────────────────────
 
