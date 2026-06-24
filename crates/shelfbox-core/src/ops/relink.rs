@@ -4,21 +4,13 @@ use crate::{
     context::{self, RepoContext},
     error::{AppError, Result},
     link::LinkStrategy,
+    plan::item_relink::{ItemRelinkPlan, ItemRelinkReport},
     store::manifest::{self, OwnershipState},
 };
 
 use super::path::repo_relative_string;
 
-/// Outcome of a [`relink`] operation.
-#[derive(Debug, PartialEq, Eq)]
-pub enum RelinkOutcome {
-    /// Symlink was recreated and ownership_state transitioned to `Attached`.
-    Relinked,
-    /// Symlink already pointed to the correct store path; only state was updated.
-    StateUpdated,
-    /// Dry-run: item would be relinked.
-    WouldRelink,
-}
+pub use crate::plan::item_relink::RelinkOutcome;
 
 /// Transitions a `Detached` item back to `Attached` by ensuring its symlink
 /// exists and updating `ownership_state` in the manifest.
@@ -32,7 +24,8 @@ pub enum RelinkOutcome {
 ///
 /// # Dry-run
 ///
-/// When `dry_run` is `true`, prints what would happen without making changes.
+/// When `dry_run` is `true`, returns the validated report without making
+/// changes.
 ///
 /// # Errors
 ///
@@ -47,6 +40,39 @@ pub fn relink(
     dry_run: bool,
     link: &dyn LinkStrategy,
 ) -> Result<RelinkOutcome> {
+    relink_report(ctx, abs_path, dry_run, link).map(|report| report.outcome)
+}
+
+pub(crate) fn relink_report(
+    ctx: &mut RepoContext,
+    abs_path: &Path,
+    dry_run: bool,
+    link: &dyn LinkStrategy,
+) -> Result<ItemRelinkReport> {
+    let plan = build_relink_plan(ctx, abs_path, link)?;
+
+    if dry_run {
+        return Ok(ItemRelinkReport {
+            plan,
+            outcome: RelinkOutcome::WouldRelink,
+            dry_run,
+        });
+    }
+
+    let outcome = execute_relink_plan(ctx, &plan, link)?;
+
+    Ok(ItemRelinkReport {
+        plan,
+        outcome,
+        dry_run,
+    })
+}
+
+fn build_relink_plan(
+    ctx: &RepoContext,
+    abs_path: &Path,
+    link: &dyn LinkStrategy,
+) -> Result<ItemRelinkPlan> {
     // ── Resolve repo-relative path ────────────────────────────────────────
     let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
 
@@ -88,39 +114,36 @@ pub fn relink(
     // ── Detect whether symlink is already correct ─────────────────────────
     let symlink_ok = link.is_managed_link(abs_path, &ctx.config.store);
 
-    if dry_run {
-        if symlink_ok {
-            println!("[dry-run] relink '{rel_str}'");
-            println!("  symlink already correct — update ownership_state: detached -> attached");
-        } else {
-            println!("[dry-run] relink '{rel_str}'");
-            println!(
-                "  recreate symlink {} -> {}",
-                abs_path.display(),
-                store_path.display()
-            );
-            println!("  ownership_state: detached -> attached");
-        }
-        return Ok(RelinkOutcome::WouldRelink);
-    }
+    Ok(ItemRelinkPlan {
+        path: rel_str,
+        abs_path: abs_path.to_path_buf(),
+        store_path,
+        symlink_ok,
+    })
+}
 
+fn execute_relink_plan(
+    ctx: &mut RepoContext,
+    plan: &ItemRelinkPlan,
+    link: &dyn LinkStrategy,
+) -> Result<RelinkOutcome> {
     // ── Execute ───────────────────────────────────────────────────────────
-    let outcome = if symlink_ok {
+    let outcome = if plan.symlink_ok {
         // Symlink is already correct; only the manifest state needs updating.
         RelinkOutcome::StateUpdated
     } else {
         // Remove stale symlink if present, then recreate.
-        if abs_path.symlink_metadata().is_ok() {
-            link.remove(abs_path)?;
+        if plan.abs_path.symlink_metadata().is_ok() {
+            link.remove(&plan.abs_path)?;
         }
-        link.create(&store_path, abs_path)?;
+        link.create(&plan.store_path, &plan.abs_path)?;
         RelinkOutcome::Relinked
     };
 
     // ── Transition ownership_state: Detached -> Attached ──────────────────
     let now = context::now_iso8601();
     ctx.manifest
-        .set_ownership_state(&rel_str, OwnershipState::Attached, &now);
+        .set_ownership_state(&plan.path, OwnershipState::Attached, &now);
     manifest::save(&ctx.repo_store, &ctx.manifest)?;
 
     Ok(outcome)

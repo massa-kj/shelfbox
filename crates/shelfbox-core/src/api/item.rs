@@ -7,13 +7,16 @@ pub use crate::{
         add::{DirItemOutcome, DirectoryAddResult, SkipReason},
         info::ItemInfo,
         relink::RelinkOutcome,
-        repair::RepairOutcome,
         restore::{NamespaceRestoreResult, NsRestoreItemOutcome},
         status::ItemStatus,
     },
     plan::{
+        item_add::{ItemAddPlan, ItemAddReport},
         item_move::{ItemMovePlan, ItemMoveReport, ItemMoveWarning},
+        item_relink::{ItemRelinkPlan, ItemRelinkReport},
+        item_repair::{ItemRepairReport, RepairOutcome},
         item_restore::{ItemRestoreAction, ItemRestorePlan, ItemRestoreReport},
+        repo_repair::RepoRepairSymlinkAction,
     },
     store::manifest::Item,
 };
@@ -37,10 +40,10 @@ pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<Read
     context::build_read_only(cwd, store_override)
 }
 
-pub fn add_file(ctx: &mut RepoContext, abs_path: &Path, dry_run: bool) -> Result<()> {
+pub fn add_file(ctx: &mut RepoContext, abs_path: &Path, dry_run: bool) -> Result<ItemAddReport> {
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
-    add::add(ctx, abs_path, dry_run, &link, &ignore)
+    add::add_report(ctx, abs_path, dry_run, &link, &ignore)
 }
 
 pub fn add_directory(
@@ -108,14 +111,14 @@ pub fn repair(
     abs_path: &Path,
     dry_run: bool,
     force: bool,
-) -> Result<RepairOutcome> {
+) -> Result<ItemRepairReport> {
     let link = DefaultLinkStrategy;
-    repair_ops::repair(ctx, abs_path, &link, dry_run, force)
+    repair_ops::repair_report(ctx, abs_path, &link, dry_run, force)
 }
 
-pub fn relink(ctx: &mut RepoContext, abs_path: &Path, dry_run: bool) -> Result<RelinkOutcome> {
+pub fn relink(ctx: &mut RepoContext, abs_path: &Path, dry_run: bool) -> Result<ItemRelinkReport> {
     let link = DefaultLinkStrategy;
-    relink_ops::relink(ctx, abs_path, dry_run, &link)
+    relink_ops::relink_report(ctx, abs_path, dry_run, &link)
 }
 
 pub fn move_item(

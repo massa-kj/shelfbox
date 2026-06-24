@@ -9,6 +9,7 @@ use crate::{
     git,
     ignore::IgnoreBackend,
     link::LinkStrategy,
+    plan::item_add::{ItemAddPlan, ItemAddReport},
     policy::item_validation::{self, DirectoryCandidateDecision},
     store::manifest::{self, Item, OwnershipState},
 };
@@ -41,6 +42,26 @@ pub fn add(
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
 ) -> Result<()> {
+    add_report(ctx, abs_path, dry_run, link, ignore).map(|_| ())
+}
+
+pub(crate) fn add_report(
+    ctx: &mut RepoContext,
+    abs_path: &Path,
+    dry_run: bool,
+    link: &dyn LinkStrategy,
+    ignore: &dyn IgnoreBackend,
+) -> Result<ItemAddReport> {
+    let plan = build_add_plan(ctx, abs_path)?;
+
+    if !dry_run {
+        execute_add_plan(ctx, &plan, link, ignore)?;
+    }
+
+    Ok(ItemAddReport { plan, dry_run })
+}
+
+fn build_add_plan(ctx: &RepoContext, abs_path: &Path) -> Result<ItemAddPlan> {
     // ── Path validation ──────────────────────────────────────────────────────
     // Must be within the repository root.
     let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
@@ -70,35 +91,33 @@ pub fn add(
     // Store-relative path (relative to repo_store): "items/<rel>".
     let store_path_rel = item_validation::store_item_path_for_repo_path(&rel_str);
 
-    // ── Dry-run ──────────────────────────────────────────────────────────────
-    if dry_run {
-        println!("[dry-run] shelve '{rel_str}'");
-        println!(
-            "  move    {} → {}",
-            abs_path.display(),
-            store_path.display()
-        );
-        println!(
-            "  symlink {} → {}",
-            abs_path.display(),
-            store_path.display()
-        );
-        println!("  exclude {rel_str}");
-        return Ok(());
-    }
+    Ok(ItemAddPlan {
+        path: rel_str,
+        abs_path: abs_path.to_path_buf(),
+        store_path,
+        store_path_relative: store_path_rel,
+    })
+}
 
+fn execute_add_plan(
+    ctx: &mut RepoContext,
+    plan: &ItemAddPlan,
+    link: &dyn LinkStrategy,
+    ignore: &dyn IgnoreBackend,
+) -> Result<()> {
     // ── Execute ──────────────────────────────────────────────────────────────
     // Ensure the items sub-directory exists before the move.
-    if let Some(parent) = store_path.parent() {
+    if let Some(parent) = plan.store_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
 
     // Move the file/directory into the store.
-    std::fs::rename(abs_path, &store_path).map_err(|e| AppError::io(abs_path, e))?;
+    std::fs::rename(&plan.abs_path, &plan.store_path)
+        .map_err(|e| AppError::io(&plan.abs_path, e))?;
 
     // Create the symlink; roll back the move on failure.
-    if let Err(e) = link.create(&store_path, abs_path) {
-        let _ = std::fs::rename(&store_path, abs_path);
+    if let Err(e) = link.create(&plan.store_path, &plan.abs_path) {
+        let _ = std::fs::rename(&plan.store_path, &plan.abs_path);
         return Err(e);
     }
 
@@ -108,8 +127,8 @@ pub fn add(
     let item = Item {
         item_id: Ulid::new().to_string(),
         origin_repo_id: ctx.repo_id.clone(),
-        path: rel_str.clone(),
-        store_path: store_path_rel,
+        path: plan.path.clone(),
+        store_path: plan.store_path_relative.clone(),
         ownership_state: OwnershipState::Attached,
         created_at: now.clone(),
         updated_at: now,
@@ -118,7 +137,7 @@ pub fn add(
     manifest::save(&ctx.repo_store, &ctx.manifest)?;
 
     // Add the path to .git/info/exclude.
-    ignore.add_entries(&ctx.repo_root, &[&rel_str])?;
+    ignore.add_entries(&ctx.repo_root, &[&plan.path])?;
 
     Ok(())
 }

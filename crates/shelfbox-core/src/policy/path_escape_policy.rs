@@ -1,7 +1,10 @@
 use std::path::{Component, Path};
 
 use crate::{
-    domain::manifest::Manifest,
+    domain::{
+        manifest::Manifest,
+        path::{RepoRelativePath, StoreRelativePath},
+    },
     error::{AppError, Result},
 };
 
@@ -11,11 +14,7 @@ pub(crate) fn is_normalized_relative_path(path: &Path) -> bool {
 }
 
 pub(crate) fn is_normalized_relative_str(value: &str) -> bool {
-    if value.is_empty() || value.contains('\\') || value.split('/').any(str::is_empty) {
-        return false;
-    }
-
-    is_normalized_relative_path(Path::new(value))
+    RepoRelativePath::new(value).is_some()
 }
 
 pub(crate) fn is_git_internal_path(path: &Path) -> bool {
@@ -37,7 +36,7 @@ pub(crate) fn ensure_not_git_internal(rel_path: &Path, abs_path: &Path) -> Resul
 pub(crate) fn is_store_item_path(value: &str) -> bool {
     value
         .strip_prefix("items/")
-        .is_some_and(is_normalized_relative_str)
+        .is_some_and(|tail| StoreRelativePath::new(tail).is_some())
 }
 
 pub(crate) fn validate_manifest_paths(manifest: &Manifest) -> Result<()> {

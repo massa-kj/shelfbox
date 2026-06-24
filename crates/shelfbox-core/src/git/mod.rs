@@ -1,8 +1,8 @@
 pub(crate) mod command;
-pub mod discover;
-pub mod exclude;
-pub mod remote;
-pub mod tracked;
+pub(crate) mod discover;
+pub(crate) mod exclude;
+pub(crate) mod remote;
+pub(crate) mod tracked;
 
 pub use discover::{find_repo_root, git_common_dir, git_dir};
 pub use exclude::exclude_file_path;

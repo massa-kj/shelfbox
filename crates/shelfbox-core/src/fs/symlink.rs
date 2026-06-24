@@ -6,8 +6,8 @@ use crate::error::{AppError, Result};
 
 /// Abstraction over different link mechanisms.
 ///
-/// Concrete implementations: [`UnixSymlinkStrategy`] (Linux / macOS) and
-/// [`WindowsSymlinkStrategy`] (Windows). Call-sites should use
+/// Concrete implementations: `UnixSymlinkStrategy` (Linux / macOS) and
+/// `WindowsSymlinkStrategy` (Windows). Call-sites should use
 /// [`DefaultLinkStrategy`] to stay platform-agnostic.
 pub trait LinkStrategy {
     /// Creates a link at `link_path` that points to `target`.
@@ -30,7 +30,7 @@ pub trait LinkStrategy {
     /// Returns `true` if `path` is a link of the kind this strategy manages
     /// (i.e. a symlink on both Unix and Windows).
     ///
-    /// Unlike [`is_managed_link`], this does **not** verify that the target
+    /// Unlike [`Self::is_managed_link`], this does **not** verify that the target
     /// falls inside the shelfbox store.
     fn is_link(&self, path: &Path) -> bool;
 

@@ -202,8 +202,8 @@ fn cmd_add(
             print_dir_add_result(&result);
         } else {
             // Single-file add.
-            match item::add_file(&mut ctx, &abs, dry_run) {
-                Ok(()) => {}
+            let report = match item::add_file(&mut ctx, &abs, dry_run) {
+                Ok(report) => report,
                 // Special-case: give the user an actionable hint for tracked files.
                 Err(item::AppError::PathIsTracked { path: ref p }) => {
                     let rel = p
@@ -220,13 +220,35 @@ fn cmd_add(
                 Err(e) => {
                     return Err(e).with_context(|| format!("add '{}' failed", path.display()));
                 }
-            }
-            if !dry_run {
+            };
+            if dry_run {
+                print_add_file_report(&report);
+            } else {
                 println!("shelved: {}", path.display());
             }
         }
     }
     Ok(())
+}
+
+fn print_add_file_report(report: &item::ItemAddReport) {
+    if !report.dry_run {
+        return;
+    }
+
+    let plan = &report.plan;
+    println!("[dry-run] shelve '{}'", plan.path);
+    println!(
+        "  move    {} → {}",
+        plan.abs_path.display(),
+        plan.store_path.display()
+    );
+    println!(
+        "  symlink {} → {}",
+        plan.abs_path.display(),
+        plan.store_path.display()
+    );
+    println!("  exclude {}", plan.path);
 }
 
 /// Prints a human-readable summary of a directory add operation.
@@ -486,9 +508,12 @@ fn cmd_repair(
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        match item::repair(&ctx, &abs, dry_run, force)
-            .with_context(|| format!("repair '{}' failed", path.display()))?
-        {
+        let report = item::repair(&ctx, &abs, dry_run, force)
+            .with_context(|| format!("repair '{}' failed", path.display()))?;
+        if dry_run {
+            print_repair_report(&report);
+        }
+        match report.outcome {
             item::RepairOutcome::LinkRecreated => {
                 if !dry_run {
                     println!("repaired: {}", path.display());
@@ -512,6 +537,26 @@ fn cmd_repair(
     Ok(())
 }
 
+fn print_repair_report(report: &item::ItemRepairReport) {
+    if !report.dry_run {
+        return;
+    }
+
+    if let item::RepoRepairSymlinkAction::Recreate {
+        path,
+        abs_path,
+        store_path,
+    } = &report.action
+    {
+        println!("[dry-run] repair '{path}'");
+        println!(
+            "  recreate symlink {} → {}",
+            abs_path.display(),
+            store_path.display()
+        );
+    }
+}
+
 fn cmd_relink(
     cwd: &Path,
     store_override: Option<&Path>,
@@ -523,9 +568,12 @@ fn cmd_relink(
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        match item::relink(&mut ctx, &abs, dry_run)
-            .with_context(|| format!("relink '{}' failed", path.display()))?
-        {
+        let report = item::relink(&mut ctx, &abs, dry_run)
+            .with_context(|| format!("relink '{}' failed", path.display()))?;
+        if dry_run {
+            print_relink_report(&report);
+        }
+        match report.outcome {
             item::RelinkOutcome::Relinked => {
                 println!("relinked: {}", path.display());
             }
@@ -536,6 +584,25 @@ fn cmd_relink(
         }
     }
     Ok(())
+}
+
+fn print_relink_report(report: &item::ItemRelinkReport) {
+    if !report.dry_run {
+        return;
+    }
+
+    let plan = &report.plan;
+    println!("[dry-run] relink '{}'", plan.path);
+    if plan.symlink_ok {
+        println!("  symlink already correct — update ownership_state: detached -> attached");
+    } else {
+        println!(
+            "  recreate symlink {} -> {}",
+            plan.abs_path.display(),
+            plan.store_path.display()
+        );
+        println!("  ownership_state: detached -> attached");
+    }
 }
 
 fn cmd_move(

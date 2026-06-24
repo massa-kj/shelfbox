@@ -4,7 +4,10 @@
 //! store or working tree. Operation modules execute those plans and return the
 //! same shape to callers for presentation.
 
+pub mod item_add;
 pub mod item_move;
+pub mod item_relink;
+pub mod item_repair;
 pub mod item_restore;
 pub mod manifest_migration;
 pub mod repo_reclaim;

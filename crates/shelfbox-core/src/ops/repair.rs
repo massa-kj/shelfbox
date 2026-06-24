@@ -5,6 +5,7 @@ use crate::{
     error::{AppError, Result},
     ignore::GitInfoExclude,
     link::LinkStrategy,
+    plan::item_repair::ItemRepairReport,
     plan::repo_repair::{RepoRepairPlan, RepoRepairSymlinkAction},
     policy::repair_policy::{self, SymlinkRepairDecision},
     store::{
@@ -13,22 +14,10 @@ use crate::{
     },
 };
 
+pub use crate::plan::item_repair::RepairOutcome;
 pub use crate::plan::repo_repair::RepairRepoReport;
 
 use super::path::repo_relative_string;
-
-/// The outcome of a single repair attempt.
-#[derive(Debug, PartialEq, Eq)]
-pub enum RepairOutcome {
-    /// The symlink was recreated or relinked to the correct target.
-    LinkRecreated,
-    /// The item was already healthy; no action was taken.
-    AlreadyHealthy,
-    /// The store-side file is missing; cannot repair without data recovery.
-    StoreMissing,
-    /// The path is not recorded in the manifest.
-    NotManaged,
-}
 
 /// Attempts to repair the symlink for a single shelved item.
 ///
@@ -45,7 +34,8 @@ pub enum RepairOutcome {
 ///
 /// # Dry-run
 ///
-/// When `dry_run` is `true`, prints what would happen without making changes.
+/// When `dry_run` is `true`, returns the validated report without making
+/// changes.
 pub fn repair(
     ctx: &RepoContext,
     abs_path: &Path,
@@ -53,29 +43,28 @@ pub fn repair(
     dry_run: bool,
     force: bool,
 ) -> Result<RepairOutcome> {
-    let action = build_repair_action(ctx, abs_path, link, force)?;
+    repair_report(ctx, abs_path, link, dry_run, force).map(|report| report.outcome)
+}
 
-    // ── Dry-run ───────────────────────────────────────────────────────────
-    if dry_run {
-        if let RepoRepairSymlinkAction::Recreate {
-            path,
-            abs_path,
-            store_path,
-        } = &action
-        {
-            println!("[dry-run] repair '{path}'");
-            println!(
-                "  recreate symlink {} → {}",
-                abs_path.display(),
-                store_path.display()
-            );
-        }
-        return Ok(repair_outcome(&action));
+pub(crate) fn repair_report(
+    ctx: &RepoContext,
+    abs_path: &Path,
+    link: &dyn LinkStrategy,
+    dry_run: bool,
+    force: bool,
+) -> Result<ItemRepairReport> {
+    let action = build_repair_action(ctx, abs_path, link, force)?;
+    let outcome = repair_outcome(&action);
+
+    if !dry_run {
+        execute_repair_action(&action, link)?;
     }
 
-    // ── Execute ───────────────────────────────────────────────────────────
-    execute_repair_action(&action, link)?;
-    Ok(repair_outcome(&action))
+    Ok(ItemRepairReport {
+        action,
+        outcome,
+        dry_run,
+    })
 }
 
 fn build_repair_action(

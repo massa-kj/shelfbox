@@ -100,7 +100,7 @@ pub struct ExplicitReclaimContext {
 }
 
 impl RepoContext {
-    /// Root of the `items/` subdirectory inside [`repo_store`].
+    /// Root of the `items/` subdirectory inside [`Self::repo_store`].
     pub fn items_dir(&self) -> PathBuf {
         self.repo_store.join("items")
     }

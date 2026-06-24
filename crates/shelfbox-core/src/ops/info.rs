@@ -45,7 +45,7 @@ pub struct ItemInfo {
 /// Returns diagnostic metadata for the item at `abs_path`.
 ///
 /// `abs_path` must be absolute and located under `ctx.repo_root`.
-/// Returns [`AppError::PathOutsideRepo`] if it is not.
+/// Returns [`crate::error::AppError::PathOutsideRepo`] if it is not.
 ///
 /// The `link` argument is accepted for API symmetry with other ops but is not
 /// used; symlink validity is determined by comparing `readlink` output against

@@ -50,7 +50,8 @@ pub enum ConfigSource {
 
 impl ConfigSource {
     /// Short label for tabular output (e.g. `config list` SOURCE column).
-    /// `Env("SHELFBOX_STORE")` → `"env"`, others unchanged from [`Display`].
+    /// `Env("SHELFBOX_STORE")` → `"env"`, others unchanged from
+    /// [`std::fmt::Display`].
     pub fn short(self) -> &'static str {
         match self {
             Self::CliFlag => "cli",
@@ -102,7 +103,7 @@ impl From<ResolvedConfig> for Config {
 
 /// Fully resolved configuration ready for use by the rest of the library.
 ///
-/// Construct via [`Config::load`] or [`Config::with_store_override`].
+/// Construct via [`Config::load`].
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Root directory of the external store.
