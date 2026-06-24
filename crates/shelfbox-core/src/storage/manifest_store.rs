@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub use crate::domain::{
-    manifest::{IdentityHints, Item, Manifest},
+    manifest::{Item, Manifest},
     ownership::OwnershipState,
 };
 

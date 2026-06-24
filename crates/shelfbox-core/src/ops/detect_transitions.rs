@@ -1,11 +1,11 @@
 use crate::{
     config::Config,
-    context::{self, RepoContext},
+    context::RepoContext,
     error::Result,
     store::{index, manifest, manifest::OwnershipState},
 };
 
-/// Summary of ownership state transitions performed by [`run`].
+/// Summary of ownership state transitions detected by transition scans.
 #[derive(Debug, Default)]
 pub struct TransitionReport {
     /// Number of items transitioned from `Attached` to `Unreachable`.
@@ -21,79 +21,8 @@ impl TransitionReport {
     }
 }
 
-/// Scans all other repos in the store index and automatically transitions
-/// `Attached` items to `Unreachable` when their local root is gone.
-///
-/// # Detection rules
-///
-/// For each repo entry in the index whose ID differs from `ctx.repo_id`:
-///
-/// * **`Attached → Unreachable`**: `entry.root` no longer exists on disk (and
-///   the repo has been deleted or moved without re-registering.
-///
-/// # Guard
-///
-/// Only `Attached` items are candidates for automatic transition.  Items
-/// already in `Detached`, `Unreachable`, or `Orphaned`
-/// state are left unchanged.  This prevents re-transitioning already-resolved
-/// items if, for example, an index corruption creates a duplicate
-/// `git_common_dir` entry for an already-associated repo.
-///
-/// # Write behaviour
-///
-/// This function writes to manifests of OTHER repos in the store.  The caller
-/// is responsible for holding the store write lock (i.e. `ctx` must have been
-/// built with `write = true`).
-pub fn run(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
-    let mut report = TransitionReport::default();
-    let now = context::now_iso8601();
-
-    let idx = index::load(&config.store)?;
-
-    for (repo_id, entry) in idx.iter() {
-        // Skip the current repo.
-        if repo_id == ctx.repo_id {
-            continue;
-        }
-
-        let repo_store = config.store.join("repos").join(&entry.repo_store_dir);
-
-        if entry.root.as_ref().is_some_and(|root| root.exists()) {
-            continue;
-        }
-        let target_state = OwnershipState::Unreachable;
-
-        // Load the repo's manifest; skip gracefully if missing or unreadable.
-        let mut mf = match manifest::load(&repo_store) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        // Transition only Attached items — all other states are immutable
-        // under automatic detection (spec §6.1, P4.1 constraint).
-        let mut changed = false;
-        for item in mf.items.iter_mut() {
-            if item.ownership_state != OwnershipState::Attached {
-                continue;
-            }
-            item.ownership_state = target_state;
-            item.updated_at = now.clone();
-            changed = true;
-
-            report.unreachable += 1;
-        }
-
-        if changed {
-            manifest::save(&repo_store, &mf)?;
-            report.affected_repos.push(repo_id.to_owned());
-        }
-    }
-
-    Ok(report)
-}
-
 /// Read-only scan: returns how many `Attached` items in OTHER repos would be
-/// transitioned by [`run`].  Used by `repo status` to display a non-mutating
+/// considered unreachable. Used by `repo status` to display a non-mutating
 /// hint without writing anything.
 pub fn scan(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {
     let mut report = TransitionReport::default();

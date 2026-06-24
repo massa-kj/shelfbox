@@ -4,24 +4,22 @@ use std::{
 };
 
 use serde::Serialize;
+
+use super::status::{self, ItemStatus};
+use crate::{
+    context::RepoContext, error::Result, ignore::IgnoreBackend, link::LinkStrategy, store::index,
+};
+
+#[cfg(test)]
+use super::repair::{self, RepairOutcome};
+#[cfg(test)]
+use crate::{context, store::manifest};
+#[cfg(test)]
 use ulid::Ulid;
 
-use crate::{
-    context::{self, RepoContext},
-    error::Result,
-    ignore::IgnoreBackend,
-    link::LinkStrategy,
-    store::{index, manifest},
-};
-
-use super::{
-    repair::{self, RepairOutcome},
-    status::{self, ItemStatus},
-};
-
-/// Comprehensive health report produced by [`check`].
+/// Comprehensive health report produced by integrity checks.
 ///
-/// This is a read-only operation.  Use [`fix`] for the repair mode.
+/// This is a read-only operation.
 #[derive(Debug, Serialize)]
 pub struct IntegrityReport {
     /// Per-item health status (covers every item in the manifest).
@@ -120,7 +118,8 @@ fn walk_for_orphans(
 
 // ── fix mode ──────────────────────────────────────────────────────────────────
 
-/// The outcome of a single fix action within [`fix`].
+/// The outcome of a single test-only fix action.
+#[cfg(test)]
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", content = "detail")]
 pub enum FixResult {
@@ -136,7 +135,8 @@ pub enum FixResult {
     CannotFix(String),
 }
 
-/// Report produced by [`fix`].
+/// Report produced by the test-only integrity fix helper.
+#[cfg(test)]
 #[derive(Debug, Serialize)]
 pub struct IntegrityFixReport {
     /// Ordered log of every fix action attempted.
@@ -158,6 +158,7 @@ pub struct IntegrityFixReport {
 ///
 /// `dry_run = true` records what *would* happen without touching the
 /// filesystem, index, or ignore backend.
+#[cfg(test)]
 pub fn fix(
     ctx: &mut RepoContext,
     link: &dyn LinkStrategy,
@@ -201,6 +202,7 @@ pub fn fix(
 ///
 /// When `yes` is `false`, rebuild candidates are reported as
 /// [`FixResult::NeedsConfirmation`] and the manifest is not modified.
+#[cfg(test)]
 fn rebuild_manifest_from_store(
     ctx: &mut RepoContext,
     actions: &mut Vec<FixResult>,
@@ -292,6 +294,7 @@ fn rebuild_manifest_from_store(
 
 /// Fixes an index root mismatch by updating the recorded root to the current
 /// repository path.
+#[cfg(test)]
 fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: bool) -> Result<()> {
     let idx = index::load(&ctx.config.store)?;
     let already_correct = idx
@@ -348,6 +351,7 @@ fn fix_root_mismatch(ctx: &RepoContext, actions: &mut Vec<FixResult>, dry_run: b
 }
 
 /// Ensures every manifested path appears in the ignore backend.
+#[cfg(test)]
 fn fix_exclude_entries(
     ctx: &RepoContext,
     ignore: &dyn IgnoreBackend,
@@ -386,6 +390,7 @@ fn fix_exclude_entries(
 
 /// Iterates all manifest items and calls [`repair::repair`] for each.
 /// Failures are recorded as [`FixResult::Failed`] rather than propagated.
+#[cfg(test)]
 fn fix_symlinks(
     ctx: &RepoContext,
     link: &dyn LinkStrategy,
@@ -395,7 +400,7 @@ fn fix_symlinks(
 ) {
     for item in &ctx.manifest.items {
         let abs_path = ctx.repo_root.join(&item.path);
-        match repair::repair(ctx, &abs_path, link, dry_run, false) {
+        match repair::repair_report(ctx, &abs_path, link, dry_run, false).map(|r| r.outcome) {
             Ok(RepairOutcome::AlreadyHealthy) => {
                 // Healthy items are not listed to keep output concise.
             }
@@ -428,6 +433,7 @@ fn fix_symlinks(
 /// Conservative GC only deletes manifest entries explicitly marked
 /// `OwnershipState::Orphaned`, via `store gc`. A bare file under `items/` is
 /// not enough proof that deletion is safe.
+#[cfg(test)]
 fn handle_orphans(ctx: &RepoContext, yes: bool, actions: &mut Vec<FixResult>, dry_run: bool) {
     for orphan in collect_orphan_store_items(ctx) {
         let prefix = if dry_run { "[dry-run] " } else { "" };

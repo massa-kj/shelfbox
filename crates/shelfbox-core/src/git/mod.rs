@@ -5,8 +5,7 @@ pub(crate) mod remote;
 pub(crate) mod tracked;
 
 pub use discover::{find_repo_root, git_common_dir, git_dir};
-pub use exclude::exclude_file_path;
-pub use remote::{get_remote_url, normalize_remote_hint, remote_url};
+pub use remote::{normalize_remote_hint, remote_url};
 pub use tracked::{is_tracked, tracked_files_in_dir};
 
 #[cfg(test)]
@@ -156,20 +155,5 @@ mod tests {
         assert_eq!(normalize_remote_hint(""), None);
         assert_eq!(normalize_remote_hint("not a remote"), None);
         assert_eq!(normalize_remote_hint("file:///tmp/repo.git"), None);
-    }
-
-    #[test]
-    fn get_remote_url_wraps_remote_url_for_compatibility() {
-        let dir = init_repo();
-        StdCommand::new("git")
-            .args(["remote", "add", "origin", "https://github.com/org/repo"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-
-        assert_eq!(
-            get_remote_url(dir.path()).unwrap(),
-            Some("https://github.com/org/repo".into())
-        );
     }
 }

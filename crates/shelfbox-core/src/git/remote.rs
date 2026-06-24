@@ -14,10 +14,6 @@ pub fn remote_url(repo_root: &Path) -> Result<Option<String>> {
     }
 }
 
-pub fn get_remote_url(repo_root: &Path) -> Result<Option<String>> {
-    remote_url(repo_root)
-}
-
 pub fn normalize_remote_hint(url: &str) -> Option<String> {
     let mut raw = url.trim();
     if raw.is_empty() {

@@ -19,33 +19,6 @@ pub use crate::plan::repo_repair::RepairRepoReport;
 
 use super::path::repo_relative_string;
 
-/// Attempts to repair the symlink for a single shelved item.
-///
-/// # Safety guards
-///
-/// - If a regular file (not a symlink) exists at `abs_path`, the function
-///   returns [`AppError::PathIsRegularFile`] to prevent overwriting user data.
-/// - If a symlink exists at `abs_path` but points to an unexpected target,
-///   the function returns [`AppError::RepairSymlinkTargetMismatch`] unless
-///   `force` is `true`.  This protects against silently masking a wrong
-///   machine, stale store, or copied-repo situation.
-/// - If the store-side copy is missing, returns [`RepairOutcome::StoreMissing`]
-///   without touching the filesystem.
-///
-/// # Dry-run
-///
-/// When `dry_run` is `true`, returns the validated report without making
-/// changes.
-pub fn repair(
-    ctx: &RepoContext,
-    abs_path: &Path,
-    link: &dyn LinkStrategy,
-    dry_run: bool,
-    force: bool,
-) -> Result<RepairOutcome> {
-    repair_report(ctx, abs_path, link, dry_run, force).map(|report| report.outcome)
-}
-
 pub(crate) fn repair_report(
     ctx: &RepoContext,
     abs_path: &Path,

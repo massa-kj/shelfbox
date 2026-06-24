@@ -9,7 +9,7 @@ use shelfbox_core::{
 };
 use tempfile::TempDir;
 
-mod common;
+use crate::integration_test_common as common;
 
 #[test]
 fn current_git_context_does_not_mutate_repo_tree() {
@@ -46,7 +46,7 @@ fn read_only_context_loads_associated_repo_without_writing() {
     let store = TempDir::new().unwrap();
 
     {
-        let ctx = context::build(repo.path(), Some(store.path()), true).unwrap();
+        let ctx = context::build_create_or_load(repo.path(), Some(store.path())).unwrap();
         manifest::save(&ctx.repo_store, &ctx.manifest).unwrap();
     }
 

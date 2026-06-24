@@ -15,7 +15,7 @@ use shelfbox_core::{
     context, ignore::GitInfoExclude, link::DefaultLinkStrategy, ops, ops::integrity::FixResult,
 };
 
-mod common;
+use crate::integration_test_common as common;
 
 fn require_symlink_support() -> bool {
     common::require_symlink_support()
@@ -34,7 +34,7 @@ fn worktree_add_reuses_repo_ulid() {
     let store_dir = TempDir::new().unwrap();
 
     // Register the main clone in the index.
-    let ctx_main = context::build(main_dir.path(), Some(store_dir.path()), false).unwrap();
+    let ctx_main = context::build_create_or_load(main_dir.path(), Some(store_dir.path())).unwrap();
     let main_repo_id = ctx_main.repo_id.clone();
     drop(ctx_main); // release lock
 
@@ -52,7 +52,7 @@ fn worktree_add_reuses_repo_ulid() {
     );
 
     // Build context from the linked worktree.
-    let ctx_wt = context::build(&wt_path, Some(store_dir.path()), false).unwrap();
+    let ctx_wt = context::build_create_or_load(&wt_path, Some(store_dir.path())).unwrap();
 
     assert_eq!(
         ctx_wt.repo_id, main_repo_id,
@@ -76,8 +76,8 @@ fn worktree_shelved_items_visible_from_linked_worktree() {
     let file_path = main_dir.path().join("secret.env");
     std::fs::write(&file_path, "TOKEN=abc").unwrap();
 
-    let mut ctx = context::build(main_dir.path(), Some(store_dir.path()), true).unwrap();
-    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    let mut ctx = context::build_create_or_load(main_dir.path(), Some(store_dir.path())).unwrap();
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
     drop(ctx);
 
     // Create a linked worktree.
@@ -94,7 +94,7 @@ fn worktree_shelved_items_visible_from_linked_worktree() {
     );
 
     // Build context from the linked worktree.
-    let ctx_wt = context::build(&wt_path, Some(store_dir.path()), false).unwrap();
+    let ctx_wt = context::build_create_or_load(&wt_path, Some(store_dir.path())).unwrap();
 
     // The manifest is shared; the item shelved from the main clone must appear.
     assert_eq!(
@@ -124,8 +124,8 @@ fn index_deleted_creates_fresh_context_with_empty_manifest() {
     let file_path = repo_dir.path().join("secret.txt");
     std::fs::write(&file_path, "secret").unwrap();
 
-    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
-    ops::add::add(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
     let original_repo_id = ctx.repo_id.clone();
     let original_store = ctx.repo_store.clone();
     drop(ctx);
@@ -141,7 +141,7 @@ fn index_deleted_creates_fresh_context_with_empty_manifest() {
     std::fs::remove_file(&index_path).unwrap();
 
     // Rebuild context: empty index → new ULID assigned.
-    let ctx_fresh = context::build(repo_dir.path(), Some(store_dir.path()), false).unwrap();
+    let ctx_fresh = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
 
     assert_ne!(
         ctx_fresh.repo_id, original_repo_id,
@@ -180,12 +180,29 @@ fn concurrent_read_locks_are_shared() {
     let repo_dir = common::init_git_repo();
     let store_dir = TempDir::new().unwrap();
 
+    let initialized =
+        context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let expected_repo_id = initialized.repo_id.clone();
+    crate::store::manifest::save(&initialized.repo_store, &initialized.manifest).unwrap();
+    drop(initialized);
+
     // Two read-only contexts can be held simultaneously.
-    let ctx1 = context::build(repo_dir.path(), Some(store_dir.path()), false).unwrap();
-    let ctx2 = context::build(repo_dir.path(), Some(store_dir.path()), false).unwrap();
+    let ctx1 = context::build_read_only(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let ctx2 = context::build_read_only(repo_dir.path(), Some(store_dir.path())).unwrap();
 
     assert_eq!(
-        ctx1.repo_id, ctx2.repo_id,
+        ctx1.repo.as_ref().map(|repo| &repo.repo_id),
+        Some(&expected_repo_id),
+        "first read context must see the initialized repo"
+    );
+    assert_eq!(
+        ctx2.repo.as_ref().map(|repo| &repo.repo_id),
+        Some(&expected_repo_id),
+        "second read context must see the initialized repo"
+    );
+    assert_eq!(
+        ctx1.repo.as_ref().map(|repo| &repo.repo_id),
+        ctx2.repo.as_ref().map(|repo| &repo.repo_id),
         "both read contexts must see the same repo"
     );
 
@@ -220,9 +237,9 @@ fn partial_store_corruption_shows_mixed_status() {
         })
         .collect();
 
-    let mut ctx = context::build(repo_dir.path(), Some(store_dir.path()), true).unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
     for p in &paths {
-        ops::add::add(&mut ctx, p, false, &link, &ignore).unwrap();
+        ops::add::add_report(&mut ctx, p, false, &link, &ignore).unwrap();
     }
 
     // Corrupt one store item (simulate partial copy or deletion).

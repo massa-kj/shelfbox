@@ -149,29 +149,6 @@ pub fn resolve_existing_repo(current: &CurrentGitContext, index: &Index) -> Opti
         .map(str::to_string)
 }
 
-/// Builds a [`RepoContext`] for the current working directory.
-///
-/// This is the primary entry point used by CLI subcommands.  It:
-/// 1. Loads configuration.
-/// 2. Locates the Git repository root from `cwd`.
-/// 3. Looks up (or creates) a ULID repo ID in the global index.
-/// 4. Loads (or initialises) the per-repo manifest.
-///
-/// The `store_override` parameter lets the `--store` CLI flag take
-/// precedence over values in `config.toml`.
-///
-/// Set `write` to `true` for commands that modify the store (`add`, `restore`,
-/// `doctor --fix`, `repair`). Read-only commands (`list`, `status`, `doctor`)
-/// should pass `false`.
-pub fn build(cwd: &Path, store_override: Option<&Path>, write: bool) -> Result<RepoContext> {
-    let access = if write {
-        StoreAccess::Write
-    } else {
-        StoreAccess::ReadOnly
-    };
-    build_create_or_load_with_access(cwd, store_override, access)
-}
-
 /// Builds a [`RepoContext`] for commands that may create or load a repo identity.
 pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result<RepoContext> {
     build_create_or_load_with_access(cwd, store_override, StoreAccess::Write)

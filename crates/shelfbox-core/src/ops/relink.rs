@@ -12,37 +12,6 @@ use super::path::repo_relative_string;
 
 pub use crate::plan::item_relink::RelinkOutcome;
 
-/// Transitions a `Detached` item back to `Attached` by ensuring its symlink
-/// exists and updating `ownership_state` in the manifest.
-///
-/// # Distinction from `repair`
-///
-/// `repair` is ownership-neutral: it restores a broken symlink for an
-/// `Attached` item without mutating `ownership_state`.  `relink` is
-/// exclusively for `Detached` items and explicitly transitions ownership
-/// state from `Detached` to `Attached` (spec §6.1).
-///
-/// # Dry-run
-///
-/// When `dry_run` is `true`, returns the validated report without making
-/// changes.
-///
-/// # Errors
-///
-/// - [`AppError::PathOutsideRepo`] — path is not within the repository root.
-/// - [`AppError::NotManagedLink`] — path is not recorded in the manifest.
-/// - [`AppError::RelinkNotDetached`] — item exists but is not in `Detached` state.
-/// - [`AppError::StoreMissing`] — store-side file is missing; cannot relink.
-/// - [`AppError::PathIsRegularFile`] — a regular file exists at the repo path.
-pub fn relink(
-    ctx: &mut RepoContext,
-    abs_path: &Path,
-    dry_run: bool,
-    link: &dyn LinkStrategy,
-) -> Result<RelinkOutcome> {
-    relink_report(ctx, abs_path, dry_run, link).map(|report| report.outcome)
-}
-
 pub(crate) fn relink_report(
     ctx: &mut RepoContext,
     abs_path: &Path,

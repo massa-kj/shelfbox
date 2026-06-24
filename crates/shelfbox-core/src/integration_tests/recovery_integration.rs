@@ -13,7 +13,7 @@ use shelfbox_core::{
     },
 };
 
-mod common;
+use crate::integration_test_common as common;
 
 fn require_symlink_support() -> bool {
     common::require_symlink_support()
@@ -43,10 +43,10 @@ fn add_managed_file(
     }
     std::fs::write(&file_path, contents).unwrap();
 
-    let mut ctx = context::build(repo, Some(store), true).unwrap();
+    let mut ctx = context::build_create_or_load(repo, Some(store)).unwrap();
     let repo_id = ctx.repo_id.clone();
     let repo_store = ctx.repo_store.clone();
-    ops::add::add(
+    ops::add::add_report(
         &mut ctx,
         &file_path,
         false,
@@ -102,11 +102,11 @@ fn move_repository_path_reuses_repoid_via_git_common_dir() {
 
     let next = moved_worktree.join("second.env");
     std::fs::write(&next, "two").unwrap();
-    let mut moved_ctx = context::build(&moved_worktree, Some(store.path()), true).unwrap();
+    let mut moved_ctx = context::build_create_or_load(&moved_worktree, Some(store.path())).unwrap();
     assert_eq!(moved_ctx.repo_id, repo_id);
     assert_eq!(moved_ctx.git_common_dir, original_common);
 
-    ops::add::add(
+    ops::add::add_report(
         &mut moved_ctx,
         &next,
         false,
@@ -139,11 +139,12 @@ fn rename_repository_directory_reuses_repoid_via_git_common_dir() {
 
     let next = renamed_worktree.join("second.env");
     std::fs::write(&next, "two").unwrap();
-    let mut renamed_ctx = context::build(&renamed_worktree, Some(store.path()), true).unwrap();
+    let mut renamed_ctx =
+        context::build_create_or_load(&renamed_worktree, Some(store.path())).unwrap();
     assert_eq!(renamed_ctx.repo_id, repo_id);
     assert_eq!(renamed_ctx.git_common_dir, original_common);
 
-    ops::add::add(
+    ops::add::add_report(
         &mut renamed_ctx,
         &next,
         false,
@@ -192,7 +193,7 @@ fn renamed_repo_store_dir_rebuild_index_restores_locator_and_repair_succeeds() {
         .remove_entries(repo.path(), &["secret.env"])
         .unwrap();
 
-    let mut ctx = context::build(repo.path(), Some(store.path()), true).unwrap();
+    let mut ctx = context::build_create_or_load(repo.path(), Some(store.path())).unwrap();
     let repair = ops::repair::repair_repo(&mut ctx, &DefaultLinkStrategy, false, false).unwrap();
 
     assert_eq!(repair.symlinks_repaired, 1);
@@ -245,7 +246,7 @@ fn reclone_reclaim_associates_existing_repoid_after_fresh_repoid() {
         reclone.path(),
         &["remote", "add", "origin", "git@github.com:example/app.git"],
     );
-    let fresh_ctx = context::build(reclone.path(), Some(store.path()), true).unwrap();
+    let fresh_ctx = context::build_create_or_load(reclone.path(), Some(store.path())).unwrap();
     let fresh_repo_id = fresh_ctx.repo_id.clone();
     assert_ne!(fresh_repo_id, old_repo_id);
     ops::reclaim::check_reclaim_precondition(Some(&fresh_ctx.manifest)).unwrap();
@@ -255,7 +256,7 @@ fn reclone_reclaim_associates_existing_repoid_after_fresh_repoid() {
     let outcome = ops::reclaim::execute_reclaim(store.path(), &current, &old_repo_id).unwrap();
     assert_eq!(outcome.repo_id, old_repo_id);
 
-    let reclaimed_ctx = context::build(reclone.path(), Some(store.path()), false).unwrap();
+    let reclaimed_ctx = context::build_create_or_load(reclone.path(), Some(store.path())).unwrap();
     assert_eq!(reclaimed_ctx.repo_id, old_repo_id);
     let idx = index::load(store.path()).unwrap();
     assert!(
@@ -297,7 +298,7 @@ fn repair_after_reclaim_restores_symlinks_and_exclude_entries() {
     let current = context::current_git_context(reclone.path()).unwrap();
     ops::reclaim::execute_reclaim(store.path(), &current, &repo_id).unwrap();
 
-    let mut ctx = context::build(reclone.path(), Some(store.path()), true).unwrap();
+    let mut ctx = context::build_create_or_load(reclone.path(), Some(store.path())).unwrap();
     let repair = ops::repair::repair_repo(&mut ctx, &DefaultLinkStrategy, false, false).unwrap();
     let repaired_path = reclone.path().join("secret.env");
 
@@ -320,10 +321,11 @@ fn reclaim_rejects_current_repo_with_items_before_mutation() {
     let store = TempDir::new().unwrap();
     let (target_repo_id, _) = add_managed_file(target.path(), store.path(), "target.env", "target");
 
-    let mut current_ctx = context::build(current.path(), Some(store.path()), true).unwrap();
+    let mut current_ctx =
+        context::build_create_or_load(current.path(), Some(store.path())).unwrap();
     let current_file = current.path().join("current.env");
     std::fs::write(&current_file, "current").unwrap();
-    ops::add::add(
+    ops::add::add_report(
         &mut current_ctx,
         &current_file,
         false,

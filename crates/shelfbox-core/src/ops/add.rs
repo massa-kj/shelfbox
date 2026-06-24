@@ -26,25 +26,6 @@ fn update_identity_hints(ctx: &mut RepoContext) {
     }
 }
 
-/// Shelves `abs_path` into the store, leaving a symlink in its place.
-///
-/// # Dry-run
-/// When `dry_run` is `true`, prints what would happen without making changes.
-///
-/// # Errors
-///
-/// Returns an error if any pre-condition is violated (see [`crate::error::AppError`]
-/// variants for the full list).
-pub fn add(
-    ctx: &mut RepoContext,
-    abs_path: &Path,
-    dry_run: bool,
-    link: &dyn LinkStrategy,
-    ignore: &dyn IgnoreBackend,
-) -> Result<()> {
-    add_report(ctx, abs_path, dry_run, link, ignore).map(|_| ())
-}
-
 pub(crate) fn add_report(
     ctx: &mut RepoContext,
     abs_path: &Path,
@@ -165,7 +146,7 @@ impl std::fmt::Display for SkipReason {
     }
 }
 
-/// Outcome for a single file processed during [`add_directory`].
+/// Outcome for a single file processed during directory add.
 #[derive(Debug)]
 pub enum DirItemOutcome {
     /// File was successfully shelved.
@@ -180,7 +161,7 @@ pub enum DirItemOutcome {
     Failed(String),
 }
 
-/// Summary of a [`add_directory`] operation.
+/// Summary of a directory add operation.
 #[derive(Debug)]
 pub struct DirectoryAddResult {
     /// Directory path that was processed (repo-relative, ends with `/`).

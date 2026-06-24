@@ -195,51 +195,6 @@ impl LinkStrategy for WindowsSymlinkStrategy {
     }
 }
 
-// ── can_create_symlink ────────────────────────────────────────────────────────
-
-/// Returns `true` if the current process can create symbolic links.
-///
-/// On Unix this is always `true`. On Windows, symlink creation requires either
-/// Developer Mode (Windows 10 1703+) or an elevated (Administrator) shell;
-/// this function probes the OS by attempting to create a real symlink inside
-/// a temporary directory and immediately cleaning up after itself.
-///
-/// Callers can use this to produce a user-friendly diagnostic before
-/// attempting an operation that would fail silently.
-pub fn can_create_symlink() -> bool {
-    #[cfg(unix)]
-    {
-        true
-    }
-    #[cfg(windows)]
-    {
-        use std::io::Write;
-
-        // Use a process-ID-scoped directory to avoid collisions between
-        // concurrent test runs. A real file is created as the target so that
-        // the probe exercises the actual permission boundary, not a dangling
-        // symlink (which Windows may allow even without Developer Mode).
-        let dir =
-            std::env::temp_dir().join(format!("shelfbox_symlink_probe_{}", std::process::id()));
-        let target = dir.join("target");
-        let link = dir.join("link");
-
-        let result = (|| -> std::io::Result<()> {
-            std::fs::create_dir_all(&dir)?;
-            let mut f = std::fs::File::create(&target)?;
-            writeln!(f, "probe")?;
-            std::os::windows::fs::symlink_file(&target, &link)?;
-            Ok(())
-        })();
-
-        let _ = std::fs::remove_file(&link);
-        let _ = std::fs::remove_file(&target);
-        let _ = std::fs::remove_dir(&dir);
-
-        result.is_ok()
-    }
-}
-
 // ── DefaultLinkStrategy ───────────────────────────────────────────────────────
 
 /// Platform-appropriate link strategy selected at compile time.

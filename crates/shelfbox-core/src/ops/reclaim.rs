@@ -11,9 +11,7 @@ use crate::{
     },
 };
 
-pub use crate::plan::repo_reclaim::{
-    CandidateState, ReclaimCandidate, ReclaimOutcome, ReclaimPlan,
-};
+pub use crate::plan::repo_reclaim::{ReclaimCandidate, ReclaimOutcome, ReclaimPlan};
 
 pub fn build_candidates(
     store_root: &Path,

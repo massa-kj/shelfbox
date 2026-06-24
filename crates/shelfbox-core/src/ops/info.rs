@@ -9,7 +9,8 @@ use super::path::repo_relative_string;
 
 /// Diagnostic metadata for a single shelved item.
 ///
-/// Returned by [`info`] and intended for use as a debugging / scripting API.
+/// Returned by item info operations and intended for use as a debugging /
+/// scripting API.
 /// Every field is always populated regardless of the item's current state,
 /// making this the canonical source for "why does this item look broken?"
 /// diagnostics.

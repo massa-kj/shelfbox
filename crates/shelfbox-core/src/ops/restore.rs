@@ -89,7 +89,7 @@ pub fn restore(
 
 // ── Directory namespace restore ───────────────────────────────────────────────
 
-/// Outcome for a single item during [`restore_namespace`].
+/// Outcome for a single item during namespace restore.
 #[derive(Debug)]
 pub enum NsRestoreItemOutcome {
     /// Item was successfully restored.
@@ -100,7 +100,7 @@ pub enum NsRestoreItemOutcome {
     Failed(String),
 }
 
-/// Summary of a [`restore_namespace`] operation.
+/// Summary of a namespace restore operation.
 #[derive(Debug)]
 pub struct NamespaceRestoreResult {
     /// The namespace path that was operated on.
