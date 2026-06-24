@@ -2,8 +2,9 @@ use std::{collections::HashSet, path::Path};
 
 use crate::{
     error::{AppError, Result},
+    policy::gc_policy::{self, GcProtection},
     store::{
-        manifest::{self, OwnershipState},
+        manifest,
         scanner::{self, ScanError},
     },
 };
@@ -25,8 +26,8 @@ pub fn plan(store_root: &Path) -> Result<GcPlan> {
         let repo_store = store_root.join("repos").join(&repo.repo_store_dir);
 
         for item in &repo.manifest.items {
-            match item.ownership_state {
-                OwnershipState::Orphaned => {
+            match gc_policy::classify_ownership(item.ownership_state) {
+                GcProtection::Collectible => {
                     let absolute_store_path = repo_store.join(&item.store_path);
                     let (size_bytes, store_exists) = item_size(&absolute_store_path)?;
                     plan.candidates.push(GcCandidate {
@@ -40,9 +41,9 @@ pub fn plan(store_root: &Path) -> Result<GcPlan> {
                         store_exists,
                     });
                 }
-                OwnershipState::Attached => plan.protected_attached += 1,
-                OwnershipState::Detached => plan.protected_detached += 1,
-                OwnershipState::Unreachable => plan.protected_unreachable += 1,
+                GcProtection::Attached => plan.protected_attached += 1,
+                GcProtection::Detached => plan.protected_detached += 1,
+                GcProtection::Unreachable => plan.protected_unreachable += 1,
             }
         }
     }
@@ -97,7 +98,7 @@ pub fn run(store_root: &Path, dry_run: bool) -> Result<GcReport> {
             .items
             .iter()
             .filter(|item| {
-                item.ownership_state == OwnershipState::Orphaned
+                gc_policy::is_collectible(item.ownership_state)
                     && planned_ids.contains(item.item_id.as_str())
             })
             .map(|item| item.item_id.clone())
@@ -108,7 +109,7 @@ pub fn run(store_root: &Path, dry_run: bool) -> Result<GcReport> {
         }
 
         mf.items.retain(|item| {
-            item.ownership_state != OwnershipState::Orphaned
+            !gc_policy::is_collectible(item.ownership_state)
                 || !collectible_ids.contains(&item.item_id)
         });
 
@@ -206,7 +207,7 @@ mod tests {
 
     use crate::store::{
         index::{self, RepoEntry},
-        manifest::{Item, Manifest},
+        manifest::{Item, Manifest, OwnershipState},
     };
     use tempfile::TempDir;
 

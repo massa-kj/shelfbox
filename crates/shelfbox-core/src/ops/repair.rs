@@ -6,9 +6,10 @@ use crate::{
     ignore::GitInfoExclude,
     link::LinkStrategy,
     plan::repo_repair::{RepoRepairPlan, RepoRepairSymlinkAction},
+    policy::repair_policy::{self, SymlinkRepairDecision},
     store::{
         index::{self, RepoEntry},
-        manifest::{self, OwnershipState},
+        manifest,
     },
 };
 
@@ -95,42 +96,49 @@ fn build_repair_action(
         return Ok(RepoRepairSymlinkAction::StoreMissing { path });
     }
 
-    if link.is_managed_link(abs_path, &ctx.config.store) {
-        return Ok(RepoRepairSymlinkAction::AlreadyHealthy { path });
-    }
-
-    // A non-symlink entry at the repo path means the user may have placed
-    // their own file there. Overwriting it silently would cause data loss.
-    if !link.is_link(abs_path) && abs_path.exists() {
-        return Err(AppError::PathIsRegularFile {
-            path: abs_path.to_path_buf(),
-        });
-    }
-
-    // A wrong-target symlink is ambiguous and requires an explicit --force.
-    if !force {
-        if let Ok(actual_target) = link.read_target(abs_path) {
-            let abs_actual = if actual_target.is_absolute() {
-                actual_target.clone()
+    let is_managed_link = link.is_managed_link(abs_path, &ctx.config.store);
+    let is_link = link.is_link(abs_path);
+    let actual_target = if !force && is_link {
+        link.read_target(abs_path).ok().map(|actual_target| {
+            if actual_target.is_absolute() {
+                actual_target
             } else {
                 abs_path
                     .parent()
                     .map(|parent| parent.join(&actual_target))
-                    .unwrap_or_else(|| actual_target.clone())
-            };
-            return Err(AppError::RepairSymlinkTargetMismatch {
+                    .unwrap_or(actual_target)
+            }
+        })
+    } else {
+        None
+    };
+
+    match repair_policy::decide_symlink_repair(
+        is_managed_link,
+        abs_path.exists(),
+        is_link,
+        actual_target,
+        force,
+    ) {
+        SymlinkRepairDecision::AlreadyHealthy => {
+            Ok(RepoRepairSymlinkAction::AlreadyHealthy { path })
+        }
+        SymlinkRepairDecision::Recreate => Ok(RepoRepairSymlinkAction::Recreate {
+            path,
+            abs_path: abs_path.to_path_buf(),
+            store_path,
+        }),
+        SymlinkRepairDecision::RefuseRegularFile => Err(AppError::PathIsRegularFile {
+            path: abs_path.to_path_buf(),
+        }),
+        SymlinkRepairDecision::RefuseUnexpectedTarget { actual_target } => {
+            Err(AppError::RepairSymlinkTargetMismatch {
                 path: abs_path.to_path_buf(),
-                actual_target: abs_actual,
-                expected_target: store_path.clone(),
-            });
+                actual_target,
+                expected_target: store_path,
+            })
         }
     }
-
-    Ok(RepoRepairSymlinkAction::Recreate {
-        path,
-        abs_path: abs_path.to_path_buf(),
-        store_path,
-    })
 }
 
 fn execute_repair_action(action: &RepoRepairSymlinkAction, link: &dyn LinkStrategy) -> Result<()> {
@@ -170,13 +178,7 @@ fn build_repo_repair_plan(
     current: &context::CurrentGitContext,
     idx: &index::Index,
 ) -> Result<RepoRepairPlan> {
-    let attached_paths: Vec<String> = ctx
-        .manifest
-        .items
-        .iter()
-        .filter(|item| item.ownership_state == OwnershipState::Attached)
-        .map(|item| item.path.clone())
-        .collect();
+    let attached_paths = repair_policy::attached_item_paths(&ctx.manifest);
 
     let mut symlink_actions = Vec::new();
     for path in &attached_paths {
@@ -200,10 +202,10 @@ fn build_repo_repair_plan(
                 || entry.git_common_dir.as_deref() != Some(current.git_common_dir.as_path())
         })
         .unwrap_or(true);
-    let hints_updated = if symlink_actions.iter().any(is_failed_repo_repair_action) {
-        false
-    } else {
+    let hints_updated = if repair_policy::identity_hints_update_allowed(&symlink_actions) {
         identity_hints_need_update(ctx, current)
+    } else {
+        false
     };
 
     Ok(RepoRepairPlan {
@@ -213,15 +215,6 @@ fn build_repo_repair_plan(
         index_updated,
         hints_updated,
     })
-}
-
-fn is_failed_repo_repair_action(action: &RepoRepairSymlinkAction) -> bool {
-    matches!(
-        action,
-        RepoRepairSymlinkAction::StoreMissing { .. }
-            | RepoRepairSymlinkAction::NotManaged { .. }
-            | RepoRepairSymlinkAction::Failed { .. }
-    )
 }
 
 fn identity_hints_need_update(ctx: &RepoContext, current: &context::CurrentGitContext) -> bool {

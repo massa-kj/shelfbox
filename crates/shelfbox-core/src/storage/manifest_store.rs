@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     error::{AppError, Result},
+    policy::path_escape_policy,
     storage::{
         atomic_write::{self, ParentDirMode},
         layout,
@@ -47,11 +48,15 @@ pub fn load(repo_store: &Path) -> Result<Manifest> {
         });
     }
 
-    serde_json::from_value(raw).map_err(|e| AppError::json(path, e))
+    let manifest: Manifest =
+        serde_json::from_value(raw).map_err(|e| AppError::json(path.clone(), e))?;
+    path_escape_policy::validate_manifest_paths(&manifest)?;
+    Ok(manifest)
 }
 
 pub fn save(repo_store: &Path, manifest: &Manifest) -> Result<()> {
     let path = manifest_path(repo_store);
+    path_escape_policy::validate_manifest_paths(manifest)?;
     let json =
         serde_json::to_string_pretty(manifest).map_err(|e| AppError::json(path.clone(), e))?;
 
@@ -155,6 +160,44 @@ mod tests {
         .unwrap();
 
         assert!(load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn reject_manifest_with_unsafe_paths_on_load() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            r#"{
+              "version":3,
+              "repo_id":"01JWPQ3VKGE93V9BDHAENVXFA5",
+              "created_at":"2026-04-29T00:00:00Z",
+              "identity_hints":{},
+              "items":[{
+                "item_id":"01JWPQ3VKGE93V9BDHAENVXFA6",
+                "origin_repo_id":"01JWPQ3VKGE93V9BDHAENVXFA5",
+                "path":"../.env",
+                "store_path":"items/.env",
+                "ownership_state":"attached",
+                "created_at":"2026-04-29T00:00:00Z",
+                "updated_at":"2026-04-29T00:00:00Z"
+              }]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn reject_manifest_with_unsafe_paths_on_save() {
+        let dir = TempDir::new().unwrap();
+        let mut manifest = sample_manifest();
+        let mut item = sample_item("secrets.env");
+        item.store_path = "../secrets.env".into();
+        manifest.add(item);
+
+        assert!(save(dir.path(), &manifest).is_err());
+        assert!(!manifest_path(dir.path()).exists());
     }
 
     #[test]

@@ -1,7 +1,10 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::{ffi::OsString, fs};
 
-use crate::error::{AppError, Result};
+use crate::{
+    error::{AppError, Result},
+    policy::path_escape_policy,
+};
 
 /// Converts an absolute path to a repo-relative path.
 ///
@@ -42,8 +45,7 @@ pub(crate) fn normalize_repo_relative(path: &Path) -> String {
 }
 
 fn is_normalized_relative(path: &Path) -> bool {
-    path.components()
-        .all(|component| matches!(component, Component::Normal(_)))
+    path_escape_policy::is_normalized_relative_path(path)
 }
 
 fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {

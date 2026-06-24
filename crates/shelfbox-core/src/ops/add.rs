@@ -9,6 +9,7 @@ use crate::{
     git,
     ignore::IgnoreBackend,
     link::LinkStrategy,
+    policy::item_validation::{self, DirectoryCandidateDecision},
     store::manifest::{self, Item, OwnershipState},
 };
 
@@ -45,59 +46,29 @@ pub fn add(
     let rel_path = repo_relative_path(&ctx.repo_root, abs_path)?;
     let rel_str = repo_relative_string(&ctx.repo_root, abs_path)?;
 
-    // Must not be inside .git/.
-    if rel_path.starts_with(".git") {
-        return Err(AppError::PathInsideGitDir {
-            path: abs_path.to_path_buf(),
-        });
-    }
+    item_validation::validate_add_location(&rel_path, abs_path)?;
 
     // Read symlink metadata so we can distinguish symlinks from regular entries
     // without following the link (also validates the path exists).
     let meta = abs_path
         .symlink_metadata()
         .map_err(|e| AppError::io(abs_path, e))?;
+    let kind = item_validation::add_entry_kind_from_meta(&meta);
 
-    // Must not already be a symlink.
-    if meta.file_type().is_symlink() {
-        return Err(AppError::PathIsSymlink {
-            path: abs_path.to_path_buf(),
-        });
-    }
-
-    // Directories must be shelved via add_directory(), which handles each file
-    // individually.  Passing a directory to add() would create a directory
-    // symlink, which is not supported.
-    if meta.is_dir() {
-        return Err(AppError::PathIsDirectory {
-            path: abs_path.to_path_buf(),
-        });
-    }
+    item_validation::validate_add_entry_kind(abs_path, kind)?;
 
     // Must not be tracked by Git.
-    if git::is_tracked(&ctx.repo_root, abs_path)? {
-        return Err(AppError::PathIsTracked {
-            path: abs_path.to_path_buf(),
-        });
-    }
+    item_validation::validate_add_git_state(abs_path, git::is_tracked(&ctx.repo_root, abs_path)?)?;
 
     // Must not already be managed by shelfbox.
-    if ctx.manifest.contains(&rel_str) {
-        return Err(AppError::AlreadyManaged {
-            path: abs_path.to_path_buf(),
-        });
-    }
+    item_validation::validate_add_manifest_state(abs_path, ctx.manifest.contains(&rel_str))?;
 
     // Store destination must not already be occupied.
     let store_path = ctx.store_path_for(&rel_str);
-    if store_path.exists() {
-        return Err(AppError::StoreConflict {
-            store_path: store_path.clone(),
-        });
-    }
+    item_validation::validate_add_store_destination(&store_path, store_path.exists())?;
 
     // Store-relative path (relative to repo_store): "items/<rel>".
-    let store_path_rel = format!("items/{rel_str}");
+    let store_path_rel = item_validation::store_item_path_for_repo_path(&rel_str);
 
     // ── Dry-run ──────────────────────────────────────────────────────────────
     if dry_run {
@@ -229,11 +200,7 @@ pub fn add_directory(
     let rel_dir = repo_relative_path(&ctx.repo_root, abs_dir)?;
     let rel_str = repo_relative_string(&ctx.repo_root, abs_dir)?;
 
-    if rel_dir.starts_with(".git") {
-        return Err(AppError::PathInsideGitDir {
-            path: abs_dir.to_path_buf(),
-        });
-    }
+    item_validation::validate_add_location(&rel_dir, abs_dir)?;
 
     // Namespace path always ends with "/" for unambiguous prefix matching.
     let ns_path = format!("{rel_str}/");
@@ -264,14 +231,6 @@ pub fn add_directory(
         let rel_cand = repo_relative_path(&ctx.repo_root, &candidate)?;
         let rel_cand_str = normalize_repo_relative(&rel_cand);
 
-        if ctx.manifest.contains(&rel_cand_str) {
-            results.push((
-                rel_cand_str,
-                DirItemOutcome::Skipped(SkipReason::AlreadyManaged),
-            ));
-            continue;
-        }
-
         let meta = match candidate.symlink_metadata() {
             Ok(m) => m,
             Err(e) => {
@@ -282,32 +241,43 @@ pub fn add_directory(
                 continue;
             }
         };
-        if meta.file_type().is_symlink() {
-            results.push((rel_cand_str, DirItemOutcome::Skipped(SkipReason::IsSymlink)));
-            continue;
-        }
-
-        if tracked.contains(&rel_cand_str) {
-            results.push((
-                rel_cand_str,
-                DirItemOutcome::Skipped(SkipReason::GitTracked),
-            ));
-            continue;
-        }
-
         let store_path = ctx.store_path_for(&rel_cand_str);
-        if store_path.exists() {
-            results.push((
-                rel_cand_str,
-                DirItemOutcome::Failed(format!(
-                    "store conflict: '{}' already exists",
-                    store_path.display()
-                )),
-            ));
-            continue;
+        let decision = item_validation::classify_directory_candidate(
+            ctx.manifest.contains(&rel_cand_str),
+            meta.file_type().is_symlink(),
+            tracked.contains(&rel_cand_str),
+            store_path.exists(),
+        );
+        match decision {
+            DirectoryCandidateDecision::Add => {}
+            DirectoryCandidateDecision::SkipAlreadyManaged => {
+                results.push((
+                    rel_cand_str,
+                    DirItemOutcome::Skipped(SkipReason::AlreadyManaged),
+                ));
+                continue;
+            }
+            DirectoryCandidateDecision::SkipGitTracked => {
+                results.push((
+                    rel_cand_str,
+                    DirItemOutcome::Skipped(SkipReason::GitTracked),
+                ));
+                continue;
+            }
+            DirectoryCandidateDecision::SkipSymlink => {
+                results.push((rel_cand_str, DirItemOutcome::Skipped(SkipReason::IsSymlink)));
+                continue;
+            }
+            DirectoryCandidateDecision::StoreConflict => {
+                results.push((
+                    rel_cand_str,
+                    DirItemOutcome::Failed(item_validation::conflict_message(store_path)),
+                ));
+                continue;
+            }
         }
 
-        let store_path_rel = format!("items/{rel_cand_str}");
+        let store_path_rel = item_validation::store_item_path_for_repo_path(&rel_cand_str);
         to_shelve.push((rel_cand_str, candidate, store_path_rel));
     }
 

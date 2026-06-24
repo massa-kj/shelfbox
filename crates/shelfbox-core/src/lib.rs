@@ -9,6 +9,7 @@ pub mod ignore;
 pub mod link;
 pub mod ops;
 pub mod plan;
+pub(crate) mod policy;
 pub mod storage;
 pub mod store;
 

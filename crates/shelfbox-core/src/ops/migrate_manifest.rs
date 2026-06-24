@@ -1,7 +1,8 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
-    error::{AppError, Result},
+    error::Result,
+    policy::migration_policy::{self, ManifestVersionDecision},
     store::{
         manifest::{self, Manifest},
         manifest_legacy::{self, LegacyConversionStats, V2Manifest},
@@ -60,8 +61,12 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
             }
         };
 
-        match version {
-            V2Manifest::VERSION => {
+        match migration_policy::decide_manifest_version(
+            version,
+            V2Manifest::VERSION,
+            Manifest::CURRENT_VERSION,
+        ) {
+            ManifestVersionDecision::ConvertLegacy => {
                 let legacy = match manifest_legacy::load_v2(&repo_store) {
                     Ok(legacy) => legacy,
                     Err(err) => {
@@ -73,14 +78,19 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
                     }
                 };
 
-                record_id(
+                migration_policy::record_unique_id(
                     &mut seen_repo_ids,
                     "repo_id",
                     legacy.repo_id(),
                     &repo_store_dir,
                 )?;
                 for item_id in legacy.item_ids() {
-                    record_id(&mut seen_item_ids, "item_id", item_id, &repo_store_dir)?;
+                    migration_policy::record_unique_id(
+                        &mut seen_item_ids,
+                        "item_id",
+                        item_id,
+                        &repo_store_dir,
+                    )?;
                 }
 
                 let (converted, stats) = legacy.into_current();
@@ -90,7 +100,7 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
                     manifest: converted,
                 });
             }
-            Manifest::CURRENT_VERSION => {
+            ManifestVersionDecision::AlreadyCurrent => {
                 let current = match manifest::load(&repo_store) {
                     Ok(current) => current,
                     Err(err) => {
@@ -102,14 +112,14 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
                     }
                 };
 
-                record_id(
+                migration_policy::record_unique_id(
                     &mut seen_repo_ids,
                     "repo_id",
                     &current.repo_id,
                     &repo_store_dir,
                 )?;
                 for item in &current.items {
-                    record_id(
+                    migration_policy::record_unique_id(
                         &mut seen_item_ids,
                         "item_id",
                         &item.item_id,
@@ -119,12 +129,12 @@ pub fn run(store_root: &std::path::Path, dry_run: bool) -> Result<MigrationRepor
 
                 add_unchanged(&mut report, Manifest::CURRENT_VERSION);
             }
-            other => report.skipped.push(MigrationSkip {
+            ManifestVersionDecision::SkipUnsupported => report.skipped.push(MigrationSkip {
                 repo_store_dir,
-                reason: format!(
-                    "unsupported manifest version {other}; expected one of: {}, {}",
+                reason: migration_policy::unsupported_version_message(
+                    version,
                     V2Manifest::VERSION,
-                    Manifest::CURRENT_VERSION
+                    Manifest::CURRENT_VERSION,
                 ),
             }),
         }
@@ -148,20 +158,6 @@ fn add_converted(report: &mut MigrationReport, source_version: u32, stats: &Lega
 
 fn add_unchanged(report: &mut MigrationReport, version: u32) {
     *report.unchanged.entry(version).or_default() += 1;
-}
-
-fn record_id(
-    seen: &mut HashMap<String, String>,
-    label: &str,
-    id: &str,
-    repo_store_dir: &str,
-) -> Result<()> {
-    if let Some(first_dir) = seen.insert(id.to_string(), repo_store_dir.to_string()) {
-        return Err(AppError::Internal(format!(
-            "duplicate {label} '{id}' found in '{first_dir}' and '{repo_store_dir}'"
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
