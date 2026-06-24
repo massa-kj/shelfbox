@@ -2,6 +2,8 @@
 
 This document provides a high-level overview of the shelfbox architecture.
 
+For a module-by-module boundary map, see `module-map.md`.
+
 For detailed storage structures, see `data-model.md`.
 
 For individual design decisions and rationale, see `design-decisions.md`.
@@ -40,12 +42,13 @@ The library crate.
 
 Contains:
 
-* Business logic
-* Data models
+* Public operational facade in `shelfbox_core::api`
+* Domain data models
+* Operation plan and report types
 * Store management
 * Ownership management
 * Repair and recovery operations
-* Git integration
+* Private Git, filesystem, storage, and policy implementation modules
 
 The library does not know about:
 
@@ -68,11 +71,26 @@ Contains:
 
 The binary does not implement business logic directly.
 
-All operational behavior is delegated to `shelfbox-core`.
+All operational behavior is delegated to `shelfbox_core::api`. Command handlers
+live in `crates/shelfbox/src/commands/`.
 
 ---
 
 # Core Subsystems
+
+## Public API Facade
+
+Responsible for:
+
+* Stable operation groups for `config`, `item`, `repo`, and `store`
+* Construction of default adapters used by the CLI
+* Returning structured reports and plans to presentation layers
+* Re-exporting intentional public types from lower layers
+
+Downstream callers should use `shelfbox_core::api` rather than importing
+implementation modules directly.
+
+---
 
 ## Context
 
@@ -88,6 +106,10 @@ Most item and repository operations begin by building a context. Commands such
 as `repo reclaim` first inspect the current Git checkout without creating a new
 `RepoId`, then build or update context only after explicit user intent.
 
+`context` is a crate-private implementation module. Public context-building
+entry points are exposed through `shelfbox_core::api::item` and
+`shelfbox_core::api::repo`.
+
 ---
 
 ## Store
@@ -100,6 +122,24 @@ Responsible for:
 * Store integrity
 
 The store is the source of truth.
+
+Storage implementation modules are crate-private. Persistent data shapes that
+are part of the public contract live under `shelfbox_core::domain`, and
+operation reports live under `shelfbox_core::plan`.
+
+---
+
+## Policy
+
+Responsible for:
+
+* Safety and eligibility decisions
+* Ownership transition constraints
+* Path escape checks
+* GC, migration, reclaim, and repair rules
+
+Policy modules are pure decision layers over already-collected facts. They do
+not perform filesystem, Git, or storage I/O.
 
 ---
 
@@ -146,9 +186,9 @@ CLI
  ↓
 Argument parsing
  ↓
-Context construction
+shelfbox_core::api
  ↓
-Business operation
+Private context / operation / policy layers
  ↓
 Manifest / Store update
  ↓
@@ -166,9 +206,9 @@ CLI
  ↓
 best-effort reclaim hint check
  ↓
-context::build()
+shelfbox_core::api::item::build_create_or_load()
  ↓
-ops::add()
+shelfbox_core::api::item::add_file()
  ↓
 manifest save
  ↓
@@ -179,13 +219,13 @@ Detailed flow for `shelfbox item add <PATH>`:
 
 ```text
 cli::run()
-  -> cmd::item::run_item()
+  -> commands::item::run_item()
       - optionally print explicit reclaim hint for positive candidates
-  -> context::build(cwd, store_override, write=true)
+  -> shelfbox_core::api::item::build_create_or_load(cwd, store_override)
       - discover repository root
       - load resolved configuration
       - load/upsert store index
-  -> ops::add::add(...)
+  -> shelfbox_core::api::item::add_file(...)
       - validate target path
       - move file to store
       - create repo-side symlink
@@ -196,10 +236,11 @@ cli::run()
 Detailed flow for `shelfbox repo repair`:
 
 ```text
-cmd::repo::run_repo()
-  -> build current Git context without creating a new RepoId
+commands::repo::run_repo()
+  -> shelfbox_core::api::repo::current_git_context(...)
+      without creating a new RepoId
   -> resolve existing association from index.json
-  -> repair attached items
+  -> shelfbox_core::api::repo::repair_repo(...)
       - restore missing exclude entries
       - repair missing or broken symlinks
       - refresh local Git metadata in index.json

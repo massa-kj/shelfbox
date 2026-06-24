@@ -177,6 +177,7 @@ Multi-machine sync, secret encryption, and team-shared files are out of scope.
 | Document | Description |
 |---|---|
 | [Architecture Overview](docs/architecture/architecture-overview.md) | System architecture and component boundaries |
+| [Module Map](docs/architecture/module-map.md) | Current crate/module boundaries and API facade rules |
 | [Data Model](docs/architecture/data-model.md) | Store layout, manifests, and persistent data |
 | [Design Decisions](docs/architecture/design-decisions.md) | Design rationale and implementation choices |
 

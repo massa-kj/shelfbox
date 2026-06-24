@@ -100,6 +100,17 @@ Covers:
 * Request lifecycle
 * Major subsystems
 
+### [Module Map](./architecture/module-map.md)
+
+Current crate and module boundaries after the API facade refactor.
+
+Covers:
+
+* CLI command module layout
+* Public `shelfbox-core` API surface
+* Private context, ops, storage, adapter, and policy modules
+* Dependency direction rules
+
 ### [Data Model](./architecture/data-model.md)
 
 Persistent data structures and storage layout.
