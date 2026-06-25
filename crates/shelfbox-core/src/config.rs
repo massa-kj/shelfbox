@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -12,10 +13,12 @@ use crate::{
 
 /// Returns the default store root directory following XDG / platform conventions.
 ///
-/// - Linux/macOS: `$XDG_DATA_HOME/shelfbox` → fallback `~/.local/share/shelfbox`
-/// - Windows:     `%LOCALAPPDATA%\shelfbox`
+/// - `$XDG_DATA_HOME/shelfbox`, when `XDG_DATA_HOME` is an absolute path
+/// - Otherwise, the platform data-local directory plus `shelfbox`
 fn default_store_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("shelfbox"))
+    xdg_dir("XDG_DATA_HOME")
+        .or_else(dirs::data_local_dir)
+        .map(|d| d.join("shelfbox"))
 }
 
 // ── Raw TOML representation ───────────────────────────────────────────────────
@@ -190,11 +193,22 @@ impl Config {
 
 /// Returns the platform-default path for the `config.toml` file.
 ///
-/// - Linux/macOS: `$XDG_CONFIG_HOME/shelfbox/config.toml`
-///   → fallback `~/.config/shelfbox/config.toml`
-/// - Windows:     `%APPDATA%\shelfbox\config.toml`
+/// - `$XDG_CONFIG_HOME/shelfbox/config.toml`, when `XDG_CONFIG_HOME` is an
+///   absolute path
+/// - Otherwise, the platform config directory plus `shelfbox/config.toml`
 pub fn config_file_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("shelfbox").join("config.toml"))
+    xdg_dir("XDG_CONFIG_HOME")
+        .or_else(dirs::config_dir)
+        .map(|d| d.join("shelfbox").join("config.toml"))
+}
+
+fn xdg_dir(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var).and_then(absolute_path)
+}
+
+fn absolute_path(value: OsString) -> Option<PathBuf> {
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
 }
 
 fn read_config_file() -> Result<RawConfig> {
