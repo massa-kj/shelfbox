@@ -76,10 +76,6 @@ pub enum ConfigCommand {
         #[arg(value_name = "VALUE")]
         value: String,
     },
-
-    /// Open the configuration file in $EDITOR.
-    #[command(hide = true)]
-    Edit,
 }
 
 // ── config command runner ───────────────────────────────────────────────────────────────────────
@@ -95,7 +91,6 @@ pub fn run_config(
         ConfigCommand::Explain { key } => cmd_config_explain(&key),
         ConfigCommand::Path => cmd_config_path(),
         ConfigCommand::Set { key, value } => cmd_config_set(&key, &value),
-        ConfigCommand::Edit => anyhow::bail!("not yet implemented"),
     }
 }
 

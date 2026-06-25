@@ -63,10 +63,6 @@ pub enum RepoCommand {
         #[arg(long)]
         repo_id: Option<String>,
     },
-
-    /// Migrate the manifest schema to the current version (not yet implemented).
-    #[command(hide = true)]
-    Migrate,
 }
 
 // ── repo command runner ─────────────────────────────────────────────────────────────────────────
@@ -95,9 +91,6 @@ pub fn run_repo(
         RepoCommand::Reclaim { repo_id } => {
             cmd_repo_reclaim(cwd, store_override, repo_id.as_deref())?;
             Ok(ExitCode::SUCCESS)
-        }
-        RepoCommand::Migrate => {
-            anyhow::bail!("not yet implemented")
         }
     }
 }
