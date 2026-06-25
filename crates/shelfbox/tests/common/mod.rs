@@ -223,8 +223,17 @@ fn snapshot_tree_inner(root: &Path, path: &Path, snapshot: &mut TreeSnapshot) {
 pub fn normalize_output(output: &str, path_replacements: &[(&Path, &str)]) -> String {
     let mut normalized = normalize_line_endings(output);
     for (path, replacement) in path_replacements {
-        normalized = normalized.replace(&path.display().to_string(), replacement);
-        normalized = normalized.replace(&normalize_path_for_display(path), replacement);
+        let mut candidates = vec![path.display().to_string(), normalize_path_for_display(path)];
+        if let Ok(canonical) = path.canonicalize() {
+            candidates.push(canonical.display().to_string());
+            candidates.push(normalize_path_for_display(&canonical));
+        }
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.len()));
+        candidates.dedup();
+
+        for candidate in candidates {
+            normalized = normalized.replace(&candidate, replacement);
+        }
     }
     normalized = replace_iso8601_timestamps(&normalized);
     replace_ulids(&normalized)
