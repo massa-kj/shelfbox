@@ -249,7 +249,19 @@ pub fn normalize_path_value(path: &Path) -> String {
 }
 
 pub fn normalize_path_text(input: &str) -> String {
-    input.replace('\\', "/")
+    let mut output = input.replace('\\', "/");
+
+    if let Some(stripped) = output.strip_prefix("//?/UNC/") {
+        output = format!("//{stripped}");
+    } else if let Some(stripped) = output.strip_prefix("//?/") {
+        output = stripped.to_string();
+    }
+
+    while has_duplicate_drive_slash(&output) {
+        output.remove(2);
+    }
+
+    output
 }
 
 pub fn toml_literal_path(path: &Path) -> String {
@@ -266,7 +278,8 @@ fn normalize_relative_path(root: &Path, path: &Path) -> String {
 }
 
 fn normalize_path_for_display(path: &Path) -> String {
-    path.components()
+    let path = path
+        .components()
         .map(|component| match component {
             Component::Normal(part) => part.to_string_lossy().into_owned(),
             Component::RootDir => String::new(),
@@ -276,7 +289,17 @@ fn normalize_path_for_display(path: &Path) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("/")
+        .join("/");
+    normalize_path_text(&path)
+}
+
+fn has_duplicate_drive_slash(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 4
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'/'
+        && bytes[3] == b'/'
 }
 
 fn replace_iso8601_timestamps(input: &str) -> String {
