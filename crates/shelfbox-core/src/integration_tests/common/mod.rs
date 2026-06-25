@@ -4,7 +4,7 @@
 /// avoids duplicating git setup code across `ops_integration.rs`,
 /// `chaos_integration.rs`, and `scenario_integration.rs`.
 use std::collections::BTreeMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::OnceLock;
 
@@ -118,6 +118,15 @@ pub fn create_file_symlink(target: &Path, link_path: &Path) {
             target.display()
         )
     });
+}
+
+#[allow(dead_code)]
+pub fn assert_same_path(left: &Path, right: &Path) {
+    assert_eq!(canonical_path(left), canonical_path(right));
+}
+
+fn canonical_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

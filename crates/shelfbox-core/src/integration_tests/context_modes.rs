@@ -18,7 +18,7 @@ fn current_git_context_does_not_mutate_repo_tree() {
 
     let current = context::current_git_context(repo.path()).unwrap();
 
-    assert_eq!(current.repo_root, repo.path());
+    common::assert_same_path(&current.repo_root, repo.path());
     assert_eq!(common::snapshot_tree(repo.path()), before);
 }
 
@@ -30,7 +30,7 @@ fn read_only_context_for_unassociated_repo_does_not_initialize_store() {
 
     let read_only = context::build_read_only(repo.path(), Some(store.path())).unwrap();
 
-    assert_eq!(read_only.current.repo_root, repo.path());
+    common::assert_same_path(&read_only.current.repo_root, repo.path());
     assert_eq!(read_only.config.store, store.path());
     assert!(read_only.repo.is_none());
     assert_eq!(common::snapshot_tree(store.path()), before);
@@ -56,7 +56,7 @@ fn read_only_context_loads_associated_repo_without_writing() {
     let read_only = context::build_read_only(repo.path(), Some(store.path())).unwrap();
 
     let ctx = read_only.repo.expect("associated repo should resolve");
-    assert_eq!(ctx.repo_root, repo.path());
+    common::assert_same_path(&ctx.repo_root, repo.path());
     assert_eq!(ctx.config.store, store.path());
     assert_eq!(common::snapshot_tree(store.path()), before);
     assert_eq!(
