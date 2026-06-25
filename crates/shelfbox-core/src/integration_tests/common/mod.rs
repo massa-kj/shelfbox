@@ -138,6 +138,7 @@ pub struct TreeSnapshot {
 enum TreeEntry {
     Dir,
     File(String),
+    UnreadableFile { len: u64 },
     Symlink(String),
 }
 
@@ -175,11 +176,24 @@ fn snapshot_tree_inner(root: &Path, path: &Path, snapshot: &mut TreeSnapshot) {
             snapshot.entries.insert(rel, TreeEntry::Dir);
             snapshot_tree_inner(root, &entry_path, snapshot);
         } else {
-            let contents = std::fs::read_to_string(&entry_path).unwrap_or_else(|_| {
-                String::from_utf8_lossy(&std::fs::read(&entry_path).unwrap()).into_owned()
-            });
-            snapshot.entries.insert(rel, TreeEntry::File(contents));
+            let entry = match read_file_contents_lossy(&entry_path) {
+                Ok(contents) => TreeEntry::File(contents),
+                Err(_) => TreeEntry::UnreadableFile {
+                    len: metadata.len(),
+                },
+            };
+            snapshot.entries.insert(rel, entry);
         }
+    }
+}
+
+fn read_file_contents_lossy(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(text_error) => match std::fs::read(path) {
+            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(_) => Err(text_error),
+        },
     }
 }
 
