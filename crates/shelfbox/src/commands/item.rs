@@ -181,6 +181,22 @@ pub fn run_item(
 
 // ── Subcommand handlers ─────────────────────────────────────────────────────────────────────────
 
+fn build_item_context(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    dry_run: bool,
+) -> Result<item::RepoContext> {
+    if dry_run {
+        let read_only = item::build_read_only(cwd, store_override)
+            .context("failed to initialise read-only repo context")?;
+        return read_only
+            .repo
+            .ok_or_else(|| anyhow::anyhow!("Run `shelfbox repo reclaim` first"));
+    }
+
+    item::build_create_or_load(cwd, store_override).context("failed to initialise repo context")
+}
+
 fn cmd_add(
     cwd: &Path,
     store_override: Option<&Path>,
@@ -189,8 +205,13 @@ fn cmd_add(
 ) -> Result<()> {
     warn_reclaim_candidates_if_unassociated(cwd, store_override);
 
-    let mut ctx = item::build_create_or_load(cwd, store_override)
-        .context("failed to initialise repo context")?;
+    let mut ctx = if dry_run {
+        item::build_preview_create_or_load(cwd, store_override)
+            .context("failed to initialise preview repo context")?
+    } else {
+        item::build_create_or_load(cwd, store_override)
+            .context("failed to initialise repo context")?
+    };
 
     for path in paths {
         let abs = resolve_path(cwd, path);
@@ -332,8 +353,7 @@ fn cmd_restore(
     keep_ignore: bool,
     keep_store: bool,
 ) -> Result<()> {
-    let mut ctx = item::build_create_or_load(cwd, store_override)
-        .context("failed to initialise repo context")?;
+    let mut ctx = build_item_context(cwd, store_override, dry_run)?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
@@ -503,8 +523,7 @@ fn cmd_repair(
     dry_run: bool,
     force: bool,
 ) -> Result<()> {
-    let ctx = item::build_create_or_load(cwd, store_override)
-        .context("failed to initialise repo context")?;
+    let ctx = build_item_context(cwd, store_override, dry_run)?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
@@ -563,8 +582,7 @@ fn cmd_relink(
     paths: &[PathBuf],
     dry_run: bool,
 ) -> Result<()> {
-    let mut ctx = item::build_create_or_load(cwd, store_override)
-        .context("failed to initialise repo context")?;
+    let mut ctx = build_item_context(cwd, store_override, dry_run)?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
@@ -614,8 +632,7 @@ fn cmd_move(
 ) -> Result<()> {
     let old_abs = resolve_path(cwd, old);
     let new_abs = resolve_path(cwd, new_path);
-    let mut ctx = item::build_create_or_load(cwd, store_override)
-        .context("failed to initialise repo context")?;
+    let mut ctx = build_item_context(cwd, store_override, dry_run)?;
     let report = item::move_item(&mut ctx, &old_abs, &new_abs, dry_run)
         .with_context(|| format!("move '{}' → '{}' failed", old.display(), new_path.display()))?;
     print_move_report(&report);

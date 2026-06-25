@@ -154,6 +154,64 @@ pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result
     build_create_or_load_with_access(cwd, store_override, StoreAccess::Write)
 }
 
+/// Builds a [`RepoContext`] suitable for planning create-or-load operations
+/// without initializing store metadata, acquiring a write lock, creating an
+/// index entry, or updating `last_seen_at`.
+pub fn build_preview_create_or_load(
+    cwd: &Path,
+    store_override: Option<&Path>,
+) -> Result<RepoContext> {
+    let config = Config::load(store_override)?;
+    let current = current_git_context(cwd)?;
+    let repo_name = repo_name_for_root(&current.repo_root);
+
+    if index::index_path(&config.store).is_file() {
+        let index = index::load(&config.store)?;
+        if let Some(repo_id) = resolve_existing_repo(&current, &index) {
+            if let Some(entry) = index.get(&repo_id) {
+                let repo_store = layout::repo_store_path(&config.store, &entry.repo_store_dir);
+                let manifest = if manifest::manifest_path(&repo_store).is_file() {
+                    manifest::load(&repo_store)?
+                } else {
+                    let mut manifest = Manifest::new(repo_id.clone(), now_iso8601());
+                    manifest.add_repo_name_hint(&repo_name);
+                    manifest
+                };
+
+                return Ok(RepoContext {
+                    repo_root: current.repo_root,
+                    repo_id,
+                    repo_store,
+                    git_common_dir: current.git_common_dir,
+                    manifest,
+                    config,
+                    _store_lock: None,
+                });
+            }
+        }
+    }
+
+    let repo_id = Ulid::new().to_string();
+    let repo_store_dir = layout::allocate_repo_store_dir(
+        &config.store,
+        &layout::sanitize_repo_store_name(&repo_name),
+        &repo_id,
+    )?;
+    let repo_store = layout::repo_store_path(&config.store, &repo_store_dir);
+    let mut manifest = Manifest::new(repo_id.clone(), now_iso8601());
+    manifest.add_repo_name_hint(&repo_name);
+
+    Ok(RepoContext {
+        repo_root: current.repo_root,
+        repo_id,
+        repo_store,
+        git_common_dir: current.git_common_dir,
+        manifest,
+        config,
+        _store_lock: None,
+    })
+}
+
 /// Loads store configuration and, when safe, an advisory store lock without
 /// deciding which repository identity should be used.
 pub fn build_store_context(
@@ -333,10 +391,7 @@ fn resolve_repo(
     let common_dir = crate::git::git_common_dir(repo_root).unwrap_or_else(|_| git_dir.clone());
 
     // Human-readable portion of the store directory name (used for new repos).
-    let repo_name = repo_root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unknown".into());
+    let repo_name = repo_name_for_root(repo_root);
 
     // Two-stage lookup:
     // 1. Exact root match (fast path, normal case).
@@ -396,6 +451,13 @@ fn resolve_repo(
     let manifest = load_or_init_manifest(&repo_store, &repo_id, &repo_name, cwd)?;
 
     Ok((repo_id, repo_store, common_dir, manifest))
+}
+
+fn repo_name_for_root(repo_root: &Path) -> String {
+    repo_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn update_last_seen(store_root: &Path, index: &mut Index, repo_id: &str) -> Result<()> {

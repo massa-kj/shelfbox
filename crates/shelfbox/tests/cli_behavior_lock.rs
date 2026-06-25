@@ -173,6 +173,33 @@ fn store_gc_dry_run_reports_orphaned_items_without_writing() {
 }
 
 #[test]
+fn item_add_dry_run_does_not_initialize_store() {
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let item_path = repo.path().join("dry.txt");
+    std::fs::write(&item_path, "dry-run").unwrap();
+    let repo_before = snapshot_tree(repo.path());
+    let store_before = snapshot_tree(store.path());
+
+    let output = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["item", "add", "dry.txt", "--dry-run"]),
+    );
+
+    output.assert_success();
+    assert_eq!(output.stderr, "");
+    assert!(output.stdout.contains("[dry-run] shelve 'dry.txt'\n"));
+    assert!(output.stdout.contains("  exclude dry.txt\n"));
+    assert_eq!(snapshot_tree(repo.path()), repo_before);
+    assert_eq!(snapshot_tree(store.path()), store_before);
+    assert_absent(store.path(), "meta.json");
+    assert_absent(store.path(), "index.json");
+    assert_absent(store.path(), "repos");
+    assert_absent(store.path(), ".lock");
+}
+
+#[test]
 fn item_restore_keep_store_dry_run_reports_plan_without_writing() {
     if !common::require_symlink_support() {
         return;

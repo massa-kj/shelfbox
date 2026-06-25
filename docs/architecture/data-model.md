@@ -79,6 +79,7 @@ Example:
 
 ```json
 {
+  "version": 1,
   "repos": {
     "01ABC...": {
       "repo_store_dir": "my-project",

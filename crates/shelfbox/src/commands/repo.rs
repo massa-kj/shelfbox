@@ -294,8 +294,16 @@ fn cmd_repo_repair(
     let associated_repo_id = repo::resolve_existing_repo(&current, &idx)
         .ok_or_else(|| anyhow::anyhow!("Run `shelfbox repo reclaim` first"))?;
 
-    let mut ctx = repo::build_create_or_load(cwd, store_override)
-        .context("failed to initialise repo context")?;
+    let mut ctx = if dry_run {
+        let read_only = repo::build_read_only(cwd, store_override)
+            .context("failed to initialise read-only repo context")?;
+        read_only
+            .repo
+            .ok_or_else(|| anyhow::anyhow!("Run `shelfbox repo reclaim` first"))?
+    } else {
+        repo::build_create_or_load(cwd, store_override)
+            .context("failed to initialise repo context")?
+    };
     if ctx.repo_id != associated_repo_id {
         anyhow::bail!("Run `shelfbox repo reclaim` first");
     }

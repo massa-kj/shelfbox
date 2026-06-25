@@ -36,6 +36,13 @@ pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result
     context::build_create_or_load(cwd, store_override)
 }
 
+pub fn build_preview_create_or_load(
+    cwd: &Path,
+    store_override: Option<&Path>,
+) -> Result<RepoContext> {
+    context::build_preview_create_or_load(cwd, store_override)
+}
+
 pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<ReadOnlyRepoContext> {
     context::build_read_only(cwd, store_override)
 }

@@ -240,6 +240,8 @@ commands::repo::run_repo()
   -> shelfbox_core::api::repo::current_git_context(...)
       without creating a new RepoId
   -> resolve existing association from index.json
+  -> shelfbox_core::api::repo::build_create_or_load(...)
+      after association is proven, build a write-capable context for repair
   -> shelfbox_core::api::repo::repair_repo(...)
       - restore missing exclude entries
       - repair missing or broken symlinks

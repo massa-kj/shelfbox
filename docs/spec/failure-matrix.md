@@ -118,8 +118,10 @@ Expected result:
 
 ## Recovery Test Scenarios
 
-The v0.7.0 recovery integration tests live in
-`crates/shelfbox-core/tests/recovery_integration.rs`.
+The recovery integration tests are compiled inside `shelfbox-core` so they can
+exercise crate-private implementation modules without widening the public API.
+The recovery scenarios live in
+`crates/shelfbox-core/src/integration_tests/recovery_integration.rs`.
 
 | Scenario | Test | Key assertion |
 |---|---|---|
