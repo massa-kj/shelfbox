@@ -221,11 +221,14 @@ fn snapshot_tree_inner(root: &Path, path: &Path, snapshot: &mut TreeSnapshot) {
 }
 
 pub fn normalize_output(output: &str, path_replacements: &[(&Path, &str)]) -> String {
-    let mut normalized = normalize_line_endings(output);
+    let mut normalized = normalize_path_text(&normalize_line_endings(output));
     for (path, replacement) in path_replacements {
-        let mut candidates = vec![path.display().to_string(), normalize_path_for_display(path)];
+        let mut candidates = vec![
+            normalize_path_text(&path.display().to_string()),
+            normalize_path_for_display(path),
+        ];
         if let Ok(canonical) = path.canonicalize() {
-            candidates.push(canonical.display().to_string());
+            candidates.push(normalize_path_text(&canonical.display().to_string()));
             candidates.push(normalize_path_for_display(&canonical));
         }
         candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.len()));
@@ -237,6 +240,16 @@ pub fn normalize_output(output: &str, path_replacements: &[(&Path, &str)]) -> St
     }
     normalized = replace_iso8601_timestamps(&normalized);
     replace_ulids(&normalized)
+}
+
+pub fn normalize_path_value(path: &Path) -> String {
+    path.canonicalize()
+        .map(|canonical| normalize_path_for_display(&canonical))
+        .unwrap_or_else(|_| normalize_path_for_display(path))
+}
+
+pub fn normalize_path_text(input: &str) -> String {
+    input.replace('\\', "/")
 }
 
 pub fn toml_literal_path(path: &Path) -> String {

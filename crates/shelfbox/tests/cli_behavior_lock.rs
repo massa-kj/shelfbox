@@ -578,7 +578,10 @@ fn repo_reclaim_explicit_target_updates_association_without_repairing_symlinks()
         serde_json::from_str(&std::fs::read_to_string(store.path().join("index.json")).unwrap())
             .unwrap();
     let repo_entry = &index_json["repos"][repo_id.as_str()];
-    assert_eq!(repo_entry["root"], reclone.path().display().to_string());
+    assert_eq!(
+        common::normalize_path_text(repo_entry["root"].as_str().unwrap()),
+        common::normalize_path_value(reclone.path())
+    );
     let repo_store_dir = repo_entry["repo_store_dir"]
         .as_str()
         .expect("repo entry should record repo_store_dir");
