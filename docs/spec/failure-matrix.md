@@ -3,6 +3,10 @@
 This document catalogues important failure and recovery scenarios in
 `shelfbox`.
 
+The normative copy-mode safety and recovery contract is defined in
+[`copy-mode.md`](./copy-mode.md). This matrix remains authoritative for the
+existing symlink-mode baseline until its copy-aware rows land with v0.8.1.
+
 The guiding hierarchy is:
 
 ```text

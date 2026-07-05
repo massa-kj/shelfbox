@@ -1,0 +1,15 @@
+{
+  "items": [
+    {
+      "path": "secret.txt",
+      "link_exists": true,
+      "link_valid": true,
+      "store_exists": true,
+      "in_exclude": true,
+      "not_tracked": true,
+      "ok": true
+    }
+  ],
+  "orphan_store_items": [],
+  "repo_root_matches_index": true
+}

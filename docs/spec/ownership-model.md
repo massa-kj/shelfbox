@@ -1,5 +1,9 @@
 # Ownership State Machine Specification
 
+Copy materialization does not change ownership semantics. The normative
+copy-mode contract is defined in [`copy-mode.md`](./copy-mode.md); this document
+remains authoritative for ownership state and transitions.
+
 # 1. Purpose
 
 This document defines the formal ownership model for `shelfbox`.

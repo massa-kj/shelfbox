@@ -350,6 +350,47 @@ fn item_status_exit_codes_are_locked_for_associated_repo() {
 }
 
 #[test]
+fn symlink_status_json_matches_v1_golden_fixtures() {
+    if !common::require_symlink_support() {
+        return;
+    }
+
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("secret.txt"), "secret").unwrap();
+
+    fixture
+        .run(
+            repo.path(),
+            store_args(store.path(), ["item", "add", "secret.txt"]),
+        )
+        .assert_success();
+
+    let item_status = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["item", "status", "--format", "json"]),
+    );
+    item_status.assert_code(0);
+    assert_eq!(item_status.stderr, "");
+    assert_json_golden(
+        &item_status.stdout,
+        include_str!("fixtures/item-status-symlink-v1.json"),
+    );
+
+    let repo_status = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["repo", "status", "--format", "json"]),
+    );
+    repo_status.assert_code(0);
+    assert_eq!(repo_status.stderr, "");
+    assert_json_golden(
+        &repo_status.stdout,
+        include_str!("fixtures/repo-status-symlink-v1.json"),
+    );
+}
+
+#[test]
 fn repo_status_exit_codes_are_locked_for_associated_repo() {
     if !common::require_symlink_support() {
         return;
@@ -653,6 +694,12 @@ fn row_by_key<'a>(rows: &'a [Value], key: &str) -> &'a Value {
     rows.iter()
         .find(|row| row["key"] == key)
         .unwrap_or_else(|| panic!("missing config list row for {key}"))
+}
+
+fn assert_json_golden(actual: &str, expected: &str) {
+    let _: Value = serde_json::from_str(actual).expect("command output should be valid JSON");
+    let _: Value = serde_json::from_str(expected).expect("golden fixture should be valid JSON");
+    assert_eq!(actual, expected);
 }
 
 fn assert_absent(root: &Path, rel: &str) {

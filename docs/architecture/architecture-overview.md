@@ -8,6 +8,9 @@ For detailed storage structures, see `data-model.md`.
 
 For individual design decisions and rationale, see `design-decisions.md`.
 
+For the copy-materialization contract and its required
+architecture boundaries, see [`../spec/copy-mode.md`](../spec/copy-mode.md).
+
 ---
 
 # Goals

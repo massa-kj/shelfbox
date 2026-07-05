@@ -134,11 +134,26 @@ Examples:
 * Repository identity strategy
 * Concurrency and locking
 
+### [v0.8.1 Compatibility Baseline](./architecture/v0.8.1-compatibility-baseline.md)
+
+Executable and documented symlink-mode contracts that copy-mode work must preserve.
+
 Use the architecture documents when modifying implementation or evaluating design changes.
 
 ---
 
 ## Specifications
+
+### [Copy Mode](./spec/copy-mode.md)
+
+Normative v0.8.1 copy-materialization policy.
+
+Defines:
+
+* Safety and canonical-data invariants
+* Materialization facts and operation behavior
+* Durable recovery requirements
+* Compatibility and release gates
 
 ### [Ownership Model](./spec/ownership-model.md)
 
@@ -178,5 +193,6 @@ Use this document when evaluating recovery behavior or failure handling.
 | Solve a practical problem      | [`workflows.md`](./workflows.md) |
 | Understand a command           | [`reference/*`](#command-reference) |
 | Modify implementation          | [`architecture/*`](#architecture) |
+| Implement or review copy mode  | [`spec/copy-mode.md`](./spec/copy-mode.md) |
 | Understand ownership behavior  | [`spec/ownership-model.md`](./spec/ownership-model.md) |
 | Understand recovery guarantees | [`spec/failure-matrix.md`](./spec/failure-matrix.md) |

@@ -185,6 +185,7 @@ Multi-machine sync, secret encryption, and team-shared files are out of scope.
 
 | Document | Description |
 |---|---|
+| [Copy Mode](docs/spec/copy-mode.md) | Normative v0.8.1 copy-materialization policy and safety contract |
 | [Ownership Model](docs/spec/ownership-model.md) | Ownership state machine and transition rules |
 | [Failure Matrix](docs/spec/failure-matrix.md) | Failure modes, recoverability, and recovery guarantees |
 
