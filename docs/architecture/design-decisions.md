@@ -23,3 +23,74 @@
 | **Machine-readable exit codes** | Status and verify commands return stable process codes so they can be used in scripts and CI. |
 | **Explicit manifest migration** | Legacy manifests are upgraded only by `store migrate-manifests`; normal commands reject unsupported versions instead of silently rewriting canonical data. |
 | **`SHELFBOX_STORE` environment variable** | The store root can be selected by environment variable, with precedence below `--store` and above config/default paths. |
+| **Private, fail-closed platform filesystem adapter** | No-follow inspection, stable identity, link counts, replacement, and directory durability are platform capabilities behind `fs::platform`. Operations never call OS APIs directly, and no unsupported guarantee falls back to delete-then-create. |
+
+## D1: Platform filesystem adapter
+
+Copy mode requires stronger guarantees than `std::fs` exposes uniformly. The
+platform adapter is therefore private to `shelfbox-core::fs`; higher layers see
+typed facts and capability failures rather than OS flags, handles, or errno
+values.
+
+### Capability matrix
+
+`Runtime checked` means the platform API has the required semantics, but the
+mounted filesystem may reject it. Rejection is an error and never selects a
+weaker algorithm.
+
+| Capability | Linux | macOS | Windows |
+|---|---|---|---|
+| Final-component no-follow open and metadata | Supported with `O_PATH | O_NOFOLLOW`, then handle metadata | Supported with `O_SYMLINK | O_NOFOLLOW`, then handle metadata | Supported with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, then handle metadata |
+| Stable file identity | `(st_dev, st_ino)` from the opened handle | `(st_dev, st_ino)` from the opened handle | Runtime checked: volume serial plus 128-bit `FILE_ID_INFO` from the opened handle |
+| Link count | `st_nlink` from the opened handle | `st_nlink` from the opened handle | `nNumberOfLinks` from `BY_HANDLE_FILE_INFORMATION` |
+| Replace an existing regular file | Same-directory `rename`, which atomically replaces the destination | Same-directory `rename`, which atomically replaces the destination | Runtime checked: handle-based `SetFileInformationByHandle(FileRenameInfo)` with `ReplaceIfExists` |
+| Replace a symlink/reparse point without following it | `rename` replaces the symlink entry | `rename` replaces the symlink entry | Runtime checked: the same handle-based rename replaces the reparse-point entry; contract tests verify the target remains unchanged |
+| Destination sharing behavior | Open handles do not normally block same-filesystem rename | Open handles do not normally block same-filesystem rename | A destination handle that denies delete sharing produces a sharing violation; source and destination must remain unchanged |
+| Parent-directory durability after rename | Runtime checked by opening the directory without following its final component and calling `fsync` | Runtime checked by opening the directory without following its final component and calling `fsync` | Unsupported as a separate capability: `FlushFileBuffers` documents file-buffer flushing but no parent-directory fsync equivalent |
+
+The no-follow primitive covers the final component. Phase 2 must additionally
+walk or guard parent components beneath already validated repo/store roots. On
+Windows, parent handles must be retained without delete sharing across the
+prepare/commit boundary and their identities revalidated; if that cannot be
+established for a path/filesystem pair, mutation returns a typed
+`FilesystemCapabilityUnavailable` error.
+
+### Dependency decision
+
+Use target-specific dependencies only:
+
+* `libc` on Unix for `O_PATH`, `O_SYMLINK`, `O_NOFOLLOW`, `O_DIRECTORY`, and
+  descriptor-level opens.
+* `windows-sys` on Windows for the narrow Win32 handle-information and
+  handle-rename surface.
+
+Do not add handwritten Windows FFI, a broad cross-platform filesystem crate,
+or OS-specific calls under `ops/`. Concrete adapters remain constructible only
+inside the filesystem layer/composition root.
+
+`ReplaceFileW` is intentionally rejected for the commit primitive. Microsoft
+documents partial-failure outcomes in which the old destination may no longer
+retain its original name. That violates shelfbox's old-destination preservation
+invariant. `SetFileInformationByHandle(FileRenameInfo)` performs the rename
+from an already opened source handle and fails on incompatible destination
+sharing; there is no delete-then-create fallback.
+
+### Capability failures
+
+`FilesystemCapability` identifies the required guarantee, and
+`AppError::FilesystemCapabilityUnavailable` reports the platform and reason.
+Unsupported or runtime-rejected no-follow inspection, stable identity,
+replacement, or durability stops the operation without changing the source or
+destination.
+
+### Primary references
+
+* [Linux `rename(2)`](https://man7.org/linux/man-pages/man2/rename.2.html)
+* [Apple `rename(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/rename.2.html)
+* [Rust Unix `OpenOptionsExt`](https://doc.rust-lang.org/std/os/unix/fs/trait.OpenOptionsExt.html)
+* [Microsoft `CreateFileW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
+* [Microsoft `FILE_ID_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
+* [Microsoft `FILE_RENAME_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)
+* [Microsoft `SetFileInformationByHandle`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
+* [Microsoft `ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+* [Microsoft `FlushFileBuffers`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)

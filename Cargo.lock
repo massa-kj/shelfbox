@@ -531,6 +531,7 @@ version = "0.8.0"
 dependencies = [
  "dirs",
  "fd-lock",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -538,6 +539,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "ulid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

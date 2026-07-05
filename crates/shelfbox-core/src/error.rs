@@ -2,6 +2,35 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+/// Filesystem guarantees that may be unavailable on a platform or filesystem.
+///
+/// Callers must fail closed when a required capability is unavailable. In
+/// particular, these capabilities must never be emulated with a
+/// delete-then-create sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesystemCapability {
+    NoFollowInspection,
+    StableFileIdentity,
+    LinkCount,
+    AtomicReplaceRegularFile,
+    AtomicReplaceSymlinkOrReparsePoint,
+    DirectoryDurability,
+}
+
+impl std::fmt::Display for FilesystemCapability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::NoFollowInspection => "no-follow inspection",
+            Self::StableFileIdentity => "stable file identity",
+            Self::LinkCount => "link count",
+            Self::AtomicReplaceRegularFile => "atomic regular-file replacement",
+            Self::AtomicReplaceSymlinkOrReparsePoint => "atomic symlink/reparse-point replacement",
+            Self::DirectoryDurability => "directory durability",
+        };
+        f.write_str(name)
+    }
+}
+
 /// Top-level error type for shelfbox-core.
 ///
 /// Variants are kept fine-grained so callers (CLI, GUI, tests) can match
@@ -178,6 +207,16 @@ pub enum AppError {
         lock_path: PathBuf,
         #[source]
         source: Box<std::io::Error>,
+    },
+
+    // ── Platform capabilities ──────────────────────────────────────────────
+    /// A required filesystem guarantee is unavailable on this platform or
+    /// filesystem. The operation must stop without changing the destination.
+    #[error("filesystem capability '{capability}' is unavailable on {platform}: {reason}")]
+    FilesystemCapabilityUnavailable {
+        capability: FilesystemCapability,
+        platform: &'static str,
+        reason: &'static str,
     },
 
     // ── Internal / unexpected ─────────────────────────────────────────────

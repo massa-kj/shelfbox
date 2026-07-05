@@ -75,6 +75,11 @@ store
 
 fs, git, ignore, link
   Filesystem, Git, ignore-file, and symlink adapters
+
+fs/platform
+  Private no-follow, identity, link-count, atomic-replacement, and durability
+  capabilities. Unsupported guarantees fail with typed errors; operations do
+  not import this module.
 ```
 
 Implementation modules are intentionally crate-private. Tests that need this

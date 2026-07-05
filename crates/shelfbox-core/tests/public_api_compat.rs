@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use shelfbox_core::{
     api::{config, item, repo, store},
     config::Config,
-    error::{AppError, Result},
+    error::{AppError, FilesystemCapability, Result},
 };
 
 #[test]
@@ -216,6 +216,11 @@ fn store_reports_and_error_variants_remain_source_compatible() {
     assert!(matches!(regular, AppError::PathIsRegularFile { .. }));
     let _: Result<()> = Err(AppError::NotManagedLink {
         path: PathBuf::from("repo/secret.txt"),
+    });
+    let _: Result<()> = Err(AppError::FilesystemCapabilityUnavailable {
+        capability: FilesystemCapability::AtomicReplaceRegularFile,
+        platform: "fixture",
+        reason: "fixture",
     });
 }
 
