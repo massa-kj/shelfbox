@@ -24,6 +24,7 @@
 | **Explicit manifest migration** | Legacy manifests are upgraded only by `store migrate-manifests`; normal commands reject unsupported versions instead of silently rewriting canonical data. |
 | **`SHELFBOX_STORE` environment variable** | The store root can be selected by environment variable, with precedence below `--store` and above config/default paths. |
 | **Private, fail-closed platform filesystem adapter** | No-follow inspection, stable identity, link counts, replacement, and directory durability are platform capabilities behind `fs::platform`. Operations never call OS APIs directly, and no unsupported guarantee falls back to delete-then-create. |
+| **SHA-256 recovery fingerprints** | Durable operation records use a bounded-memory SHA-256 content fingerprint serialized as `{ "algorithm": "sha256", "digest_hex": "<64 lowercase hex>" }`. This is recovery safety metadata, not a routine status hash cache. |
 
 ## D1: Platform filesystem adapter
 
@@ -94,3 +95,60 @@ destination.
 * [Microsoft `SetFileInformationByHandle`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
 * [Microsoft `ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
 * [Microsoft `FlushFileBuffers`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+
+## D2: Recovery fingerprint
+
+Durable operation records need a content fact that remains meaningful after a
+crash. File identity alone is not enough because a file can be modified
+in-place while retaining the same identity. Size and mtime are also not enough:
+same-size rewrites are common, and mtime can change as an operation side effect.
+
+Use SHA-256 as the v0.8.1 recovery safety fingerprint:
+
+```json
+{
+  "algorithm": "sha256",
+  "digest_hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+}
+```
+
+The serialized contract is:
+
+* `algorithm` is the lowercase string `sha256`.
+* `digest_hex` is exactly 64 lowercase hexadecimal characters.
+* Deserialization rejects unknown algorithms, short/long digests, uppercase
+  hex, and non-hex characters.
+* The digest may be stored in a recovery record; source content must never be
+  stored in the record.
+* The algorithm field is part of every serialized value so future algorithms can
+  be introduced without changing how unfinished SHA-256 records are interpreted.
+
+The implementation is `domain::recovery_fingerprint::RecoveryFingerprint`.
+It streams input through a fixed 64 KiB buffer, so memory use is bounded and
+independent of file size. The public constructor accepts only canonical
+lowercase SHA-256 hex, and file calculation maps I/O failures into `AppError`
+with the path being fingerprinted.
+
+### Scope boundary
+
+This digest is only for durable recovery decisions. Routine status checks should
+continue to use streaming equality when they need content comparison. A deferred
+status hash cache would need its own invalidation, persistence, and migration
+design, and must not silently reuse recovery-record semantics.
+
+### Dependency decision
+
+Use the narrow RustCrypto `sha2` crate from the workspace dependency table.
+Do not add a broad content-addressed-storage or checksum framework for D2. The
+lowercase hex encoding is implemented locally to avoid adding a dependency for
+64 bytes of stable formatting.
+
+### Compatibility tests
+
+Focused tests lock:
+
+* the SHA-256 `abc` known vector;
+* the exact JSON shape and lowercase-hex digest field name;
+* rejection of unknown algorithms and non-canonical digest strings;
+* changed fingerprints for same-size file rewrites; and
+* chunking-independent streaming over data larger than the fixed buffer.

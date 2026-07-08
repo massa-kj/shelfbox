@@ -8,3 +8,4 @@ pub mod index;
 pub mod manifest;
 pub mod ownership;
 pub mod path;
+pub mod recovery_fingerprint;
