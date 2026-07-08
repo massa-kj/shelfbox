@@ -267,9 +267,7 @@ pub fn set_key(key: &str, value: &str) -> Result<()> {
 /// Writes `contents` to `path` atomically via a same-directory temp file and
 /// `rename(2)`, so a crash mid-write cannot leave the config file truncated.
 fn write_config_atomic(path: &Path, contents: &str) -> Result<()> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let tmp_path = parent.join(".shelfbox-config-write.tmp");
-    atomic_write::write_with_temp_path(path, &tmp_path, contents, ParentDirMode::Default)
+    atomic_write::write(path, contents, ParentDirMode::Default)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@
 | **`SHELFBOX_STORE` environment variable** | The store root can be selected by environment variable, with precedence below `--store` and above config/default paths. |
 | **Private, fail-closed platform filesystem adapter** | No-follow inspection, stable identity, link counts, replacement, and directory durability are platform capabilities behind `fs::platform`. Operations never call OS APIs directly, and no unsupported guarantee falls back to delete-then-create. |
 | **SHA-256 recovery fingerprints** | Durable operation records use a bounded-memory SHA-256 content fingerprint serialized as `{ "algorithm": "sha256", "digest_hex": "<64 lowercase hex>" }`. This is recovery safety metadata, not a routine status hash cache. |
+| **Option-driven durable atomic writes** | `storage::atomic_write` creates same-directory temp files with `create_new`, can fsync file content before rename, uses the platform atomic-replace adapter, and can require or best-effort parent-directory fsync. Generated temp files are the default; fixed temp paths are opt-in and never overwritten. |
 
 ## D1: Platform filesystem adapter
 
@@ -152,3 +153,72 @@ Focused tests lock:
 * rejection of unknown algorithms and non-canonical digest strings;
 * changed fingerprints for same-size file rewrites; and
 * chunking-independent streaming over data larger than the fixed buffer.
+
+## D3: Atomic write durability
+
+`storage::atomic_write` is the single crate-private helper for same-directory
+temp-file writes followed by atomic replacement. Callers keep the existing
+simple `write(path, contents, ParentDirMode)` entry point, while operation
+records and secret-copy paths can opt into stricter durability through
+`AtomicWriteOptions`.
+
+### Write contract
+
+The helper now supports:
+
+* generated temp paths by default, named as a hidden same-directory file with a
+  fresh ULID suffix;
+* caller-provided temp paths only when explicitly requested;
+* `create_new` temp creation, so an existing temp file is never overwritten;
+* private temp file creation (`0600` on Unix) when the parent directory mode is
+  private;
+* optional `File::sync_all()` after writing and before replacement;
+* atomic replacement through `fs::platform::atomic_replace`, preserving the
+  D1 no-delete-then-create invariant;
+* optional parent-directory durability with `Skip`, `BestEffort`, or `Require`;
+  and
+* cleanup that removes a temp path only when no-follow inspection shows the same
+  file identity that this write created.
+
+Production config, index, manifest, and meta writes use generated temp paths.
+The previous predictable `.tmp` style is no longer used by production writers.
+The fixed-temp helper remains available only as an explicit opt-in for callers
+that have already reserved a same-directory temp path.
+
+### Durability modes
+
+`ParentDirectorySyncMode::Require` preflights the parent-directory sync before
+creating a temp file. On platforms where D1 marks directory durability
+unsupported, this fails closed before mutating the destination. After a
+successful replacement, `Require` syncs the parent again and returns any error;
+`BestEffort` attempts the sync and ignores failure; `Skip` preserves the legacy
+rename-only behavior.
+
+File fsync and parent-directory fsync are separate choices because operation
+records need both, while some existing metadata writes may remain rename-only
+until their durability requirements are upgraded deliberately.
+
+### Cleanup and failure behavior
+
+Generated and fixed temp files are opened with `create_new`; if a fixed temp
+path already exists, the write fails and leaves that path untouched. On write,
+fsync, or replacement failure, the cleanup guard closes the temp handle, checks
+the current temp path with no-follow identity inspection, and removes it only if
+the identity still matches the file created by this write.
+
+Replacement failures preserve the old destination and remove only the owned temp
+file. If a required parent-directory sync fails after a successful replacement,
+the destination has already been updated; callers that require full durability
+must report that error and rely on recovery records for subsequent reconciliation.
+
+### Compatibility tests
+
+Focused tests lock:
+
+* generated temp writes replace content and leave no temp files behind;
+* fixed temp paths are same-directory, create-new, and never overwrite an
+  existing file;
+* failed replacement preserves the destination and cleans the generated temp;
+* private temp creation yields a private destination file on Unix;
+* file fsync plus required parent-directory fsync succeeds on Unix; and
+* required parent sync fails before mutation on Windows.
