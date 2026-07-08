@@ -26,6 +26,7 @@
 | **Private, fail-closed platform filesystem adapter** | No-follow inspection, stable identity, link counts, replacement, and directory durability are platform capabilities behind `fs::platform`. Operations never call OS APIs directly, and no unsupported guarantee falls back to delete-then-create. |
 | **SHA-256 recovery fingerprints** | Durable operation records use a bounded-memory SHA-256 content fingerprint serialized as `{ "algorithm": "sha256", "digest_hex": "<64 lowercase hex>" }`. This is recovery safety metadata, not a routine status hash cache. |
 | **Option-driven durable atomic writes** | `storage::atomic_write` creates same-directory temp files with `create_new`, can fsync file content before rename, uses the platform atomic-replace adapter, and can require or best-effort parent-directory fsync. Generated temp files are the default; fixed temp paths are opt-in and never overwritten. |
+| **Status schema v2 is additive** | Existing `ItemStatus` and `IntegrityReport` remain literal symlink-compatibility projections. Copy-aware callers use option-bearing v2 APIs with `status_schema_version = 2`, generic materialization fields, stable snake_case codes, and nullable legacy link fields for copy items. |
 
 ## D1: Platform filesystem adapter
 
@@ -222,3 +223,92 @@ Focused tests lock:
 * private temp creation yields a private destination file on Unix;
 * file fsync plus required parent-directory fsync succeeds on Unix; and
 * required parent sync fails before mutation on Windows.
+
+## D4: JSON status schema representation
+
+Status has two compatibility layers:
+
+* Legacy Rust/JSON status remains the v0.8.0 symlink shape:
+  `path`, `link_exists`, `link_valid`, `store_exists`, `in_exclude`,
+  `not_tracked`, and `ok`.
+* Schema v2 is the copy-aware additive shape. It is exposed through
+  option-bearing APIs and is not used by the CLI formatter until the formatter
+  phase switches to it deliberately.
+
+The existing public `ItemStatus`, `IntegrityReport`, `item::status`, and
+`repo::integrity_check` APIs remain source-compatible. They must continue to be
+literal symlink projections and must not reinterpret `link_exists` or
+`link_valid` as generic materialization booleans.
+
+### Schema-v2 item contract
+
+Each v2 item includes:
+
+```rust
+struct ItemStatusV2 {
+    status_schema_version: u32,
+    path: String,
+    configured_strategy: MaterializationStrategy,
+    observed_materialization: ObservedMaterialization,
+    materialization_exists: bool,
+    materialization_valid: bool,
+    content_state: CopyContentState,
+    store_exists: bool,
+    in_exclude: bool,
+    not_tracked: bool,
+    severity: StatusSeverity,
+    issues: Vec<StatusIssue>,
+    notes: Vec<StatusNote>,
+    ok: bool,
+    link_exists: Option<bool>,
+    link_valid: Option<bool>,
+}
+```
+
+Serialization rules:
+
+* `status_schema_version` is always `2`.
+* All enum values serialize as snake_case.
+* `ok` is equivalent to `severity == "healthy"`.
+* `issues[].code` and `notes[].code` are stable machine-readable codes.
+* Symlink items keep `link_exists` and `link_valid` as their previous boolean
+  values.
+* Copy items serialize `link_exists` and `link_valid` as `null`.
+* The `item status` v2 outer shape remains a JSON array.
+* The `repo status` v2 outer shape remains an object with `items`,
+  `orphan_store_items`, and `repo_root_matches_index`.
+
+Current v2 enum vocabularies are:
+
+* `StatusSeverity`: `healthy`, `warning`, `error`
+* `MaterializationStrategy`: `symlink`, `copy`
+* `ObservedMaterialization`: `missing`, `managed_symlink`,
+  `unmanaged_symlink`, `regular_file`, `directory`, `other`
+* `CopyContentState`: `not_applicable`, `equal`, `diverged`,
+  `store_missing`, `repo_unreadable`, `store_unreadable`, `unknown`
+* `StatusIssueCode`: `materialization_missing`,
+  `materialization_invalid`, `store_missing`, `missing_exclude`,
+  `tracked_by_git`, `content_diverged`, `content_unreadable`,
+  `hardlink_unsafe`, `path_escape`, `unfinished_operation_conflict`
+* `StatusNoteCode`: `strategy_mismatch`
+
+### API boundary
+
+The public copy-aware APIs are:
+
+* `item::status_v2(ctx, StatusOptions::v2()) -> Vec<ItemStatusV2>`
+* `repo::integrity_check_v2(ctx, StatusOptions::v2()) -> IntegrityReportV2`
+
+Legacy and v2 projections are derived from the same collected facts. The
+legacy projection remains suitable for existing symlink consumers; copy-aware
+callers must use v2.
+
+### Compatibility tests
+
+Focused tests lock:
+
+* schema-v2 item JSON for a healthy symlink;
+* schema-v2 item JSON for a copy item, including `null` legacy link fields;
+* schema-v2 repo JSON outer shape;
+* snake_case enum, issue-code, and note-code serialization; and
+* compile-time source compatibility for existing legacy APIs and new v2 APIs.

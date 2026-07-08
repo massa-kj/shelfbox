@@ -33,7 +33,8 @@ It should not duplicate validation, ownership, recovery, or persistence rules.
 
 ```text
 api
-  Public operational entry points grouped by config, item, repo, and store
+  Public operational entry points grouped by config, item, repo, and store;
+  status APIs include legacy symlink and copy-aware v2 projections
 
 config
   Configuration resolution and config file writes

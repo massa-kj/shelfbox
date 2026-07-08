@@ -1,0 +1,20 @@
+[
+  {
+    "status_schema_version": 2,
+    "path": "copy.txt",
+    "configured_strategy": "copy",
+    "observed_materialization": "regular_file",
+    "materialization_exists": true,
+    "materialization_valid": true,
+    "content_state": "equal",
+    "store_exists": true,
+    "in_exclude": true,
+    "not_tracked": true,
+    "severity": "healthy",
+    "issues": [],
+    "notes": [],
+    "ok": true,
+    "link_exists": null,
+    "link_valid": null
+  }
+]

@@ -5,7 +5,15 @@ pub use crate::{
         CurrentGitContext, ExplicitReclaimContext, ReadOnlyRepoContext, RepoContext, StoreAccess,
         StoreContext,
     },
-    ops::{detect_transitions::TransitionReport, integrity::IntegrityReport},
+    ops::{
+        detect_transitions::TransitionReport,
+        integrity::{IntegrityReport, IntegrityReportV2},
+        status::{
+            CopyContentState, ItemStatusV2, MaterializationStrategy, ObservedMaterialization,
+            StatusIssue, StatusIssueCode, StatusNote, StatusNoteCode, StatusOptions,
+            StatusSchemaVersion, StatusSeverity, STATUS_SCHEMA_VERSION_V2,
+        },
+    },
     plan::repo_reclaim::{CandidateState, ReclaimCandidate, ReclaimOutcome, ReclaimPlan},
     plan::repo_repair::{RepairRepoReport, RepoRepairPlan, RepoRepairSymlinkAction},
     store::{
@@ -71,6 +79,12 @@ pub fn integrity_check(ctx: &RepoContext) -> Result<IntegrityReport> {
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     integrity::check(ctx, &link, &ignore)
+}
+
+pub fn integrity_check_v2(ctx: &RepoContext, options: StatusOptions) -> Result<IntegrityReportV2> {
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    integrity::check_v2(ctx, &link, &ignore, options)
 }
 
 pub fn scan_transitions(ctx: &RepoContext, config: &Config) -> Result<TransitionReport> {

@@ -5,7 +5,7 @@ use std::{
 
 use serde::Serialize;
 
-use super::status::{self, ItemStatus};
+use super::status::{self, ItemStatus, ItemStatusV2, StatusOptions};
 use crate::{
     context::RepoContext, error::Result, ignore::IgnoreBackend, link::LinkStrategy, store::index,
 };
@@ -30,6 +30,16 @@ pub struct IntegrityReport {
     pub repo_root_matches_index: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct IntegrityReportV2 {
+    /// Per-item schema-v2 health status (covers every item in the manifest).
+    pub items: Vec<ItemStatusV2>,
+    /// Store-side paths that exist on disk but are not referenced in the manifest.
+    pub orphan_store_items: Vec<String>,
+    /// `true` when the repo root recorded in the index matches `ctx.repo_root`.
+    pub repo_root_matches_index: bool,
+}
+
 /// Runs all health checks and returns an [`IntegrityReport`].
 pub fn check(
     ctx: &RepoContext,
@@ -40,6 +50,23 @@ pub fn check(
     let orphan_store_items = collect_orphan_store_items(ctx);
     let repo_root_matches_index = check_repo_root_in_index(ctx)?;
     Ok(IntegrityReport {
+        items,
+        orphan_store_items,
+        repo_root_matches_index,
+    })
+}
+
+/// Runs all health checks and returns a schema-v2 [`IntegrityReportV2`].
+pub fn check_v2(
+    ctx: &RepoContext,
+    link: &dyn LinkStrategy,
+    ignore: &dyn IgnoreBackend,
+    options: StatusOptions,
+) -> Result<IntegrityReportV2> {
+    let items = status::status_v2(ctx, link, ignore, options)?;
+    let orphan_store_items = collect_orphan_store_items(ctx);
+    let repo_root_matches_index = check_repo_root_in_index(ctx)?;
+    Ok(IntegrityReportV2 {
         items,
         orphan_store_items,
         repo_root_matches_index,
@@ -113,6 +140,26 @@ fn walk_for_orphans(
             }
             // Report orphan directories at their root; do not recurse into them.
         }
+    }
+}
+
+#[cfg(test)]
+mod schema_v2_tests {
+    use super::*;
+
+    #[test]
+    fn repo_status_v2_json_shape_matches_golden_fixture() {
+        let report = IntegrityReportV2 {
+            items: vec![status::healthy_symlink_status_v2_fixture()],
+            orphan_store_items: Vec::new(),
+            repo_root_matches_index: true,
+        };
+        let actual = format!("{}\n", serde_json::to_string_pretty(&report).unwrap());
+
+        assert_eq!(
+            actual,
+            include_str!("../../tests/fixtures/repo-status-symlink-v2.json")
+        );
     }
 }
 

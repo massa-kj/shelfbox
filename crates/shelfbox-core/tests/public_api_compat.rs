@@ -32,6 +32,8 @@ fn directionless_operation_signatures_remain_source_compatible() {
     ) -> Result<item::NamespaceRestoreResult> = item::restore_namespace;
     let _: for<'a> fn(&'a item::RepoContext) -> &'a [item::Item] = item::list;
     let _: fn(&item::RepoContext) -> Result<Vec<item::ItemStatus>> = item::status;
+    let _: fn(&item::RepoContext, item::StatusOptions) -> Result<Vec<item::ItemStatusV2>> =
+        item::status_v2;
     let _: fn(&item::RepoContext, &Path, bool, bool) -> Result<item::ItemRepairReport> =
         item::repair;
     let _: fn(&mut item::RepoContext, &Path, bool) -> Result<item::ItemRelinkReport> = item::relink;
@@ -41,6 +43,8 @@ fn directionless_operation_signatures_remain_source_compatible() {
     let _: fn(&item::ReadOnlyRepoContext, &Path) -> Result<item::ItemInfo> = item::info_read_only;
 
     let _: fn(&repo::RepoContext) -> Result<repo::IntegrityReport> = repo::integrity_check;
+    let _: fn(&repo::RepoContext, repo::StatusOptions) -> Result<repo::IntegrityReportV2> =
+        repo::integrity_check_v2;
     let _: fn(&repo::RepoContext, &Config) -> Result<repo::TransitionReport> =
         repo::scan_transitions;
     let _: fn(&mut repo::RepoContext, bool, bool) -> Result<repo::RepairRepoReport> =
@@ -67,6 +71,55 @@ fn status_report_and_plan_fields_remain_source_compatible() {
         orphan_store_items: Vec::new(),
         repo_root_matches_index: true,
     };
+    let status_v2 = item::ItemStatusV2 {
+        status_schema_version: item::STATUS_SCHEMA_VERSION_V2,
+        path: "secret.txt".into(),
+        configured_strategy: item::MaterializationStrategy::Symlink,
+        observed_materialization: item::ObservedMaterialization::ManagedSymlink,
+        materialization_exists: true,
+        materialization_valid: true,
+        content_state: item::CopyContentState::NotApplicable,
+        store_exists: true,
+        in_exclude: true,
+        not_tracked: true,
+        severity: item::StatusSeverity::Healthy,
+        issues: vec![item::StatusIssue {
+            code: item::StatusIssueCode::MissingExclude,
+        }],
+        notes: vec![item::StatusNote {
+            code: item::StatusNoteCode::StrategyMismatch,
+        }],
+        ok: true,
+        link_exists: Some(true),
+        link_valid: Some(true),
+    };
+    let _integrity_v2 = repo::IntegrityReportV2 {
+        items: vec![status_v2],
+        orphan_store_items: Vec::new(),
+        repo_root_matches_index: true,
+    };
+    let _copy_v2 = item::ItemStatusV2 {
+        status_schema_version: item::STATUS_SCHEMA_VERSION_V2,
+        path: "copy.txt".into(),
+        configured_strategy: item::MaterializationStrategy::Copy,
+        observed_materialization: item::ObservedMaterialization::RegularFile,
+        materialization_exists: true,
+        materialization_valid: true,
+        content_state: item::CopyContentState::Equal,
+        store_exists: true,
+        in_exclude: true,
+        not_tracked: true,
+        severity: item::StatusSeverity::Healthy,
+        issues: Vec::new(),
+        notes: Vec::new(),
+        ok: true,
+        link_exists: None,
+        link_valid: None,
+    };
+    let _options = item::StatusOptions {
+        schema_version: item::StatusSchemaVersion::V2,
+    };
+    let _options_ctor = item::StatusOptions::v2();
     let _info = item::ItemInfo {
         path: "secret.txt".into(),
         repo_root: PathBuf::from("repo"),

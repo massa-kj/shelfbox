@@ -8,7 +8,11 @@ pub use crate::{
         info::ItemInfo,
         relink::RelinkOutcome,
         restore::{NamespaceRestoreResult, NsRestoreItemOutcome},
-        status::ItemStatus,
+        status::{
+            CopyContentState, ItemStatus, ItemStatusV2, MaterializationStrategy,
+            ObservedMaterialization, StatusIssue, StatusIssueCode, StatusNote, StatusNoteCode,
+            StatusOptions, StatusSchemaVersion, StatusSeverity, STATUS_SCHEMA_VERSION_V2,
+        },
     },
     plan::{
         item_add::{ItemAddPlan, ItemAddReport},
@@ -111,6 +115,12 @@ pub fn status(ctx: &RepoContext) -> Result<Vec<ItemStatus>> {
     let link = DefaultLinkStrategy;
     let ignore = GitInfoExclude;
     status_ops::status(ctx, &link, &ignore)
+}
+
+pub fn status_v2(ctx: &RepoContext, options: StatusOptions) -> Result<Vec<ItemStatusV2>> {
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    status_ops::status_v2(ctx, &link, &ignore, options)
 }
 
 pub fn repair(
