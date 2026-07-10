@@ -27,6 +27,7 @@
 | **SHA-256 recovery fingerprints** | Durable operation records use a bounded-memory SHA-256 content fingerprint serialized as `{ "algorithm": "sha256", "digest_hex": "<64 lowercase hex>" }`. This is recovery safety metadata, not a routine status hash cache. |
 | **Option-driven durable atomic writes** | `storage::atomic_write` creates same-directory temp files with `create_new`, can fsync file content before rename, uses the platform atomic-replace adapter, and can require or best-effort parent-directory fsync. Generated temp files are the default; fixed temp paths are opt-in and never overwritten. |
 | **Status schema v2 is additive** | Existing `ItemStatus` and `IntegrityReport` remain literal symlink-compatibility projections. Copy-aware callers use option-bearing v2 APIs with `status_schema_version = 2`, generic materialization fields, stable snake_case codes, and nullable legacy link fields for copy items. |
+| **Copy mutations require artifact leases** | No copy mutation may write plaintext before its temp path is durably recorded, repo-side temps are exactly excluded, and the empty temp identity is durably recorded. Commit must be bracketed by pre/post validation, and cleanup may remove only matching artifacts. |
 
 ## D1: Platform filesystem adapter
 
@@ -312,3 +313,132 @@ Focused tests lock:
 * schema-v2 repo JSON outer shape;
 * snake_case enum, issue-code, and note-code serialization; and
 * compile-time source compatibility for existing legacy APIs and new v2 APIs.
+
+## D5: Copy mutation crash-safety contract
+
+Copy mutation code must not begin until the temp/artifact protocol below is
+available through a mutation journal and opaque artifact leases. The contract is
+encoded in `domain::copy_safety` as crate-private constants with focused tests;
+the module is a contract fixture, not a mutation implementation.
+
+### Repo-side temp protocol
+
+Repo-side temps can become Git-visible plaintext if the order is wrong. Their
+protocol is:
+
+1. Generate a temp path without creating the file.
+2. Durably record the artifact path.
+3. Add and verify the exact managed exclude for that temp path.
+4. Create an empty private temp with create-new semantics.
+5. Capture and durably record the temp identity.
+6. Authorize plaintext writing.
+7. Revalidate immediately before commit.
+8. Atomically replace the destination.
+9. Revalidate repo Git/exclude state after materialization.
+10. Remove the temp-specific exclude and artifact record only after final state
+    is verified.
+
+The important write-ahead barriers are:
+
+* artifact path before file creation;
+* exact repo-temp exclude before file creation;
+* temp identity before plaintext writing; and
+* final verification before artifact cleanup.
+
+### Store-side temp protocol
+
+Store-side temps do not need Git excludes, but they still need artifact records
+and identity-safe cleanup:
+
+1. Generate a temp path without creating the file.
+2. Durably record the artifact path.
+3. Create an empty private temp with create-new semantics.
+4. Capture and durably record the temp identity.
+5. Authorize plaintext writing.
+6. Revalidate immediately before commit.
+7. Atomically replace the destination.
+8. Revalidate after materialization.
+9. Remove the artifact record only after final state is verified.
+
+### Boundary ownership
+
+The mutation journal / artifact lease owns:
+
+* temp path allocation;
+* durable artifact path recording;
+* repo-side exact temp exclude creation and verification;
+* empty private temp creation;
+* durable temp identity recording;
+* writable-temp authorization; and
+* identity-safe artifact cleanup.
+
+`Materializer` or `CanonicalTransfer` owns:
+
+* populating the prepared artifact; and
+* atomically committing the prepared artifact.
+
+The operation owns:
+
+* high-level durable phase updates;
+* obtaining a fresh `WritePreconditionGuard`;
+* post-materialization validation; and
+* recovery direction decisions.
+
+Operations must not learn temp paths, temp identities, transfer algorithms, or
+symlink/copy implementation state from prepared handles.
+
+### WritePreconditionGuard checklist
+
+Immediately before commit, `WritePreconditionGuard` rechecks:
+
+* repo/store root containment;
+* parent no-follow conditions;
+* final-component no-follow conditions;
+* file identity;
+* link count and hardlink absence;
+* Git tracked state;
+* target exclude state;
+* all excludes owned by artifact leases; and
+* destination equality with the planned state.
+
+Because Git and exclude updates cannot be transacted with filesystem
+replacement, operations must also perform post-materialization validation. On
+post-check failure, rollback is allowed only when the recorded identity still
+matches; otherwise preserve artifacts and report a conflict.
+
+### Failpoint and recovery rules
+
+Every operation without a full durable operation record needs failpoint proof
+after each persistent mutation:
+
+* artifact path record;
+* repo-temp exclude;
+* empty temp creation;
+* temp identity record;
+* plaintext write;
+* destination replacement;
+* post-materialization validation record; and
+* artifact record deletion.
+
+Any operation that cannot prove safe retry after each mutation must be promoted
+to a full durable operation record or recovery-artifact record before release.
+
+Stale-completion recovery is:
+
+* if final postconditions already hold when an unfinished record reappears,
+  classify the operation as completed;
+* remove only the stale record and matching artifacts;
+* never roll back completed user-visible state; and
+* write artifact and backup paths to the record before creating them.
+
+### Contract tests
+
+Focused tests lock:
+
+* repo-side ordering from path generation through plaintext authorization;
+* store-side ordering without repo excludes;
+* pre/post validation around atomic replacement and cleanup;
+* the full `WritePreconditionGuard` checklist;
+* failpoint proof after every persistent mutation;
+* ownership boundaries that keep temp details opaque to operations; and
+* stale-completion recovery rules.

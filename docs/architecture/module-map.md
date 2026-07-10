@@ -40,7 +40,7 @@ config
   Configuration resolution and config file writes
 
 domain
-  Persistent data shapes and small invariants
+  Persistent data shapes, small invariants, and crate-private copy safety contracts
 
 error
   Shared error and result types
