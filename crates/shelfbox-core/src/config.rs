@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::{
+    domain::materialization::MaterializationStrategy,
     error::{AppError, Result},
     storage::atomic_write::{self, ParentDirMode},
 };
@@ -33,7 +34,25 @@ struct RawConfig {
     store: Option<PathBuf>,
     /// Default output format ("table" | "plain" | "json").
     default_format: Option<String>,
+    /// Default strategy for materializations created in the future.
+    materialization: Option<MaterializationStrategy>,
 }
+
+/// Controls whether a parsed copy strategy may reach the released runtime.
+///
+/// Phase 1 must validate and carry the value so later phases do not need a
+/// configuration-schema migration. It must not, however, let users activate a
+/// partially implemented copy workflow. Phase 12 changes the single release
+/// constant below after all copy-mode safety gates have passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // `Public` is exercised by internal rollout tests until Phase 12.
+enum MaterializationConfigRollout {
+    InternalOnly,
+    Public,
+}
+
+const MATERIALIZATION_CONFIG_ROLLOUT: MaterializationConfigRollout =
+    MaterializationConfigRollout::InternalOnly;
 
 // ── Config source metadata ──────────────────────────────────────────────────
 
@@ -91,6 +110,10 @@ pub struct ResolvedConfig {
     pub default_format: Option<String>,
     /// Origin of [`default_format`](Self::default_format).
     pub default_format_source: ConfigSource,
+    /// Resolved default strategy for newly created materializations.
+    pub materialization: MaterializationStrategy,
+    /// Origin of [`materialization`](Self::materialization).
+    pub materialization_source: ConfigSource,
 }
 
 impl From<ResolvedConfig> for Config {
@@ -98,6 +121,7 @@ impl From<ResolvedConfig> for Config {
         Self {
             store: r.store,
             default_format: r.default_format,
+            materialization: r.materialization,
         }
     }
 }
@@ -114,6 +138,11 @@ pub struct Config {
     /// Default output format ("table" | "plain" | "json"), or `None` to use
     /// the built-in default (`"table"`).
     pub default_format: Option<String>,
+    /// Default strategy for future materializations.
+    ///
+    /// Existing paths must always be inspected; changing this value never
+    /// converts a materialization already present in a repository.
+    pub materialization: MaterializationStrategy,
 }
 
 impl Config {
@@ -135,6 +164,14 @@ impl Config {
     }
 
     fn resolve_full(raw: RawConfig, store_override: Option<&Path>) -> Result<ResolvedConfig> {
+        Self::resolve_full_with_rollout(raw, store_override, MATERIALIZATION_CONFIG_ROLLOUT)
+    }
+
+    fn resolve_full_with_rollout(
+        raw: RawConfig,
+        store_override: Option<&Path>,
+        rollout: MaterializationConfigRollout,
+    ) -> Result<ResolvedConfig> {
         // Priority (high → low):
         //   1. --store CLI flag (store_override)
         //   2. $SHELFBOX_STORE environment variable
@@ -164,11 +201,25 @@ impl Config {
             (None, ConfigSource::Default)
         };
 
+        let (materialization, materialization_source) = match raw.materialization {
+            Some(MaterializationStrategy::Copy)
+                if rollout == MaterializationConfigRollout::InternalOnly =>
+            {
+                return Err(AppError::MaterializationStrategyUnavailable {
+                    strategy: MaterializationStrategy::Copy,
+                });
+            }
+            Some(strategy) => (strategy, ConfigSource::File),
+            None => (MaterializationStrategy::Symlink, ConfigSource::Default),
+        };
+
         Ok(ResolvedConfig {
             store,
             store_source,
             default_format,
             default_format_source,
+            materialization,
+            materialization_source,
         })
     }
 
@@ -185,6 +236,7 @@ impl Config {
         Self {
             store: store.into(),
             default_format: None,
+            materialization: MaterializationStrategy::Symlink,
         }
     }
 }
@@ -222,7 +274,11 @@ fn read_config_file() -> Result<RawConfig> {
         Err(e) => return Err(AppError::io(path, e)),
     };
 
-    toml::from_str(&contents).map_err(|e| AppError::toml_parse(path, e))
+    parse_raw_config(&path, &contents)
+}
+
+fn parse_raw_config(path: &Path, contents: &str) -> Result<RawConfig> {
+    toml::from_str(contents).map_err(|e| AppError::toml_parse(path, e))
 }
 
 /// Sets a single key-value pair in the config file, preserving existing
@@ -235,6 +291,22 @@ pub fn set_key(key: &str, value: &str) -> Result<()> {
             other => {
                 return Err(AppError::Internal(format!(
                     "invalid value '{other}' for default_format; valid values: table, plain, json"
+                )));
+            }
+        },
+        // The key is intentionally not released through `config set` until
+        // Phase 12. Keeping validation here avoids a second parser and makes
+        // the eventual activation a deliberate, small change.
+        "materialization" => match value {
+            "symlink" => {}
+            "copy" => {
+                return Err(AppError::MaterializationStrategyUnavailable {
+                    strategy: MaterializationStrategy::Copy,
+                });
+            }
+            other => {
+                return Err(AppError::Internal(format!(
+                    "invalid value '{other}' for materialization; valid values: symlink, copy"
                 )));
             }
         },
@@ -356,6 +428,8 @@ mod tests {
         assert_eq!(r.store_source, ConfigSource::CliFlag);
         assert_eq!(r.default_format, None);
         assert_eq!(r.default_format_source, ConfigSource::Default);
+        assert_eq!(r.materialization, MaterializationStrategy::Symlink);
+        assert_eq!(r.materialization_source, ConfigSource::Default);
     }
 
     #[test]
@@ -376,11 +450,14 @@ mod tests {
         let raw = RawConfig {
             store: Some(PathBuf::from("/from/config")),
             default_format: Some("json".to_string()),
+            materialization: Some(MaterializationStrategy::Symlink),
         };
         let r = Config::resolve_full(raw, None).unwrap();
         assert_eq!(r.store_source, ConfigSource::File);
         assert_eq!(r.default_format.as_deref(), Some("json"));
         assert_eq!(r.default_format_source, ConfigSource::File);
+        assert_eq!(r.materialization, MaterializationStrategy::Symlink);
+        assert_eq!(r.materialization_source, ConfigSource::File);
     }
 
     #[test]
@@ -392,6 +469,97 @@ mod tests {
         assert_eq!(r.store_source, ConfigSource::Default);
         assert_eq!(r.default_format, None);
         assert_eq!(r.default_format_source, ConfigSource::Default);
+        assert_eq!(r.materialization, MaterializationStrategy::Symlink);
+        assert_eq!(r.materialization_source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn missing_materialization_defaults_to_symlink() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+
+        let config = Config::resolve(RawConfig::default(), None).unwrap();
+
+        assert_eq!(config.materialization, MaterializationStrategy::Symlink);
+    }
+
+    #[test]
+    fn valid_materialization_values_parse_with_stable_names() {
+        let symlink =
+            parse_raw_config(Path::new("config.toml"), "materialization = \"symlink\"\n").unwrap();
+        let copy =
+            parse_raw_config(Path::new("config.toml"), "materialization = \"copy\"\n").unwrap();
+
+        assert_eq!(
+            symlink.materialization,
+            Some(MaterializationStrategy::Symlink)
+        );
+        assert_eq!(copy.materialization, Some(MaterializationStrategy::Copy));
+    }
+
+    #[test]
+    fn unknown_materialization_value_is_a_config_parse_error() {
+        let error = parse_raw_config(Path::new("config.toml"), "materialization = \"hardlink\"\n")
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::TomlParse { .. }));
+    }
+
+    #[test]
+    fn copy_source_is_preserved_for_internal_rollout_validation() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        let raw = RawConfig {
+            materialization: Some(MaterializationStrategy::Copy),
+            ..Default::default()
+        };
+
+        let resolved =
+            Config::resolve_full_with_rollout(raw, None, MaterializationConfigRollout::Public)
+                .unwrap();
+
+        assert_eq!(resolved.materialization, MaterializationStrategy::Copy);
+        assert_eq!(resolved.materialization_source, ConfigSource::File);
+    }
+
+    #[test]
+    fn copy_cannot_be_activated_before_the_public_rollout() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+        let raw = RawConfig {
+            materialization: Some(MaterializationStrategy::Copy),
+            ..Default::default()
+        };
+
+        let error = Config::resolve_full(raw, None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::MaterializationStrategyUnavailable {
+                strategy: MaterializationStrategy::Copy
+            }
+        ));
+    }
+
+    #[test]
+    fn copy_cannot_be_enabled_through_the_programmatic_setter() {
+        let error = set_key("materialization", "copy").unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::MaterializationStrategyUnavailable {
+                strategy: MaterializationStrategy::Copy
+            }
+        ));
+    }
+
+    #[test]
+    fn with_store_is_deterministic_and_uses_symlink_strategy() {
+        let config = Config::with_store("/explicit-store");
+
+        assert_eq!(config.store, PathBuf::from("/explicit-store"));
+        assert_eq!(config.default_format, None);
+        assert_eq!(config.materialization, MaterializationStrategy::Symlink);
     }
 
     #[test]

@@ -7,7 +7,10 @@ use crate::{
     store::manifest::Item,
 };
 
-pub use crate::domain::materialization::MaterializationStrategy;
+pub use crate::domain::materialization::{
+    MaterializationStrategy, StatusIssue, StatusIssueCode, StatusNote, StatusNoteCode,
+    StatusSeverity,
+};
 
 pub const STATUS_SCHEMA_VERSION_V2: u32 = 2;
 
@@ -52,14 +55,9 @@ pub struct ItemStatus {
     pub ok: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusSeverity {
-    Healthy,
-    Warning,
-    Error,
-}
-
+/// Schema-v2 presentation classification retained for source and JSON
+/// compatibility. Phase 4 will project the richer domain facts into this
+/// compatibility DTO without changing legacy symlink values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObservedMaterialization {
@@ -71,6 +69,9 @@ pub enum ObservedMaterialization {
     Other,
 }
 
+/// Schema-v2 presentation state retained for the existing compatibility
+/// projection. The domain facts model uses its own narrower content-comparison
+/// vocabulary, which does not conflate a missing store with comparison state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CopyContentState {
@@ -81,37 +82,6 @@ pub enum CopyContentState {
     RepoUnreadable,
     StoreUnreadable,
     Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusIssueCode {
-    MaterializationMissing,
-    MaterializationInvalid,
-    StoreMissing,
-    MissingExclude,
-    TrackedByGit,
-    ContentDiverged,
-    ContentUnreadable,
-    HardlinkUnsafe,
-    PathEscape,
-    UnfinishedOperationConflict,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusNoteCode {
-    StrategyMismatch,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct StatusIssue {
-    pub code: StatusIssueCode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct StatusNote {
-    pub code: StatusNoteCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

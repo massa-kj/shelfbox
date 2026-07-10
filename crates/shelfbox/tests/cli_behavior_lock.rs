@@ -92,6 +92,32 @@ fn config_list_json_uses_isolated_defaults_without_creating_config_file() {
 }
 
 #[test]
+fn copy_materialization_remains_unavailable_through_released_config_paths() {
+    let fixture = CliFixture::new();
+    let cwd = TempDir::new().unwrap();
+    fixture.write_config("materialization = \"copy\"\n");
+
+    let from_file = fixture.run(cwd.path(), ["config", "list"]);
+    assert!(!from_file.status.success());
+    assert!(from_file.stdout.is_empty());
+    assert!(from_file
+        .stderr
+        .contains("materialization strategy 'copy' is not available"));
+
+    let fresh_fixture = CliFixture::new();
+    let from_set = fresh_fixture.run(cwd.path(), ["config", "set", "materialization", "copy"]);
+    assert!(!from_set.status.success());
+    assert!(from_set.stdout.is_empty());
+    assert!(from_set
+        .stderr
+        .contains("unknown config key: materialization"));
+    assert!(
+        !fresh_fixture.config_file_path().exists(),
+        "a rejected copy strategy must not create or modify config.toml"
+    );
+}
+
+#[test]
 fn store_rebuild_index_dry_run_reports_without_writing_index() {
     let fixture = CliFixture::new();
     let cwd = TempDir::new().unwrap();

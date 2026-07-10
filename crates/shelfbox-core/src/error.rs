@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::domain::materialization::MaterializationStrategy;
+
 /// Filesystem guarantees that may be unavailable on a platform or filesystem.
 ///
 /// Callers must fail closed when a required capability is unavailable. In
@@ -191,6 +193,14 @@ pub enum AppError {
         #[source]
         source: Box<toml::de::Error>,
     },
+
+    /// A syntactically valid strategy is present in configuration, but its
+    /// workflow has not passed the release safety gate yet.
+    #[error(
+        "materialization strategy '{strategy}' is not available in this build yet; \
+         copy materialization will be enabled after its safety checks are complete"
+    )]
+    MaterializationStrategyUnavailable { strategy: MaterializationStrategy },
 
     // ── Git subprocess ─────────────────────────────────────────────────────
     /// A `git` subprocess failed to spawn or returned a non-zero exit code.
