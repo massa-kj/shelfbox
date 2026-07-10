@@ -7,6 +7,8 @@ use crate::{
     store::manifest::Item,
 };
 
+pub use crate::domain::materialization::MaterializationStrategy;
+
 pub const STATUS_SCHEMA_VERSION_V2: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,13 +58,6 @@ pub enum StatusSeverity {
     Healthy,
     Warning,
     Error,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MaterializationStrategy {
-    Symlink,
-    Copy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

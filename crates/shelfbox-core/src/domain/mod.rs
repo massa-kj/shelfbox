@@ -8,6 +8,7 @@ pub(crate) mod copy_safety;
 pub mod ids;
 pub mod index;
 pub mod manifest;
+pub mod materialization;
 pub mod ownership;
 pub mod path;
 pub mod recovery_fingerprint;

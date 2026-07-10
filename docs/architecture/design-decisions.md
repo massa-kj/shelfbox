@@ -28,6 +28,7 @@
 | **Option-driven durable atomic writes** | `storage::atomic_write` creates same-directory temp files with `create_new`, can fsync file content before rename, uses the platform atomic-replace adapter, and can require or best-effort parent-directory fsync. Generated temp files are the default; fixed temp paths are opt-in and never overwritten. |
 | **Status schema v2 is additive** | Existing `ItemStatus` and `IntegrityReport` remain literal symlink-compatibility projections. Copy-aware callers use option-bearing v2 APIs with `status_schema_version = 2`, generic materialization fields, stable snake_case codes, and nullable legacy link fields for copy items. |
 | **Copy mutations require artifact leases** | No copy mutation may write plaintext before its temp path is durably recorded, repo-side temps are exactly excluded, and the empty temp identity is durably recorded. Commit must be bracketed by pre/post validation, and cleanup may remove only matching artifacts. |
+| **Operations use materializer and canonical-transfer ports** | Operations issue typed actions, persist high-level phases, and request opaque commit permits. Filesystem adapters own symlink/copy dispatch, no-follow facts, temp artifacts, and transfer algorithms; canonical store movement is a separate port. |
 
 ## D1: Platform filesystem adapter
 
@@ -442,3 +443,98 @@ Focused tests lock:
 * failpoint proof after every persistent mutation;
 * ownership boundaries that keep temp details opaque to operations; and
 * stale-completion recovery rules.
+
+## D6: Operation/materializer boundary
+
+D6 freezes crate-private operation-facing ports before any copy-aware operation
+is migrated. These are contracts and fake-adapter prototypes, not a copy
+materialization implementation. The concrete Phase 3 adapters will live under
+`fs` and be constructed only by the API/context composition root.
+
+### Typed actions and facts
+
+`fs::materializer::MaterializationAction` is the only repository
+materialization mutation vocabulary:
+
+* `NoOp`;
+* `Create { location, strategy }`;
+* `Replace { location, strategy, expected }`;
+* `Remove { location, expected }`; and
+* `RestoreToRegular { location, expected }`.
+
+`location` consists only of normalized repo-relative and store-relative paths.
+`expected` carries a visible high-level entry kind plus a private identity
+snapshot. A `Materializer::inspect` result similarly exposes policy-relevant
+no-follow facts—entry kind, final-component inspection state, link count, and
+hardlink safety—without exposing raw file identities or platform handles.
+Operations obtain `ExpectedMaterialization` from those facts rather than
+constructing an identity precondition themselves.
+
+`Materializer` has four methods: read-only `inspect`, `prepare`, `commit`, and
+`abort`. It owns symlink/copy dispatch, platform inspection, secure transfer,
+and artifact population. It does not own Git/exclude policy, confirmation,
+manifest ownership, durable operation direction, or user-facing reports.
+
+Canonical store movement uses the distinct
+`fs::canonical_transfer::CanonicalTransfer` port. Its `Move` and
+`ReplaceFromRepo` actions name logical canonical endpoints and expected state,
+but never choose rename, copy, or cross-device transfer algorithms. It has the
+same inspect/prepare/commit/abort lifecycle as `Materializer`.
+
+### Opaque journal, handles, and permits
+
+`MutationJournal` is the only D6 interface for artifact lifecycle steps. A
+materializer or canonical-transfer adapter obtains an `ArtifactLease` for the
+appropriate scope, then asks the journal to authorize a plaintext write. The
+journal performs the D5 write-ahead barriers before that authorization:
+artifact recording, repo-temp exclude when applicable, private create-new,
+and temp-identity recording. The writable lease, prepared handle, lease
+reference, commit context, and commit permit intentionally have no path,
+identity, or transfer-algorithm accessors.
+
+The required operation sequence is:
+
+1. Pass the policy-approved typed action to `prepare` with an operation-scoped
+   journal.
+2. Persist the high-level `*Prepared` durable phase.
+3. Request fresh no-follow facts through the relevant port.
+4. Combine those facts with the opaque prepared commit context to create a
+   `WritePreconditionGuard`, perform the Git/exclude checks, and obtain a
+   `CommitPermit` from the journal.
+5. Persist `CommitAuthorized`, commit the opaque prepared handle, and persist
+   the corresponding `*Committed` phase.
+6. Inspect and validate postconditions, then persist `PostCommitValidated`.
+
+Thus `WritePreconditionGuard` gets identity, final-component no-follow, link
+count, and hardlink facts only from port inspection. Operations do not import
+`fs::platform`, inspect raw handles, or learn temp paths. The guard retains the
+full D5 checklist: containment, no-follow conditions, identity/link-count,
+Git/exclude state including artifact leases, and planned destination equality.
+
+### Dependency enforcement
+
+`crates/shelfbox-core/tests/architecture_boundaries.rs` is active before the
+first copy-aware operation migration. It rejects production `ops/` references
+to platform modules, secure transfer, symlink helpers, and platform-specific
+symlink APIs. It also prevents `LinkStrategy` and direct copy/rename/removal/
+read-link calls from spreading beyond the current symlink-only modules.
+
+The following existing v0.8.0 modules are an explicit pre-migration baseline:
+`add`, `info`, `integrity`, `move_item`, `relink`, `repair`, `restore`, and
+`status`. Their total `LinkStrategy` references may decrease from the recorded
+ceiling of 30 but may not increase or appear in a new production operation
+module. Their narrowly enumerated direct filesystem calls are likewise
+allowlisted only in the existing operation files. Each Phase 3 operation
+migration must remove its legacy allowance; no copy-aware operation may use
+one. This preserves existing symlink behavior while making the dependency
+boundary enforceable now.
+
+### Prototype tests
+
+Focused operation tests use a fake `Materializer`, fake `CanonicalTransfer`,
+and fake `MutationJournal`. They prove that operations request the exact typed
+action, lease repo-side versus store-side artifacts correctly, record durable
+phases around the commit permit, inspect before and after commit, and receive
+no prepared-handle detail beyond an opaque commit context. The contracts are
+platform-neutral; their implementations must satisfy the D1 capability matrix
+on Linux, macOS, and Windows where the required capability applies.

@@ -13,3 +13,6 @@ pub mod relink;
 pub mod repair;
 pub mod restore;
 pub mod status;
+
+#[cfg(test)]
+mod materialization_boundary_tests;

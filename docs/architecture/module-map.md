@@ -40,7 +40,8 @@ config
   Configuration resolution and config file writes
 
 domain
-  Persistent data shapes, small invariants, and crate-private copy safety contracts
+  Persistent data shapes, materialization strategy vocabulary, small invariants,
+  and crate-private copy safety contracts
 
 error
   Shared error and result types
@@ -75,7 +76,9 @@ store
   Crate-private compatibility namespace over storage modules
 
 fs, git, ignore, link
-  Filesystem, Git, ignore-file, and symlink adapters
+  Filesystem, Git, ignore-file, and symlink adapters. `fs::materializer` and
+  `fs::canonical_transfer` are crate-private operation-facing ports; concrete
+  adapters are composed outside `ops/`.
 
 fs/platform
   Private no-follow, identity, link-count, atomic-replacement, and durability
@@ -95,10 +98,13 @@ shelfbox::commands
     -> ops
       -> policy
       -> storage/store
-      -> fs/git/ignore/link
+      -> fs::materializer / fs::canonical_transfer / git / ignore
+        -> fs/link/secure transfer/platform adapters
     -> domain / plan / error
 ```
 
 Policy code should not perform I/O. Storage code should not own command
-semantics. CLI code should not decide core safety rules. This keeps behavior
+semantics. CLI code should not decide core safety rules. Operations orchestrate
+typed actions and durable phases but do not construct concrete adapters or use
+platform, symlink, or secure-transfer helpers directly. This keeps behavior
 testable and keeps public API changes intentional.
