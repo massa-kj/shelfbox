@@ -4,7 +4,7 @@
 //! primitives. Phase 2 composes these primitives into secure transfer and
 //! materialization operations. Operation modules must never import this module.
 
-use std::path::Path;
+use std::{fs::File, path::Path};
 
 use crate::error::{AppError, FilesystemCapability, Result};
 
@@ -82,6 +82,10 @@ pub(crate) const fn capabilities() -> PlatformCapabilities {
 
 pub(crate) fn inspect_no_follow(path: &Path) -> Result<InspectedEntry> {
     imp::inspect_no_follow(path)
+}
+
+pub(crate) fn open_regular_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
+    imp::open_regular_no_follow(path)
 }
 
 /// Atomically renames a prepared regular file over an existing non-directory

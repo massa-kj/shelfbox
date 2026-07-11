@@ -229,6 +229,15 @@ pub enum AppError {
         reason: &'static str,
     },
 
+    #[error("unsafe filesystem entry at '{path}': {reason}")]
+    UnsafeFilesystemEntry { path: PathBuf, reason: &'static str },
+
+    #[error("hardlinked file is not supported for this operation: {path}")]
+    HardlinkedFile { path: PathBuf },
+
+    #[error("filesystem entry changed during transfer: {path}")]
+    FilesystemEntryChanged { path: PathBuf },
+
     // ── Internal / unexpected ─────────────────────────────────────────────
     /// An invariant was violated that should never occur in correct usage.
     /// Wraps a human-readable description for debugging.

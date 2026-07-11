@@ -44,6 +44,18 @@ pub(super) fn inspect_no_follow(path: &Path) -> Result<InspectedEntry> {
     inspect_handle(&file, path)
 }
 
+pub(super) fn open_regular_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
+    let file = open_no_follow(path, 0)?;
+    let entry = inspect_handle(&file, path)?;
+    if entry.kind != EntryKind::RegularFile {
+        return Err(AppError::UnsafeFilesystemEntry {
+            path: path.to_path_buf(),
+            reason: "expected a regular file",
+        });
+    }
+    Ok((file, entry))
+}
+
 pub(super) fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
     require_same_parent(source, destination)?;
     if !destination.is_absolute() {

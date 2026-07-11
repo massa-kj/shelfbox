@@ -49,6 +49,38 @@ pub(super) fn inspect_no_follow(path: &Path) -> Result<InspectedEntry> {
     })
 }
 
+pub(super) fn open_regular_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
+    let path_bytes = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        AppError::Internal(format!("path contains an interior NUL: {}", path.display()))
+    })?;
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let descriptor = unsafe { libc::open(path_bytes.as_ptr(), flags) };
+    if descriptor < 0 {
+        return Err(AppError::io(path, std::io::Error::last_os_error()));
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    let metadata = file.metadata().map_err(|error| AppError::io(path, error))?;
+    if !metadata.file_type().is_file() {
+        return Err(AppError::UnsafeFilesystemEntry {
+            path: path.to_path_buf(),
+            reason: "expected a regular file",
+        });
+    }
+    let mut file_id = [0_u8; 16];
+    file_id[..8].copy_from_slice(&metadata.ino().to_le_bytes());
+    Ok((
+        file,
+        InspectedEntry {
+            kind: EntryKind::RegularFile,
+            identity: FileIdentity {
+                volume: metadata.dev(),
+                file: file_id,
+            },
+            link_count: metadata.nlink(),
+        },
+    ))
+}
+
 pub(super) fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
     require_same_parent(source, destination)?;
     std::fs::rename(source, destination).map_err(|error| AppError::io(destination, error))
