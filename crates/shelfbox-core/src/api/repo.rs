@@ -114,5 +114,6 @@ pub fn plan_reclaim(ctx: &ExplicitReclaimContext) -> Result<ReclaimPlan> {
 }
 
 pub fn execute_reclaim(ctx: &ExplicitReclaimContext) -> Result<ReclaimOutcome> {
+    let _store_lock = context::acquire_store_write_access(&ctx.config.store)?;
     reclaim::execute_reclaim(&ctx.config.store, &ctx.current, &ctx.target_repo_id)
 }

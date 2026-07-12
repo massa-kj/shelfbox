@@ -19,6 +19,8 @@ use crate::{
     store::manifest::Item,
 };
 
+use super::recovery;
+
 pub use crate::domain::materialization::{
     MaterializationStrategy, StatusIssue, StatusIssueCode, StatusNote, StatusNoteCode,
     StatusSeverity,
@@ -149,7 +151,7 @@ pub fn status_v2(
         ctx.repo_store.clone(),
         link,
     );
-    match options.schema_version {
+    let mut statuses: Vec<ItemStatusV2> = match options.schema_version {
         StatusSchemaVersion::V2 => ctx
             .manifest
             .items
@@ -157,7 +159,38 @@ pub fn status_v2(
             .map(|item| {
                 check_item_facts(ctx, item, &materializer, ignore).map(|facts| facts.to_v2())
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>(),
+    }?;
+    apply_read_only_recovery_status(&mut statuses, ctx);
+    Ok(statuses)
+}
+
+fn apply_read_only_recovery_status(statuses: &mut [ItemStatusV2], ctx: &RepoContext) {
+    let recovery_status = recovery::read_only_status(&ctx.config.store, &ctx.repo_root)
+        .unwrap_or_else(|_| recovery::ReadOnlyRecoveryStatus {
+            has_unattributed_record: true,
+            ..recovery::ReadOnlyRecoveryStatus::default()
+        });
+    if recovery_status.record_ids.is_empty() && !recovery_status.has_unattributed_record {
+        return;
+    }
+
+    for status in statuses {
+        if recovery_status.has_unattributed_record
+            || recovery_status.affected_item_paths.contains(&status.path)
+        {
+            if !status
+                .issues
+                .iter()
+                .any(|issue| issue.code == StatusIssueCode::UnfinishedOperationConflict)
+            {
+                status.issues.push(StatusIssue {
+                    code: StatusIssueCode::UnfinishedOperationConflict,
+                });
+            }
+            status.severity = StatusSeverity::Error;
+            status.ok = false;
+        }
     }
 }
 

@@ -219,6 +219,29 @@ pub enum AppError {
         source: Box<std::io::Error>,
     },
 
+    // ── Durable recovery records ──────────────────────────────────────────
+    #[error("malformed operation record at '{path}': {reason}")]
+    OperationRecordMalformed { path: PathBuf, reason: String },
+
+    #[error(
+        "operation record at '{path}' uses unsupported schema version {found} (supported: {supported}); it was left untouched"
+    )]
+    OperationRecordUnsupportedVersion {
+        path: PathBuf,
+        found: u32,
+        supported: u32,
+    },
+
+    #[error("recovery must be resolved before mutation (record {record_id}): {reason}")]
+    RecoveryBlocked { record_id: String, reason: String },
+
+    #[error("recovery artifact conflict for record {record_id} at '{path}': {reason}")]
+    RecoveryArtifactConflict {
+        record_id: String,
+        path: PathBuf,
+        reason: String,
+    },
+
     // ── Platform capabilities ──────────────────────────────────────────────
     /// A required filesystem guarantee is unavailable on this platform or
     /// filesystem. The operation must stop without changing the destination.

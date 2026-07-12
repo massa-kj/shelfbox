@@ -9,6 +9,7 @@ pub mod ids;
 pub mod index;
 pub mod manifest;
 pub mod materialization;
+pub(crate) mod operation_record;
 pub mod ownership;
 pub mod path;
 pub mod recovery_fingerprint;

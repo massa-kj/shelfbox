@@ -3,6 +3,7 @@ use std::{collections::HashSet, path::Path};
 use crate::{
     error::{AppError, Result},
     policy::gc_policy::{self, GcProtection},
+    storage::operation_record_store,
     store::{
         manifest,
         scanner::{self, ScanError},
@@ -12,6 +13,7 @@ use crate::{
 pub use crate::plan::store_gc::{GcCandidate, GcPlan, GcReport};
 
 pub fn plan(store_root: &Path) -> Result<GcPlan> {
+    let protected_recovery_paths = operation_record_store::protected_store_paths(store_root)?;
     let scan = scanner::scan(store_root)?;
     if !scan.errors.is_empty() {
         return Err(AppError::Internal(format!(
@@ -29,6 +31,12 @@ pub fn plan(store_root: &Path) -> Result<GcPlan> {
             match gc_policy::classify_ownership(item.ownership_state) {
                 GcProtection::Collectible => {
                     let absolute_store_path = repo_store.join(&item.store_path);
+                    if protected_recovery_paths.iter().any(|protected| {
+                        absolute_store_path.starts_with(protected)
+                            || protected.starts_with(&absolute_store_path)
+                    }) {
+                        continue;
+                    }
                     let (size_bytes, store_exists) = item_size(&absolute_store_path)?;
                     plan.candidates.push(GcCandidate {
                         repo_id: repo.manifest.repo_id.clone(),
@@ -352,6 +360,54 @@ mod tests {
         assert!(repo_store.join("items/attached.env").exists());
         assert!(repo_store.join("items/detached.env").exists());
         assert!(repo_store.join("items/unreachable.env").exists());
+    }
+
+    #[test]
+    fn unfinished_recovery_record_protects_named_store_path_from_gc() {
+        use crate::{
+            domain::{
+                materialization::MaterializationStrategy,
+                operation_record::{
+                    OperationKind, OperationPhase, OperationPreState, OperationRecord,
+                    RecoveryAbsolutePath, RecoveryRecord, RecoveryRecordKind,
+                    OPERATION_RECORD_SCHEMA_VERSION,
+                },
+            },
+            storage::operation_record_store,
+        };
+
+        let store = TempDir::new().unwrap();
+        let repo_store = write_repo(
+            store.path(),
+            "project",
+            "repo-1",
+            vec![item("old.env", OwnershipState::Orphaned)],
+        );
+        let repo_root = tempfile::tempdir().unwrap();
+        let record = RecoveryRecord {
+            schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            record_id: ulid::Ulid::new().to_string(),
+            created_at: "2026-07-12T00:00:00Z".into(),
+            record: RecoveryRecordKind::Operation(OperationRecord {
+                operation: OperationKind::Move,
+                phase: OperationPhase::StoreTransferred,
+                repo_id: "repo-1".into(),
+                repo_root: RecoveryAbsolutePath::new(repo_root.path()).unwrap(),
+                strategy: MaterializationStrategy::Copy,
+                direction: None,
+                pre_state: OperationPreState {
+                    store_path: Some("repos/project/items/old.env".parse().unwrap()),
+                    ..OperationPreState::default()
+                },
+                artifact_record_ids: Vec::new(),
+                backup: None,
+            }),
+        };
+        operation_record_store::create(store.path(), &record).unwrap();
+
+        let plan = plan(store.path()).unwrap();
+        assert!(plan.candidates.is_empty());
+        assert!(repo_store.join("items/old.env").exists());
     }
 
     #[test]

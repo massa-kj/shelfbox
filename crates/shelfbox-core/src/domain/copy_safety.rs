@@ -5,7 +5,8 @@
 //! materialization; they are the contract that Phase 2, Phase 5, and Phase 6
 //! code must satisfy.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ArtifactScope {
     RepoSide,
     StoreSide,

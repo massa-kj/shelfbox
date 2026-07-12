@@ -26,6 +26,13 @@ pub fn lock_path(store_root: &Path) -> PathBuf {
     store_root.join(".lock")
 }
 
+/// Private, store-wide directory containing durable operation and artifact
+/// recovery records. This is intentionally outside a repo store so recovery
+/// can run before a mutating context chooses or creates a repository identity.
+pub(crate) fn operation_records_dir(store_root: &Path) -> PathBuf {
+    store_root.join(".operations")
+}
+
 pub fn allocate_repo_store_dir(
     store_root: &Path,
     base_name: &str,

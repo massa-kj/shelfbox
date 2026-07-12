@@ -16,6 +16,7 @@ pub use crate::plan::{
 };
 
 use crate::{
+    context,
     error::Result,
     ops::{gc, migrate_manifest, rebuild_index},
     store::{index, manifest, meta},
@@ -42,13 +43,22 @@ pub fn gc_plan(store_root: &Path) -> Result<GcPlan> {
 }
 
 pub fn gc_run(store_root: &Path, dry_run: bool) -> Result<GcReport> {
+    let _store_lock = (!dry_run)
+        .then(|| context::acquire_store_write_access(store_root))
+        .transpose()?;
     gc::run(store_root, dry_run)
 }
 
 pub fn rebuild_index(store_root: &Path, dry_run: bool) -> Result<RebuildIndexReport> {
+    let _store_lock = (!dry_run)
+        .then(|| context::acquire_store_write_access(store_root))
+        .transpose()?;
     rebuild_index::run(store_root, dry_run)
 }
 
 pub fn migrate_manifests(store_root: &Path, dry_run: bool) -> Result<MigrationReport> {
+    let _store_lock = (!dry_run)
+        .then(|| context::acquire_store_write_access(store_root))
+        .transpose()?;
     migrate_manifest::run(store_root, dry_run)
 }

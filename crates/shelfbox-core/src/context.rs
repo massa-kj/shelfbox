@@ -6,6 +6,7 @@ use crate::{
     config::Config,
     error::{AppError, Result},
     fs::lock::{self, StoreLock, StoreLockAccess},
+    ops::recovery,
     storage::layout,
     store::{
         index::{self, Index, RepoEntry},
@@ -221,21 +222,25 @@ pub fn build_store_context(
     let config = Config::load(store_override)?;
     let store_lock = match access {
         StoreAccess::ReadOnly => acquire_existing_read_lock(&config.store)?,
-        StoreAccess::Write => {
-            meta::ensure_store_meta(&config.store)?;
-            let lock_path = layout::lock_path(&config.store);
-            Some(lock::acquire_store_lock(
-                &lock_path,
-                StoreLockAccess::Write,
-                true,
-            )?)
-        }
+        StoreAccess::Write => Some(acquire_store_write_access(&config.store)?),
     };
 
     Ok(StoreContext {
         config,
         _store_lock: store_lock,
     })
+}
+
+/// Acquires the durable store write gate used by store-scoped mutations that
+/// do not construct a repository context. The guard must live through the
+/// entire mutation. Recovery runs after lock acquisition and before callers
+/// receive authorization to write.
+pub(crate) fn acquire_store_write_access(store_root: &Path) -> Result<StoreLock> {
+    meta::ensure_store_meta(store_root)?;
+    let lock_path = layout::lock_path(store_root);
+    let store_lock = lock::acquire_store_lock(&lock_path, StoreLockAccess::Write, true)?;
+    recovery::recover_store_before_mutation(store_root)?;
+    Ok(store_lock)
 }
 
 fn build_create_or_load_with_access(
@@ -251,6 +256,11 @@ fn build_create_or_load_with_access(
 
     // Phase 3 will fill in git::find_repo_root(); we call it via crate::git.
     let repo_root = crate::git::find_repo_root(cwd)?;
+
+    // The write lock is already held. Recover only states that are provably
+    // safe at this phase; any unfinished operation remains a typed blocker
+    // until Phase 6 supplies its operation-specific truth table.
+    recovery::recover_before_mutation(&config.store, &repo_root)?;
 
     let (repo_id, repo_store, git_common_dir, manifest) = resolve_repo(&repo_root, &config, cwd)?;
 
