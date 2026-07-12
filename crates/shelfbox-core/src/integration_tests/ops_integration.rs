@@ -8,6 +8,8 @@ use tempfile::TempDir;
 
 use shelfbox_core::{
     context,
+    error::AppError,
+    failpoint::{self, Failpoint},
     ignore::{GitInfoExclude, IgnoreBackend},
     link::{DefaultLinkStrategy, LinkStrategy},
     ops,
@@ -367,6 +369,51 @@ fn restore_keep_store_leaves_symlink_and_store_item() {
 }
 
 #[test]
+fn keep_store_failpoint_leaves_a_durable_detached_state() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("keep-interrupt.txt");
+    std::fs::write(&file_path, "keep me").unwrap();
+
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::KeepStoreManifestSaved {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::restore::restore(&mut ctx, &file_path, false, false, true, &link, &ignore),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+
+    assert_eq!(
+        ctx.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Detached
+    );
+    assert!(file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    drop(ctx);
+    let reloaded = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert_eq!(
+        reloaded.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Detached,
+        "the interruption occurs only after the detached manifest state is durable"
+    );
+}
+
+#[test]
 fn restore_keep_store_dry_run_reports_plan_and_makes_no_changes() {
     if !require_symlink_support() {
         return;
@@ -436,6 +483,48 @@ fn relink_dry_run_makes_no_changes() {
     );
     assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
     assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
+}
+
+#[test]
+fn directionless_relink_materialization_failpoint_is_retryable() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("relink-interrupt.txt");
+    std::fs::write(&file_path, "retry me").unwrap();
+
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    ops::restore::restore(&mut ctx, &file_path, false, false, true, &link, &ignore).unwrap();
+    link.remove(&file_path).unwrap();
+
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::DirectionlessRelinkMaterialized {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::relink::relink_report(&mut ctx, &file_path, false, &link),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+
+    assert!(link.is_managed_link(&file_path, store_dir.path()));
+    assert_eq!(
+        ctx.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Detached
+    );
+    let retry = ops::relink::relink_report(&mut ctx, &file_path, false, &link).unwrap();
+    assert_eq!(retry.outcome, ops::relink::RelinkOutcome::StateUpdated);
+    assert_eq!(
+        ctx.manifest.items[0].ownership_state,
+        store::manifest::OwnershipState::Attached
+    );
 }
 
 // ── doctor ────────────────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ use crate::{
         RecoveryRecord, RecoveryRecordKind, OPERATION_RECORD_SCHEMA_VERSION,
     },
     error::{AppError, Result},
+    failpoint::{self, Failpoint},
     fs::{platform, secure_transfer},
     storage::{
         atomic_write::{self, AtomicWriteOptions, FileSyncMode, ParentDirectorySyncMode},
@@ -50,7 +51,11 @@ pub(crate) fn create(store_root: &Path, record: &RecoveryRecord) -> Result<()> {
             reason: "refusing to overwrite an existing operation record".into(),
         });
     }
-    write_record(&path, record)
+    write_record(&path, record)?;
+    failpoint::after(match &record.record {
+        RecoveryRecordKind::Operation(_) => Failpoint::OperationRecordCreated,
+        RecoveryRecordKind::Artifact(_) => Failpoint::ArtifactPathRecorded,
+    })
 }
 
 /// Durably replaces an existing record after a phase or artifact-state update.
@@ -64,7 +69,20 @@ pub(crate) fn update(store_root: &Path, record: &RecoveryRecord) -> Result<()> {
             reason: "cannot update a missing operation record".into(),
         });
     }
-    write_record(&path, record)
+    write_record(&path, record)?;
+    failpoint::after(match &record.record {
+        RecoveryRecordKind::Operation(operation) => {
+            Failpoint::OperationPhaseUpdated(operation.phase)
+        }
+        RecoveryRecordKind::Artifact(ArtifactRecord {
+            state: ArtifactState::Created { .. },
+            ..
+        }) => Failpoint::TempIdentityRecorded,
+        RecoveryRecordKind::Artifact(ArtifactRecord {
+            state: ArtifactState::Planned,
+            ..
+        }) => Failpoint::ArtifactPathRecorded,
+    })
 }
 
 /// Deletes a completed record and durably syncs the containing directory.
@@ -72,7 +90,10 @@ pub(crate) fn update(store_root: &Path, record: &RecoveryRecord) -> Result<()> {
 pub(crate) fn remove(store_root: &Path, record_id: &str) -> Result<()> {
     let path = record_path(store_root, record_id)?;
     match fs::remove_file(&path) {
-        Ok(()) => sync_records_dir(store_root),
+        Ok(()) => {
+            sync_records_dir(store_root)?;
+            failpoint::after(Failpoint::RecordDeleted)
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(AppError::io(path, error)),
     }
@@ -323,6 +344,7 @@ mod tests {
                 OperationPreState, OperationRecord, RecoveryAbsolutePath, RecoveryRecordKind,
             },
         },
+        failpoint::{self, Failpoint},
         fs::platform,
     };
 
@@ -395,6 +417,51 @@ mod tests {
         remove(store.path(), &record.record_id).unwrap();
         remove(store.path(), &record.record_id).unwrap();
         assert!(load_all(store.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn failpoints_stop_after_the_record_or_phase_is_already_durable() {
+        let store = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let mut record = operation_record(record_id(), repo.path());
+
+        let create_id = record.record_id.clone();
+        let create_hook = failpoint::install_test_hook(|point| {
+            if *point == Failpoint::OperationRecordCreated {
+                return Err(AppError::Internal("test interruption".into()));
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            create(store.path(), &record),
+            Err(AppError::Internal(_))
+        ));
+        drop(create_hook);
+        assert_eq!(load_all(store.path()).unwrap()[0].record_id, create_id);
+
+        let RecoveryRecordKind::Operation(operation) = &mut record.record else {
+            unreachable!()
+        };
+        operation.phase = OperationPhase::ManifestSaved;
+        let update_hook = failpoint::install_test_hook(|point| {
+            if *point == Failpoint::OperationPhaseUpdated(OperationPhase::ManifestSaved) {
+                return Err(AppError::Internal("test interruption".into()));
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            update(store.path(), &record),
+            Err(AppError::Internal(_))
+        ));
+        drop(update_hook);
+
+        assert!(matches!(
+            load_all(store.path()).unwrap()[0].record,
+            RecoveryRecordKind::Operation(OperationRecord {
+                phase: OperationPhase::ManifestSaved,
+                ..
+            })
+        ));
     }
 
     #[test]

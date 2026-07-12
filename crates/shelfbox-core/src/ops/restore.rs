@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::{
     context::{self, RepoContext},
     error::{AppError, Result},
+    failpoint::{self, Failpoint},
     ignore::IgnoreBackend,
     link::LinkStrategy,
     plan::item_restore::{ItemRestoreAction, ItemRestorePlan, ItemRestoreReport},
@@ -54,6 +55,7 @@ pub fn restore(
             ctx.manifest
                 .set_ownership_state(&plan.path, OwnershipState::Detached, &now);
             manifest::save(&ctx.repo_store, &ctx.manifest)?;
+            failpoint::after(Failpoint::KeepStoreManifestSaved)?;
 
             if !plan.keep_ignore {
                 ignore.remove_entries(&ctx.repo_root, &[&plan.path])?;

@@ -9,4 +9,5 @@ pub(crate) mod materialization_policy;
 pub(crate) mod migration_policy;
 pub(crate) mod path_escape_policy;
 pub(crate) mod reclaim_policy;
+pub(crate) mod recovery_policy;
 pub(crate) mod repair_policy;

@@ -9,6 +9,7 @@ pub mod config;
 pub(crate) mod context;
 pub mod domain;
 pub mod error;
+pub(crate) mod failpoint;
 pub(crate) mod fs;
 pub(crate) mod git;
 pub(crate) mod ignore;

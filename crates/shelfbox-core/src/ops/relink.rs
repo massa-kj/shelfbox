@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::{
     context::{self, RepoContext},
     error::{AppError, Result},
+    failpoint::{self, Failpoint},
     link::LinkStrategy,
     plan::item_relink::{ItemRelinkPlan, ItemRelinkReport},
     store::manifest::{self, OwnershipState},
@@ -106,6 +107,7 @@ fn execute_relink_plan(
             link.remove(&plan.abs_path)?;
         }
         link.create(&plan.store_path, &plan.abs_path)?;
+        failpoint::after(Failpoint::DirectionlessRelinkMaterialized)?;
         RelinkOutcome::Relinked
     };
 
@@ -114,6 +116,7 @@ fn execute_relink_plan(
     ctx.manifest
         .set_ownership_state(&plan.path, OwnershipState::Attached, &now);
     manifest::save(&ctx.repo_store, &ctx.manifest)?;
+    failpoint::after(Failpoint::DirectionlessRelinkManifestSaved)?;
 
     Ok(outcome)
 }

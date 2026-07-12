@@ -1,10 +1,11 @@
-//! Conservative Phase 5 recovery gate.
+//! Durable recovery gate.
 //!
-//! The durable store is usable before operation-specific truth tables land in
-//! Phase 6. Until then, only two recovery actions are safe without guessing:
-//! identity-matched artifact cleanup and deletion of a stale record already
-//! marked `post_commit_validated`. Every other unfinished operation blocks new
-//! mutation and remains intact for the Phase 6 policy engine.
+//! Phase 6 supplies typed truth tables, while operation migrations in Phases
+//! 7-10 supply the identity-verified physical fact collectors and executors.
+//! Until a migrated operation has persisted those observations, this gate
+//! exercises the typed policy's fail-closed path: identity-matched artifact
+//! cleanup and stale-completion cleanup remain safe, and every other record
+//! remains intact as a non-destructive conflict.
 
 use std::{collections::BTreeSet, path::Path};
 
@@ -13,7 +14,9 @@ use crate::{
         ArtifactLocation, OperationRecord, RecoveryRecord, RecoveryRecordKind,
     },
     error::{AppError, Result},
+    failpoint::{self, Failpoint},
     ignore::{GitInfoExclude, IgnoreBackend},
+    policy::recovery_policy::{self, RecoveryDecision},
     storage::operation_record_store::{self, ArtifactCleanup},
 };
 
@@ -51,6 +54,9 @@ pub(crate) fn recover_before_mutation(
                 )?;
                 cleanup_repo_temp_exclude(current_repo_root, artifact)?;
                 operation_record_store::remove(store_root, &record.record_id)?;
+                failpoint::after(Failpoint::PersistentMutation(
+                    crate::domain::copy_safety::PersistentMutation::ArtifactRecordDelete,
+                ))?;
                 if matches!(
                     cleanup,
                     ArtifactCleanup::Removed | ArtifactCleanup::AlreadyAbsent
@@ -93,6 +99,9 @@ pub(crate) fn recover_store_before_mutation(store_root: &Path) -> Result<Recover
                     artifact,
                 )?;
                 operation_record_store::remove(store_root, &record.record_id)?;
+                failpoint::after(Failpoint::PersistentMutation(
+                    crate::domain::copy_safety::PersistentMutation::ArtifactRecordDelete,
+                ))?;
                 if matches!(
                     cleanup,
                     ArtifactCleanup::Removed | ArtifactCleanup::AlreadyAbsent
@@ -179,10 +188,19 @@ fn cleanup_repo_temp_exclude(
 }
 
 fn unfinished_operation_error(record: &RecoveryRecord, operation: &OperationRecord) -> AppError {
+    let decision = recovery_policy::decision_without_observations(
+        operation.operation,
+        operation.phase,
+        operation.direction,
+    );
+    let reason = match decision {
+        RecoveryDecision::Conflict(conflict) => conflict.reason(),
+        _ => "recovery policy produced an unsafe action without verified observations",
+    };
     AppError::RecoveryBlocked {
         record_id: record.record_id.clone(),
         reason: format!(
-            "unfinished {:?} operation at phase {:?}; Phase 6 recovery policy is required",
+            "unfinished {:?} operation at phase {:?}; {reason}",
             operation.operation, operation.phase
         ),
     }
