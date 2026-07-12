@@ -1,12 +1,13 @@
 //! Operation-facing materialization port.
 //!
-//! This module freezes the D6 contract; it intentionally contains no default
-//! filesystem adapter. Phase 3 will implement the port inside `fs` by
-//! composing `LinkStrategy`, secure transfer, and platform capabilities. The
-//! operation layer may use the types and traits here, but cannot inspect the
-//! opaque handles or snapshots that carry filesystem details.
+//! The concrete adapter composes `LinkStrategy`, secure transfer, and platform
+//! capabilities. The operation layer may use the types and traits here, but
+//! cannot inspect the opaque handles or snapshots that carry filesystem details.
 
-use std::fmt;
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     domain::{
@@ -14,7 +15,9 @@ use crate::{
         materialization::MaterializationStrategy,
         path::{RepoRelativePath, StoreRelativePath},
     },
-    error::Result,
+    error::{AppError, Result},
+    fs::{platform, secure_transfer},
+    link::{DefaultLinkStrategy, LinkStrategy},
 };
 
 /// Logical endpoints of a repo materialization.
@@ -292,6 +295,7 @@ impl CommitContext {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PreparedMaterialization {
     context: CommitContext,
+    action: PreparedAction,
 }
 
 impl fmt::Debug for PreparedMaterialization {
@@ -308,6 +312,7 @@ impl PreparedMaterialization {
     pub(in crate::fs) fn from_writable_lease(lease: WritableArtifactLease) -> Self {
         Self {
             context: lease.into_commit_context(),
+            action: PreparedAction::NoOp,
         }
     }
 
@@ -315,8 +320,18 @@ impl PreparedMaterialization {
     pub(crate) fn for_test(token: u64) -> Self {
         Self {
             context: CommitContext::for_test(token),
+            action: PreparedAction::NoOp,
         }
     }
+}
+
+/// Adapter-private execution state.  It is deliberately not exposed through
+/// `PreparedMaterialization`, which keeps temporary paths and dispatch details
+/// out of operation code.
+#[derive(Clone, PartialEq, Eq)]
+enum PreparedAction {
+    NoOp,
+    Execute(MaterializationAction),
 }
 
 /// Opaque authorization issued only after fresh write preconditions pass.
@@ -433,16 +448,247 @@ pub(crate) trait Materializer {
     ) -> Result<()>;
 }
 
+/// Default repository materializer, constructed only by the composition root.
+///
+/// It is intentionally generic over the link adapter so focused tests can use
+/// a deterministic fake.  Production callers use [`DefaultLinkStrategy`].
+pub(crate) struct DefaultMaterializer<L = DefaultLinkStrategy> {
+    repo_root: PathBuf,
+    store_root: PathBuf,
+    link: L,
+}
+
+impl DefaultMaterializer<DefaultLinkStrategy> {
+    pub(crate) fn new(repo_root: PathBuf, store_root: PathBuf) -> Self {
+        Self::with_link_strategy(repo_root, store_root, DefaultLinkStrategy)
+    }
+}
+
+impl<L> DefaultMaterializer<L> {
+    pub(crate) fn with_link_strategy(repo_root: PathBuf, store_root: PathBuf, link: L) -> Self {
+        Self {
+            repo_root,
+            store_root,
+            link,
+        }
+    }
+
+    fn paths(&self, location: &MaterializationLocation) -> (PathBuf, PathBuf) {
+        (
+            self.repo_root.join(location.repo_path.as_str()),
+            self.store_root.join(location.store_path.as_str()),
+        )
+    }
+
+    fn validate_location(&self, location: &MaterializationLocation) -> Result<(PathBuf, PathBuf)> {
+        let (repo, store) = self.paths(location);
+        secure_transfer::validate_parent_path(&self.repo_root, &repo)?;
+        secure_transfer::validate_parent_path(&self.store_root, &store)?;
+        Ok((repo, store))
+    }
+}
+
+impl<L: LinkStrategy> DefaultMaterializer<L> {
+    fn inspect_location(&self, location: &MaterializationLocation) -> Result<MaterializationFacts> {
+        let (repo, store) = self.validate_location(location)?;
+        let entry = match platform::inspect_no_follow(&repo) {
+            Ok(entry) => entry,
+            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(MaterializationFacts {
+                    repo_entry_kind: RepoEntryKind::Missing,
+                    final_component: FinalComponentInspection::Missing,
+                    link_count: None,
+                    hardlink_free: true,
+                    snapshot: InspectionSnapshot::from_entry(None),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+
+        let repo_entry_kind = match entry.kind {
+            platform::EntryKind::RegularFile => RepoEntryKind::RegularFile,
+            platform::EntryKind::Directory => RepoEntryKind::Directory,
+            platform::EntryKind::Other => RepoEntryKind::Other,
+            platform::EntryKind::SymlinkOrReparsePoint => {
+                if self.is_expected_managed_link(&repo, &store) {
+                    RepoEntryKind::ManagedSymlink
+                } else {
+                    RepoEntryKind::UnmanagedSymlinkOrReparsePoint
+                }
+            }
+        };
+        Ok(MaterializationFacts {
+            repo_entry_kind,
+            final_component: FinalComponentInspection::InspectedWithoutFollowing,
+            link_count: Some(entry.link_count),
+            hardlink_free: entry.link_count <= 1,
+            snapshot: InspectionSnapshot::from_entry(Some(entry)),
+        })
+    }
+
+    fn is_expected_managed_link(&self, link_path: &Path, expected_store: &Path) -> bool {
+        if !self.link.is_link(link_path) {
+            return false;
+        }
+        let Ok(target) = self.link.read_target(link_path) else {
+            return false;
+        };
+        let target = if target.is_absolute() {
+            target
+        } else {
+            link_path.parent().unwrap_or(&self.repo_root).join(target)
+        };
+        // Both paths were containment-checked before this method is called.
+        // Canonicalization makes a relative managed link compare equal without
+        // treating any other store entry as the expected item.
+        target.canonicalize().ok() == expected_store.canonicalize().ok()
+    }
+
+    fn execute(&self, action: MaterializationAction) -> Result<MaterializationCommitOutcome> {
+        match action {
+            MaterializationAction::NoOp => Ok(MaterializationCommitOutcome::NoOp),
+            MaterializationAction::Create { location, strategy } => {
+                let (repo, store) = self.validate_location(&location)?;
+                self.ensure_missing(&repo)?;
+                self.create(&store, &repo, strategy)?;
+                Ok(MaterializationCommitOutcome::Applied)
+            }
+            MaterializationAction::Replace { location, strategy, expected } => {
+                let (repo, store) = self.validate_location(&location)?;
+                self.ensure_expected(&repo, &expected)?;
+                self.replace(&store, &repo, strategy)?;
+                Ok(MaterializationCommitOutcome::Applied)
+            }
+            MaterializationAction::Remove { location, expected } => {
+                let (repo, _) = self.validate_location(&location)?;
+                self.ensure_expected(&repo, &expected)?;
+                std::fs::remove_file(&repo).map_err(|e| AppError::io(&repo, e))?;
+                Ok(MaterializationCommitOutcome::Applied)
+            }
+            MaterializationAction::RestoreToRegular { location, expected } => {
+                let (repo, store) = self.validate_location(&location)?;
+                self.ensure_expected(&repo, &expected)?;
+                secure_transfer::copy_replace(
+                    &self.store_root,
+                    &store,
+                    &self.repo_root,
+                    &repo,
+                    secure_transfer::PermissionMode::FromSource,
+                )?;
+                Ok(MaterializationCommitOutcome::Applied)
+            }
+        }
+    }
+
+    fn ensure_missing(&self, path: &Path) -> Result<()> {
+        match platform::inspect_no_follow(path) {
+            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(AppError::UnsafeFilesystemEntry {
+                path: path.to_path_buf(),
+                reason: "destination is no longer missing",
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn ensure_expected(&self, path: &Path, expected: &ExpectedMaterialization) -> Result<()> {
+        if InspectionSnapshot::from_entry(Some(platform::inspect_no_follow(path)?))
+            != expected.snapshot
+        {
+            return Err(AppError::FilesystemEntryChanged { path: path.to_path_buf() });
+        }
+        Ok(())
+    }
+
+    fn create(&self, store: &Path, repo: &Path, strategy: MaterializationStrategy) -> Result<()> {
+        match strategy {
+            MaterializationStrategy::Symlink => self.link.create(store, repo),
+            MaterializationStrategy::Copy => secure_transfer::copy_replace(
+                &self.store_root,
+                store,
+                &self.repo_root,
+                repo,
+                secure_transfer::PermissionMode::FromSource,
+            ),
+        }
+    }
+
+    fn replace(&self, store: &Path, repo: &Path, strategy: MaterializationStrategy) -> Result<()> {
+        // Copy replacement is already atomic.  A symlink is prepared beside
+        // its destination and atomically installed through the platform port.
+        match strategy {
+            MaterializationStrategy::Copy => secure_transfer::copy_replace(
+                &self.store_root,
+                store,
+                &self.repo_root,
+                repo,
+                secure_transfer::PermissionMode::FromSource,
+            ),
+            MaterializationStrategy::Symlink => {
+                let parent = repo.parent().ok_or_else(|| AppError::UnsafeFilesystemEntry {
+                    path: repo.to_path_buf(),
+                    reason: "destination has no parent",
+                })?;
+                let temp = parent.join(format!(".shelfbox-link-{}.tmp", ulid::Ulid::new()));
+                self.link.create(store, &temp)?;
+                platform::atomic_replace(&temp, repo)
+            }
+        }
+    }
+}
+
+impl<L: LinkStrategy> Materializer for DefaultMaterializer<L> {
+    fn inspect(&self, request: MaterializationInspectionRequest) -> Result<MaterializationFacts> {
+        self.inspect_location(&request.location)
+    }
+
+    fn prepare(&mut self, action: MaterializationAction, journal: &mut dyn MutationJournal) -> Result<PreparedMaterialization> {
+        // Phase 5 supplies a persistent journal.  Acquiring and authorizing a
+        // lease here keeps this adapter on the same opaque lifecycle today.
+        let lease = journal.acquire_artifact_lease(ArtifactScope::RepoSide)?;
+        let writable = journal.authorize_plaintext_write(lease)?;
+        Ok(PreparedMaterialization {
+            context: writable.into_commit_context(),
+            action: PreparedAction::Execute(action),
+        })
+    }
+
+    fn commit(
+        &mut self,
+        prepared: PreparedMaterialization,
+        _permit: CommitPermit,
+    ) -> Result<MaterializationCommitOutcome> {
+        match prepared.action {
+            PreparedAction::NoOp => Ok(MaterializationCommitOutcome::NoOp),
+            PreparedAction::Execute(action) => self.execute(action),
+        }
+    }
+
+    fn abort(&mut self, prepared: PreparedMaterialization, journal: &mut dyn MutationJournal) -> Result<()> {
+        journal.cleanup_prepared_artifact(prepared.context)
+    }
+}
+
 /// An opaque no-follow identity snapshot. The concrete Phase 3 materializer
 /// will populate it from the D1 platform adapter. Keeping the representation
 /// private lets that implementation evolve without changing operation APIs.
 #[derive(Clone, PartialEq, Eq)]
-pub(in crate::fs) struct InspectionSnapshot(u64);
+pub(in crate::fs) struct InspectionSnapshot(Option<platform::InspectedEntry>);
 
 impl InspectionSnapshot {
     #[cfg(test)]
     pub(in crate::fs) fn for_test(token: u64) -> Self {
-        Self(token)
+        Self(Some(platform::InspectedEntry {
+            kind: platform::EntryKind::RegularFile,
+            identity: platform::FileIdentity { volume: token, file: [0; 16] },
+            link_count: 1,
+        }))
+    }
+}
+
+impl InspectionSnapshot {
+    fn from_entry(entry: Option<platform::InspectedEntry>) -> Self {
+        Self(entry)
     }
 }
 
@@ -480,5 +726,55 @@ mod tests {
             FinalComponentInspection::InspectedWithoutFollowing
         );
         assert!(facts.hardlink_free);
+    }
+
+    #[test]
+    fn default_materializer_inspects_regular_copy_and_missing_entry_without_writes() {
+        let repo = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        std::fs::create_dir(store.path().join("items")).unwrap();
+        let repo_file = repo.path().join("secret.env");
+        std::fs::write(&repo_file, "repo copy").unwrap();
+        let materializer = DefaultMaterializer::new(
+            repo.path().to_path_buf(),
+            store.path().to_path_buf(),
+        );
+        let regular = materializer.inspect(MaterializationInspectionRequest {
+            location: MaterializationLocation::new(
+                "secret.env".parse().unwrap(), "items/secret.env".parse().unwrap(),
+            ),
+            purpose: InspectionPurpose::Planning,
+        }).unwrap();
+        assert_eq!(regular.repo_entry_kind, RepoEntryKind::RegularFile);
+        assert!(regular.hardlink_free);
+        assert_eq!(std::fs::read_to_string(&repo_file).unwrap(), "repo copy");
+
+        let missing = materializer.inspect(MaterializationInspectionRequest {
+            location: MaterializationLocation::new(
+                "missing.env".parse().unwrap(), "items/missing.env".parse().unwrap(),
+            ),
+            purpose: InspectionPurpose::Planning,
+        }).unwrap();
+        assert_eq!(missing.repo_entry_kind, RepoEntryKind::Missing);
+        assert_eq!(missing.final_component, FinalComponentInspection::Missing);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn default_materializer_distinguishes_expected_and_wrong_target_symlinks() {
+        let repo = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let item = store.path().join("items/secret.env");
+        std::fs::create_dir_all(item.parent().unwrap()).unwrap();
+        std::fs::write(&item, "secret").unwrap();
+        let path = repo.path().join("secret.env");
+        DefaultLinkStrategy.create(&item, &path).unwrap();
+        let materializer = DefaultMaterializer::new(repo.path().to_path_buf(), store.path().to_path_buf());
+        let request = |store_path| MaterializationInspectionRequest {
+            location: MaterializationLocation::new("secret.env".parse().unwrap(), store_path.parse().unwrap()),
+            purpose: InspectionPurpose::Planning,
+        };
+        assert_eq!(materializer.inspect(request("items/secret.env")).unwrap().repo_entry_kind, RepoEntryKind::ManagedSymlink);
+        assert_eq!(materializer.inspect(request("items/other.env")).unwrap().repo_entry_kind, RepoEntryKind::UnmanagedSymlinkOrReparsePoint);
     }
 }
