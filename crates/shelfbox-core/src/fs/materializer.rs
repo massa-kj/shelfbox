@@ -16,6 +16,7 @@ use crate::{
         path::{RepoRelativePath, StoreRelativePath},
     },
     error::{AppError, Result},
+    failpoint::{self, Failpoint},
     fs::{platform, secure_transfer},
     link::{DefaultLinkStrategy, LinkStrategy},
 };
@@ -226,6 +227,17 @@ impl fmt::Debug for ArtifactLease {
 }
 
 impl ArtifactLease {
+    pub(in crate::fs) fn from_journal(scope: ArtifactScope, token: u64) -> Self {
+        Self {
+            scope,
+            reference: ArtifactLeaseReference(token),
+        }
+    }
+
+    pub(in crate::fs) const fn token(&self) -> u64 {
+        self.reference.0
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(scope: ArtifactScope, token: u64) -> Self {
         Self {
@@ -240,6 +252,7 @@ impl ArtifactLease {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct WritableArtifactLease {
     reference: ArtifactLeaseReference,
+    authorized_temp: Option<AuthorizedTemp>,
 }
 
 impl fmt::Debug for WritableArtifactLease {
@@ -255,11 +268,56 @@ impl WritableArtifactLease {
         }
     }
 
+    pub(in crate::fs) fn from_authorized_temp(
+        token: u64,
+        path: PathBuf,
+        identity: platform::FileIdentity,
+    ) -> Self {
+        Self {
+            reference: ArtifactLeaseReference(token),
+            authorized_temp: Some(AuthorizedTemp { path, identity }),
+        }
+    }
+
+    pub(in crate::fs) fn authorized_temp(&self) -> Result<&AuthorizedTemp> {
+        self.authorized_temp
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("missing authorized artifact temp".into()))
+    }
+
+    pub(in crate::fs) fn into_parts(self) -> (CommitContext, Option<AuthorizedTemp>) {
+        (
+            CommitContext {
+                artifact_lease: self.reference,
+            },
+            self.authorized_temp,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(token: u64) -> Self {
         Self {
             reference: ArtifactLeaseReference(token),
+            authorized_temp: None,
         }
+    }
+}
+
+/// Filesystem-adapter-private details of a writable artifact. Operations only
+/// receive its opaque [`WritableArtifactLease`].
+#[derive(Clone, PartialEq, Eq)]
+pub(in crate::fs) struct AuthorizedTemp {
+    path: PathBuf,
+    identity: platform::FileIdentity,
+}
+
+impl AuthorizedTemp {
+    pub(in crate::fs) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(in crate::fs) const fn identity(&self) -> platform::FileIdentity {
+        self.identity
     }
 }
 
@@ -288,6 +346,16 @@ impl fmt::Debug for CommitContext {
 }
 
 impl CommitContext {
+    pub(in crate::fs) fn for_non_artifact() -> Self {
+        Self {
+            artifact_lease: ArtifactLeaseReference(0),
+        }
+    }
+
+    pub(in crate::fs) const fn artifact_token(&self) -> u64 {
+        self.artifact_lease.0
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(token: u64) -> Self {
         Self {
@@ -338,6 +406,10 @@ impl PreparedMaterialization {
 enum PreparedAction {
     NoOp,
     Execute(MaterializationAction),
+    CopyCreate {
+        location: MaterializationLocation,
+        temp: AuthorizedTemp,
+    },
 }
 
 /// Opaque authorization issued only after fresh write preconditions pass.
@@ -353,6 +425,10 @@ impl fmt::Debug for CommitPermit {
 }
 
 impl CommitPermit {
+    pub(crate) fn issued() -> Self {
+        Self { token: 0 }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(token: u64) -> Self {
         Self { token }
@@ -425,6 +501,40 @@ pub(crate) trait MutationJournal {
     fn issue_commit_permit(&mut self, guard: WritePreconditionGuard) -> Result<CommitPermit>;
 
     fn cleanup_prepared_artifact(&mut self, context: CommitContext) -> Result<()>;
+}
+
+/// Journal used only by recovery actions that cannot create plaintext temps.
+/// It permits symlink-only forward recovery while making any request for a
+/// repo/store temporary artifact fail closed.
+pub(crate) struct NoArtifactJournal;
+
+impl MutationJournal for NoArtifactJournal {
+    fn acquire_artifact_lease(&mut self, _scope: ArtifactScope) -> Result<ArtifactLease> {
+        Err(AppError::Internal(
+            "recovery attempted to create a plaintext artifact without a durable journal".into(),
+        ))
+    }
+
+    fn authorize_plaintext_write(
+        &mut self,
+        _lease: ArtifactLease,
+    ) -> Result<WritableArtifactLease> {
+        Err(AppError::Internal(
+            "recovery attempted to authorize plaintext without a durable journal".into(),
+        ))
+    }
+
+    fn record_phase(&mut self, _phase: DurableOperationPhase) -> Result<()> {
+        Ok(())
+    }
+
+    fn issue_commit_permit(&mut self, _guard: WritePreconditionGuard) -> Result<CommitPermit> {
+        Ok(CommitPermit::issued())
+    }
+
+    fn cleanup_prepared_artifact(&mut self, _context: CommitContext) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Operation-facing repository materialization port.
@@ -680,14 +790,35 @@ impl<L: LinkStrategy> Materializer for DefaultMaterializer<L> {
         action: MaterializationAction,
         journal: &mut dyn MutationJournal,
     ) -> Result<PreparedMaterialization> {
-        // Phase 5 supplies a persistent journal.  Acquiring and authorizing a
-        // lease here keeps this adapter on the same opaque lifecycle today.
-        let lease = journal.acquire_artifact_lease(ArtifactScope::RepoSide)?;
-        let writable = journal.authorize_plaintext_write(lease)?;
-        Ok(PreparedMaterialization {
-            context: writable.into_commit_context(),
-            action: PreparedAction::Execute(action),
-        })
+        match action {
+            MaterializationAction::Create {
+                location,
+                strategy: MaterializationStrategy::Copy,
+            } => {
+                let (repo, store) = self.validate_location(&location)?;
+                self.ensure_missing(&repo)?;
+                let lease = journal.acquire_artifact_lease(ArtifactScope::RepoSide)?;
+                let writable = journal.authorize_plaintext_write(lease)?;
+                let temp = writable.authorized_temp()?.clone();
+                secure_transfer::populate_authorized_temp(
+                    &self.store_root,
+                    &store,
+                    temp.path(),
+                    temp.identity(),
+                    secure_transfer::PermissionMode::FromSource,
+                )?;
+                let (context, _) = writable.into_parts();
+                Ok(PreparedMaterialization {
+                    context,
+                    action: PreparedAction::CopyCreate { location, temp },
+                })
+            }
+            action => Ok(PreparedMaterialization {
+                // Symlink creation contains no plaintext temporary artifact.
+                context: CommitContext::for_non_artifact(),
+                action: PreparedAction::Execute(action),
+            }),
+        }
     }
 
     fn commit(
@@ -695,10 +826,27 @@ impl<L: LinkStrategy> Materializer for DefaultMaterializer<L> {
         prepared: PreparedMaterialization,
         _permit: CommitPermit,
     ) -> Result<MaterializationCommitOutcome> {
-        match prepared.action {
+        let outcome = match prepared.action {
             PreparedAction::NoOp => Ok(MaterializationCommitOutcome::NoOp),
             PreparedAction::Execute(action) => self.execute(action),
+            PreparedAction::CopyCreate { location, temp } => {
+                let (repo, _) = self.validate_location(&location)?;
+                self.ensure_missing(&repo)?;
+                secure_transfer::commit_authorized_temp(
+                    &self.repo_root,
+                    temp.path(),
+                    temp.identity(),
+                    &repo,
+                )?;
+                Ok(MaterializationCommitOutcome::Applied)
+            }
+        }?;
+        if outcome == MaterializationCommitOutcome::Applied {
+            failpoint::after(Failpoint::PersistentMutation(
+                crate::domain::copy_safety::PersistentMutation::DestinationReplacement,
+            ))?;
         }
+        Ok(outcome)
     }
 
     fn abort(
@@ -731,7 +879,7 @@ impl InspectionSnapshot {
 }
 
 impl InspectionSnapshot {
-    fn from_entry(entry: Option<platform::InspectedEntry>) -> Self {
+    pub(in crate::fs) fn from_entry(entry: Option<platform::InspectedEntry>) -> Self {
         Self(entry)
     }
 }

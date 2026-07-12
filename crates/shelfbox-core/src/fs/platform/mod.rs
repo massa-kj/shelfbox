@@ -88,6 +88,13 @@ pub(crate) fn open_regular_no_follow(path: &Path) -> Result<(File, InspectedEntr
     imp::open_regular_no_follow(path)
 }
 
+/// Opens an existing regular file for writing without following its final
+/// component.  Callers compare the returned identity with their durable temp
+/// record before writing any plaintext.
+pub(crate) fn open_regular_for_write_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
+    imp::open_regular_for_write_no_follow(path)
+}
+
 /// Atomically renames a prepared regular file over an existing non-directory
 /// entry in the same directory.
 ///

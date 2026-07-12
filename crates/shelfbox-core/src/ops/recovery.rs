@@ -43,7 +43,10 @@ pub(crate) fn recover_before_mutation(
     let records = operation_record_store::load_all(store_root)?;
     let mut report = RecoveryReport::default();
 
-    for record in records {
+    for mut record in records {
+        if super::add_recovery::recover_if_owned(store_root, current_repo_root, &mut record)? {
+            continue;
+        }
         match &record.record {
             RecoveryRecordKind::Artifact(artifact) => {
                 let cleanup = operation_record_store::cleanup_artifact(

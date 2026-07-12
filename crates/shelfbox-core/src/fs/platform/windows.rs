@@ -56,6 +56,23 @@ pub(super) fn open_regular_no_follow(path: &Path) -> Result<(File, InspectedEntr
     Ok((file, entry))
 }
 
+pub(super) fn open_regular_for_write_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
+    let file = OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|error| AppError::io(path, error))?;
+    let entry = inspect_handle(&file, path)?;
+    if entry.kind != EntryKind::RegularFile {
+        return Err(AppError::UnsafeFilesystemEntry {
+            path: path.to_path_buf(),
+            reason: "expected a regular file",
+        });
+    }
+    Ok((file, entry))
+}
+
 pub(super) fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
     require_same_parent(source, destination)?;
     if !destination.is_absolute() {

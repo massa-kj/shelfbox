@@ -50,10 +50,18 @@ pub(super) fn inspect_no_follow(path: &Path) -> Result<InspectedEntry> {
 }
 
 pub(super) fn open_regular_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
+    open_regular(path, libc::O_RDONLY)
+}
+
+pub(super) fn open_regular_for_write_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
+    open_regular(path, libc::O_WRONLY)
+}
+
+fn open_regular(path: &Path, access: i32) -> Result<(File, InspectedEntry)> {
     let path_bytes = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         AppError::Internal(format!("path contains an interior NUL: {}", path.display()))
     })?;
-    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let flags = access | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     let descriptor = unsafe { libc::open(path_bytes.as_ptr(), flags) };
     if descriptor < 0 {
         return Err(AppError::io(path, std::io::Error::last_os_error()));

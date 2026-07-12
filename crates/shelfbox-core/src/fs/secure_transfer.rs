@@ -6,7 +6,7 @@
 use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -14,6 +14,7 @@ use ulid::Ulid;
 
 use crate::{
     error::{AppError, Result},
+    failpoint::{self, Failpoint},
     fs::{file_identity, platform},
 };
 
@@ -182,6 +183,133 @@ pub(crate) fn copy_replace_then_remove_source(
     )?;
     file_identity::revalidate(source, source_state)?;
     fs::remove_file(source).map_err(|e| AppError::io(source, e))
+}
+
+/// Copies a regular source into a private temp whose path and identity have
+/// already been durably authorized by an artifact lease.  The final component
+/// is opened without following it and checked again before plaintext is
+/// written, preventing a replacement of the reserved temp from receiving
+/// source content.
+pub(crate) fn populate_authorized_temp(
+    source_root: &Path,
+    source: &Path,
+    temp: &Path,
+    expected_temp_identity: platform::FileIdentity,
+    permissions: PermissionMode,
+) -> Result<()> {
+    validate_parent_path(source_root, source)?;
+    let source_state = file_identity::require_isolated(source)?;
+    let (mut input, opened_source) = platform::open_regular_no_follow(source)?;
+    if opened_source.identity != source_state.identity || opened_source.link_count != 1 {
+        return Err(AppError::FilesystemEntryChanged {
+            path: source.to_path_buf(),
+        });
+    }
+    let (mut output, opened_temp) = platform::open_regular_for_write_no_follow(temp)?;
+    if opened_temp.identity != expected_temp_identity || opened_temp.link_count != 1 {
+        return Err(AppError::FilesystemEntryChanged {
+            path: temp.to_path_buf(),
+        });
+    }
+    output.set_len(0).map_err(|e| AppError::io(temp, e))?;
+    output
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| AppError::io(temp, e))?;
+    stream_copy(&mut input, &mut output, source)?;
+    output.sync_all().map_err(|e| AppError::io(temp, e))?;
+    match permissions {
+        PermissionMode::FromSource => output
+            .set_permissions(
+                fs::metadata(source)
+                    .map_err(|e| AppError::io(source, e))?
+                    .permissions(),
+            )
+            .map_err(|e| AppError::io(temp, e))?,
+        PermissionMode::PreserveDestination => {}
+    }
+    output.sync_all().map_err(|e| AppError::io(temp, e))?;
+    file_identity::revalidate(source, source_state)?;
+    let current = platform::inspect_no_follow(temp)?;
+    if current.identity != expected_temp_identity || current.link_count != 1 {
+        return Err(AppError::FilesystemEntryChanged {
+            path: temp.to_path_buf(),
+        });
+    }
+    failpoint::after(Failpoint::PersistentMutation(
+        crate::domain::copy_safety::PersistentMutation::PlaintextWrite,
+    ))
+}
+
+/// Atomically installs a previously authorized temp without a delete-first
+/// fallback. The caller retains the artifact record until post-commit checks
+/// have succeeded.
+pub(crate) fn commit_authorized_temp(
+    destination_root: &Path,
+    temp: &Path,
+    expected_temp_identity: platform::FileIdentity,
+    destination: &Path,
+) -> Result<()> {
+    validate_parent_path(destination_root, destination)?;
+    let current = platform::inspect_no_follow(temp)?;
+    if current.kind != platform::EntryKind::RegularFile
+        || current.identity != expected_temp_identity
+        || current.link_count != 1
+    {
+        return Err(AppError::FilesystemEntryChanged {
+            path: temp.to_path_buf(),
+        });
+    }
+    platform::atomic_replace(temp, destination)?;
+    Ok(())
+}
+
+/// Reserves a same-directory temporary name without creating a file. The
+/// journal persists this path before calling [`create_empty_private_temp_at`].
+pub(crate) fn allocate_private_temp_path(
+    parent: &Path,
+    destination_name: &std::ffi::OsStr,
+) -> Result<PathBuf> {
+    for _ in 0..64 {
+        let mut name = OsString::from(".");
+        name.push(destination_name);
+        name.push(".");
+        name.push(Ulid::new().to_string());
+        name.push(".tmp");
+        let path = parent.join(name);
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(AppError::Internal(
+        "could not reserve a unique private temporary file name".into(),
+    ))
+}
+
+/// Creates an empty private file at a journal-reserved path and returns its
+/// no-follow identity. No plaintext may be written until the caller durably
+/// records that identity.
+pub(crate) fn create_empty_private_temp_at(path: &Path) -> Result<platform::FileIdentity> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| AppError::io(path, error))?;
+    file.sync_all().map_err(|error| AppError::io(path, error))?;
+    let identity = platform::inspect_no_follow(path)?.identity;
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::UnsafeFilesystemEntry {
+            path: path.to_path_buf(),
+            reason: "temporary path has no parent",
+        })?;
+    platform::sync_directory(parent)?;
+    drop(file);
+    Ok(identity)
 }
 
 fn stream_copy(source: &mut File, destination: &mut File, source_path: &Path) -> Result<()> {

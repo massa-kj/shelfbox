@@ -1,4 +1,5 @@
 pub mod add;
+pub(crate) mod add_recovery;
 pub mod detect_transitions;
 pub mod gc;
 pub mod info;

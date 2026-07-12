@@ -4,6 +4,7 @@ pub(crate) mod file_identity;
 pub(crate) mod lock;
 #[allow(dead_code)] // D6 contract; consumed by operation migration in Phase 3.
 pub(crate) mod materializer;
+pub(crate) mod mutation_journal;
 pub(crate) mod paths;
 pub(crate) mod permissions;
 #[allow(dead_code)] // D1 spike; consumed by secure transfer in Phase 2.

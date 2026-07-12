@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 use shelfbox_core::{
     context,
+    domain::{materialization::MaterializationStrategy, operation_record::OperationPhase},
     error::AppError,
     failpoint::{self, Failpoint},
     ignore::{GitInfoExclude, IgnoreBackend},
@@ -16,6 +17,7 @@ use shelfbox_core::{
     ops::integrity::FixResult,
     plan::item_restore::ItemRestoreAction,
     plan::repo_repair::RepoRepairSymlinkAction,
+    storage::operation_record_store,
     store,
 };
 
@@ -99,6 +101,448 @@ fn add_and_restore_file() {
 
     // Manifest must be empty.
     assert!(ctx.manifest.items.is_empty());
+}
+
+#[test]
+fn add_phase_failpoints_recover_to_one_valid_state() {
+    if !require_symlink_support() {
+        return;
+    }
+
+    for phase in [
+        OperationPhase::RecordCreated,
+        OperationPhase::ExcludeWritten,
+        OperationPhase::StoreTransferred,
+        OperationPhase::RepoMaterialized,
+        OperationPhase::ManifestSaved,
+    ] {
+        let repo_dir = common::init_git_repo();
+        let store_dir = TempDir::new().unwrap();
+        let file_path = repo_dir.path().join("interrupted.txt");
+        std::fs::write(&file_path, "durable secret").unwrap();
+        let link = DefaultLinkStrategy;
+        let ignore = GitInfoExclude;
+        let mut ctx =
+            context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+        let hook = failpoint::install_test_hook(move |point| {
+            if *point == Failpoint::OperationPhaseUpdated(phase)
+                || (phase == OperationPhase::RecordCreated
+                    && *point == Failpoint::OperationRecordCreated)
+            {
+                return Err(AppError::Internal("test interruption".into()));
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore),
+            Err(AppError::Internal(_))
+        ));
+        drop(hook);
+        drop(ctx);
+
+        let recovered =
+            context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+        if matches!(
+            phase,
+            OperationPhase::RecordCreated | OperationPhase::ExcludeWritten
+        ) {
+            assert!(!file_path
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                std::fs::read_to_string(&file_path).unwrap(),
+                "durable secret"
+            );
+            assert!(recovered.manifest.items.is_empty());
+        } else {
+            assert!(file_path
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                std::fs::read_to_string(&file_path).unwrap(),
+                "durable secret"
+            );
+            assert_eq!(recovered.manifest.items.len(), 1);
+        }
+        assert!(operation_record_store::load_all(store_dir.path())
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn add_destination_replacement_failpoint_advances_from_the_next_physical_phase() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("replacement-interrupt.txt");
+    std::fs::write(&file_path, "advance safely").unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let hook = failpoint::install_test_hook(|point| {
+        if *point
+            == Failpoint::PersistentMutation(
+                crate::domain::copy_safety::PersistentMutation::DestinationReplacement,
+            )
+        {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+    drop(ctx);
+
+    let recovered = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert!(file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "advance safely"
+    );
+    assert_eq!(recovered.manifest.items.len(), 1);
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn add_copy_creates_independent_regular_materialization() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("copy.txt");
+    std::fs::write(&file_path, "copy me").unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ctx.config.materialization = MaterializationStrategy::Copy;
+
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    let store_path = ctx.repo_store.join("items/copy.txt");
+    assert!(!file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "copy me");
+    assert_eq!(std::fs::read_to_string(&store_path).unwrap(), "copy me");
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+    #[cfg(unix)]
+    assert_ne!(
+        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&file_path).unwrap()),
+        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&store_path).unwrap()),
+        "copy materialization must not be a hardlink"
+    );
+}
+
+#[test]
+fn interrupted_copy_add_recovers_after_canonical_transfer() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("copy-interrupt.txt");
+    std::fs::write(&file_path, "recover copy").unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ctx.config.materialization = MaterializationStrategy::Copy;
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::OperationPhaseUpdated(OperationPhase::StoreTransferred) {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+    drop(ctx);
+
+    let recovered = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let store_path = recovered.repo_store.join("items/copy-interrupt.txt");
+    assert!(!file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "recover copy");
+    assert_eq!(
+        std::fs::read_to_string(&store_path).unwrap(),
+        "recover copy"
+    );
+    assert_eq!(recovered.manifest.items.len(), 1);
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn add_recovery_preserves_an_externally_recreated_repo_path_as_conflict() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("external-race.txt");
+    std::fs::write(&file_path, "canonical content").unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::OperationPhaseUpdated(OperationPhase::StoreTransferred) {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+    std::fs::write(&file_path, "external replacement").unwrap();
+    drop(ctx);
+
+    assert!(matches!(
+        context::build_create_or_load(repo_dir.path(), Some(store_dir.path())),
+        Err(AppError::RecoveryBlocked { .. })
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "external replacement"
+    );
+    assert!(
+        store_dir.path().join("repos").exists(),
+        "canonical store content remains available for manual resolution"
+    );
+    assert!(!operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn add_interruption_before_transfer_never_writes_a_newly_tracked_source() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("tracked-race.txt");
+    std::fs::write(&file_path, "do not move").unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::OperationPhaseUpdated(OperationPhase::ExcludeWritten) {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+    common::run_git(repo_dir.path(), &["add", "-f", "tracked-race.txt"]);
+    drop(ctx);
+
+    let recovered = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "do not move");
+    assert!(crate::git::is_tracked(repo_dir.path(), &file_path).unwrap());
+    assert!(!recovered.store_path_for("tracked-race.txt").exists());
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+struct FailingAddIgnore;
+
+impl IgnoreBackend for FailingAddIgnore {
+    fn add_entries(
+        &self,
+        _repo_root: &std::path::Path,
+        _entries: &[&str],
+    ) -> shelfbox_core::error::Result<()> {
+        Err(AppError::Internal("injected exclude failure".into()))
+    }
+
+    fn remove_entries(
+        &self,
+        repo_root: &std::path::Path,
+        entries: &[&str],
+    ) -> shelfbox_core::error::Result<()> {
+        GitInfoExclude.remove_entries(repo_root, entries)
+    }
+
+    fn has_entry(
+        &self,
+        repo_root: &std::path::Path,
+        entry: &str,
+    ) -> shelfbox_core::error::Result<bool> {
+        GitInfoExclude.has_entry(repo_root, entry)
+    }
+}
+
+#[test]
+fn add_exclude_failure_leaves_the_source_unchanged() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("exclude-failure.txt");
+    std::fs::write(&file_path, "keep source").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+
+    assert!(matches!(
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &FailingAddIgnore),
+        Err(AppError::Internal(_))
+    ));
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "keep source");
+    assert!(!ctx.store_path_for("exclude-failure.txt").exists());
+    assert_eq!(
+        operation_record_store::load_all(store_dir.path())
+            .unwrap()
+            .len(),
+        1,
+        "the record remains for deterministic rollback on the next write context"
+    );
+}
+
+#[test]
+fn add_rejects_a_hardlinked_source_before_creating_a_record() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("hardlinked.txt");
+    let alias = repo_dir.path().join("hardlinked-alias.txt");
+    std::fs::write(&file_path, "shared inode").unwrap();
+    std::fs::hard_link(&file_path, &alias).unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+
+    assert!(matches!(
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore),
+        Err(AppError::HardlinkedFile { .. })
+    ));
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "shared inode");
+    assert!(!ctx.store_path_for("hardlinked.txt").exists());
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn directory_add_uses_independent_item_records() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let directory = repo_dir.path().join("secrets");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("one.txt"), "one").unwrap();
+    std::fs::write(directory.join("two.txt"), "two").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+
+    let report = ops::add::add_directory(&mut ctx, &directory, false, &link, &ignore).unwrap();
+
+    assert_eq!(report.results.len(), 2);
+    assert!(report
+        .results
+        .iter()
+        .all(|(_, outcome)| matches!(outcome, ops::add::DirItemOutcome::Added)));
+    assert_eq!(ctx.manifest.items.len(), 2);
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn add_across_filesystems_uses_a_durable_store_temp() {
+    let shm = std::path::Path::new("/dev/shm");
+    if !shm.is_dir() || !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = tempfile::Builder::new()
+        .prefix("shelfbox-cross-device-")
+        .tempdir_in(shm)
+        .unwrap();
+    let file_path = repo_dir.path().join("cross-device.txt");
+    std::fs::write(&file_path, "cross device").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+
+    assert!(file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "cross device");
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn copy_add_exclude_loss_after_materialization_is_a_non_destructive_conflict() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("exclude-loss-copy.txt");
+    std::fs::write(&file_path, "copy survives").unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ctx.config.materialization = MaterializationStrategy::Copy;
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::OperationPhaseUpdated(OperationPhase::RepoMaterialized) {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+    ignore
+        .remove_entries(repo_dir.path(), &["exclude-loss-copy.txt"])
+        .unwrap();
+    drop(ctx);
+
+    assert!(matches!(
+        context::build_create_or_load(repo_dir.path(), Some(store_dir.path())),
+        Err(AppError::RecoveryBlocked { .. })
+    ));
+    assert!(!file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "copy survives"
+    );
+    assert!(!operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

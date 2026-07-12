@@ -4,18 +4,23 @@
 //! materialization. Its future adapter may use rename, secure streaming copy,
 //! or a cross-device protocol, but operations issue only these typed actions.
 
-use std::fmt;
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     domain::{
         copy_safety::ArtifactScope,
         path::{RepoRelativePath, StoreRelativePath},
     },
-    error::Result,
+    error::{AppError, Result},
+    failpoint::{self, Failpoint},
     fs::materializer::{
-        CommitContext, CommitPermit, DurableOperationPhase, InspectionSnapshot, MutationJournal,
-        WritableArtifactLease, WritePreconditionGuard,
+        AuthorizedTemp, CommitContext, CommitPermit, DurableOperationPhase, InspectionSnapshot,
+        MutationJournal, WritableArtifactLease, WritePreconditionGuard,
     },
+    fs::{platform, secure_transfer},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +49,18 @@ impl fmt::Debug for ExpectedCanonicalEntry {
     }
 }
 
+impl ExpectedCanonicalEntry {
+    /// Placeholder used only while obtaining a planning inspection. The
+    /// resulting action must be rebuilt from that inspection's opaque expected
+    /// entries before it reaches `prepare` or `commit`.
+    pub(crate) fn unchecked(kind: CanonicalEntryKind) -> Self {
+        Self {
+            kind,
+            snapshot: InspectionSnapshot::from_entry(None),
+        }
+    }
+}
+
 /// Typed canonical-store actions. They do not select a low-level transfer
 /// algorithm and cannot be mistaken for repository materialization actions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +73,7 @@ pub(crate) enum CanonicalTransferAction {
     ReplaceFromRepo {
         source: RepoRelativePath,
         destination: StoreRelativePath,
+        expected_source: ExpectedCanonicalEntry,
         expected_destination: ExpectedCanonicalEntry,
     },
 }
@@ -80,7 +98,8 @@ pub(crate) struct CanonicalTransferFacts {
     pub destination_kind: CanonicalEntryKind,
     pub source_hardlink_free: bool,
     pub destination_hardlink_free: bool,
-    snapshot: InspectionSnapshot,
+    source_snapshot: InspectionSnapshot,
+    destination_snapshot: InspectionSnapshot,
 }
 
 impl fmt::Debug for CanonicalTransferFacts {
@@ -91,7 +110,8 @@ impl fmt::Debug for CanonicalTransferFacts {
             .field("destination_kind", &self.destination_kind)
             .field("source_hardlink_free", &self.source_hardlink_free)
             .field("destination_hardlink_free", &self.destination_hardlink_free)
-            .field("snapshot", &"opaque")
+            .field("source_snapshot", &"opaque")
+            .field("destination_snapshot", &"opaque")
             .finish()
     }
 }
@@ -100,7 +120,14 @@ impl CanonicalTransferFacts {
     pub(crate) fn expected_source(&self) -> ExpectedCanonicalEntry {
         ExpectedCanonicalEntry {
             kind: self.source_kind,
-            snapshot: self.snapshot.clone(),
+            snapshot: self.source_snapshot.clone(),
+        }
+    }
+
+    pub(crate) fn expected_destination(&self) -> ExpectedCanonicalEntry {
+        ExpectedCanonicalEntry {
+            kind: self.destination_kind,
+            snapshot: self.destination_snapshot.clone(),
         }
     }
 
@@ -108,7 +135,7 @@ impl CanonicalTransferFacts {
         &self,
         context: CommitContext,
     ) -> WritePreconditionGuard {
-        WritePreconditionGuard::for_canonical_transfer(self.snapshot.clone(), context)
+        WritePreconditionGuard::for_canonical_transfer(self.source_snapshot.clone(), context)
     }
 
     #[cfg(test)]
@@ -118,7 +145,8 @@ impl CanonicalTransferFacts {
             destination_kind: CanonicalEntryKind::Missing,
             source_hardlink_free: true,
             destination_hardlink_free: true,
-            snapshot: InspectionSnapshot::for_test(1),
+            source_snapshot: InspectionSnapshot::for_test(1),
+            destination_snapshot: InspectionSnapshot::from_entry(None),
         }
     }
 }
@@ -128,6 +156,9 @@ impl CanonicalTransferFacts {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PreparedCanonicalTransfer {
     context: CommitContext,
+    action: Option<CanonicalTransferAction>,
+    temp: Option<AuthorizedTemp>,
+    direct_rename: bool,
 }
 
 impl fmt::Debug for PreparedCanonicalTransfer {
@@ -144,6 +175,9 @@ impl PreparedCanonicalTransfer {
     pub(in crate::fs) fn from_writable_lease(lease: WritableArtifactLease) -> Self {
         Self {
             context: lease.into_commit_context(),
+            action: None,
+            temp: None,
+            direct_rename: false,
         }
     }
 
@@ -151,6 +185,9 @@ impl PreparedCanonicalTransfer {
     pub(crate) fn for_test(token: u64) -> Self {
         Self {
             context: CommitContext::for_test(token),
+            action: None,
+            temp: None,
+            direct_rename: false,
         }
     }
 }
@@ -186,6 +223,254 @@ pub(crate) trait CanonicalTransfer {
         prepared: PreparedCanonicalTransfer,
         journal: &mut dyn MutationJournal,
     ) -> Result<()>;
+}
+
+/// Concrete canonical transfer adapter used by add. It never selects a repo
+/// materialization strategy; it only moves the canonical regular file through
+/// a store-side journal artifact when copying is required.
+pub(crate) struct DefaultCanonicalTransfer {
+    repo_root: PathBuf,
+    store_root: PathBuf,
+}
+
+impl DefaultCanonicalTransfer {
+    pub(crate) fn new(repo_root: PathBuf, store_root: PathBuf) -> Self {
+        Self {
+            repo_root,
+            store_root,
+        }
+    }
+
+    fn paths(&self, action: &CanonicalTransferAction) -> (PathBuf, PathBuf, &Path, &Path) {
+        match action {
+            CanonicalTransferAction::Move {
+                source,
+                destination,
+                ..
+            } => {
+                let source_path = self.store_root.join(source.as_str());
+                let destination_path = self.store_root.join(destination.as_str());
+                (
+                    source_path,
+                    destination_path,
+                    &self.store_root,
+                    &self.store_root,
+                )
+            }
+            CanonicalTransferAction::ReplaceFromRepo {
+                source,
+                destination,
+                ..
+            } => {
+                let source_path = self.repo_root.join(source.as_str());
+                let destination_path = self.store_root.join(destination.as_str());
+                (
+                    source_path,
+                    destination_path,
+                    &self.repo_root,
+                    &self.store_root,
+                )
+            }
+        }
+    }
+
+    fn inspect_entry(path: &Path) -> Result<(CanonicalEntryKind, bool, InspectionSnapshot)> {
+        match platform::inspect_no_follow(path) {
+            Ok(entry) => Ok((
+                match entry.kind {
+                    platform::EntryKind::RegularFile => CanonicalEntryKind::RegularFile,
+                    platform::EntryKind::Directory => CanonicalEntryKind::Directory,
+                    platform::EntryKind::SymlinkOrReparsePoint => {
+                        CanonicalEntryKind::SymlinkOrReparsePoint
+                    }
+                    platform::EntryKind::Other => CanonicalEntryKind::Other,
+                },
+                entry.link_count <= 1,
+                InspectionSnapshot::from_entry(Some(entry)),
+            )),
+            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                Ok((
+                    CanonicalEntryKind::Missing,
+                    true,
+                    InspectionSnapshot::from_entry(None),
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn ensure_expected(path: &Path, expected: &ExpectedCanonicalEntry) -> Result<()> {
+        let actual = match platform::inspect_no_follow(path) {
+            Ok(entry) => InspectionSnapshot::from_entry(Some(entry)),
+            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                InspectionSnapshot::from_entry(None)
+            }
+            Err(error) => return Err(error),
+        };
+        if actual != expected.snapshot {
+            return Err(AppError::FilesystemEntryChanged {
+                path: path.to_path_buf(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl CanonicalTransfer for DefaultCanonicalTransfer {
+    fn inspect(
+        &self,
+        request: CanonicalTransferInspectionRequest,
+    ) -> Result<CanonicalTransferFacts> {
+        let (source, destination, source_root, destination_root) = self.paths(&request.action);
+        secure_transfer::validate_parent_path(source_root, &source)?;
+        let (source_kind, source_hardlink_free, source_snapshot) = Self::inspect_entry(&source)?;
+        let (destination_kind, destination_hardlink_free, destination_snapshot) =
+            match secure_transfer::validate_parent_path(destination_root, &destination) {
+                Ok(()) => Self::inspect_entry(&destination)?,
+                Err(AppError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    (
+                        CanonicalEntryKind::Missing,
+                        true,
+                        InspectionSnapshot::from_entry(None),
+                    )
+                }
+                Err(error) => return Err(error),
+            };
+        Ok(CanonicalTransferFacts {
+            source_kind,
+            destination_kind,
+            source_hardlink_free,
+            destination_hardlink_free,
+            source_snapshot,
+            destination_snapshot,
+        })
+    }
+
+    fn prepare(
+        &mut self,
+        action: CanonicalTransferAction,
+        journal: &mut dyn MutationJournal,
+    ) -> Result<PreparedCanonicalTransfer> {
+        match &action {
+            CanonicalTransferAction::ReplaceFromRepo {
+                expected_source,
+                expected_destination,
+                ..
+            } => {
+                let (source, destination, _, _) = self.paths(&action);
+                Self::ensure_expected(&source, expected_source)?;
+                Self::ensure_expected(&destination, expected_destination)?;
+                let destination_parent =
+                    destination
+                        .parent()
+                        .ok_or_else(|| AppError::UnsafeFilesystemEntry {
+                            path: destination.clone(),
+                            reason: "canonical destination has no parent",
+                        })?;
+                if platform::inspect_no_follow(&source)?.identity.volume
+                    == platform::inspect_no_follow(destination_parent)?
+                        .identity
+                        .volume
+                {
+                    return Ok(PreparedCanonicalTransfer {
+                        context: CommitContext::for_non_artifact(),
+                        action: Some(action),
+                        temp: None,
+                        direct_rename: true,
+                    });
+                }
+                let lease = journal.acquire_artifact_lease(ArtifactScope::StoreSide)?;
+                let writable = journal.authorize_plaintext_write(lease)?;
+                let temp = writable.authorized_temp()?.clone();
+                secure_transfer::populate_authorized_temp(
+                    &self.repo_root,
+                    &source,
+                    temp.path(),
+                    temp.identity(),
+                    secure_transfer::PermissionMode::FromSource,
+                )?;
+                let (context, _) = writable.into_parts();
+                Ok(PreparedCanonicalTransfer {
+                    context,
+                    action: Some(action),
+                    temp: Some(temp),
+                    direct_rename: false,
+                })
+            }
+            CanonicalTransferAction::Move { .. } => Ok(PreparedCanonicalTransfer {
+                context: CommitContext::for_non_artifact(),
+                action: Some(action),
+                temp: None,
+                direct_rename: false,
+            }),
+        }
+    }
+
+    fn commit(
+        &mut self,
+        prepared: PreparedCanonicalTransfer,
+        _permit: CommitPermit,
+    ) -> Result<CanonicalTransferCommitOutcome> {
+        let action = prepared
+            .action
+            .ok_or_else(|| AppError::Internal("missing prepared canonical action".into()))?;
+        match action {
+            CanonicalTransferAction::ReplaceFromRepo {
+                source,
+                destination,
+                expected_source,
+                expected_destination,
+                ..
+            } => {
+                let source = self.repo_root.join(source.as_str());
+                let destination = self.store_root.join(destination.as_str());
+                Self::ensure_expected(&source, &expected_source)?;
+                Self::ensure_expected(&destination, &expected_destination)?;
+                if prepared.direct_rename {
+                    std::fs::rename(&source, &destination)
+                        .map_err(|error| AppError::io(&source, error))?;
+                } else {
+                    let temp = prepared.temp.ok_or_else(|| {
+                        AppError::Internal("missing prepared canonical temp".into())
+                    })?;
+                    secure_transfer::commit_authorized_temp(
+                        &self.store_root,
+                        temp.path(),
+                        temp.identity(),
+                        &destination,
+                    )?;
+                    Self::ensure_expected(&source, &expected_source)?;
+                    std::fs::remove_file(&source).map_err(|error| AppError::io(&source, error))?;
+                }
+                failpoint::after(Failpoint::PersistentMutation(
+                    crate::domain::copy_safety::PersistentMutation::DestinationReplacement,
+                ))?;
+                Ok(CanonicalTransferCommitOutcome::Applied)
+            }
+            CanonicalTransferAction::Move {
+                source,
+                destination,
+                expected_source,
+            } => {
+                let source = self.store_root.join(source.as_str());
+                let destination = self.store_root.join(destination.as_str());
+                Self::ensure_expected(&source, &expected_source)?;
+                std::fs::rename(&source, &destination)
+                    .map_err(|error| AppError::io(&source, error))?;
+                Ok(CanonicalTransferCommitOutcome::Applied)
+            }
+        }
+    }
+
+    fn abort(
+        &mut self,
+        prepared: PreparedCanonicalTransfer,
+        journal: &mut dyn MutationJournal,
+    ) -> Result<()> {
+        journal.cleanup_prepared_artifact(prepared.context)
+    }
 }
 
 /// Documents the opaque artifact protocol expected from canonical adapters.
