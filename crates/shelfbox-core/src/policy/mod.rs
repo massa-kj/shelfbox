@@ -5,6 +5,7 @@
 
 pub(crate) mod gc_policy;
 pub(crate) mod item_validation;
+pub(crate) mod materialization_policy;
 pub(crate) mod migration_policy;
 pub(crate) mod path_escape_policy;
 pub(crate) mod reclaim_policy;

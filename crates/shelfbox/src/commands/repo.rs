@@ -250,7 +250,7 @@ fn cmd_repo_status(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let report = repo::integrity_check(&ctx)?;
+    let report = repo::integrity_check_v2(&ctx, repo::StatusOptions::v2())?;
 
     // Read-only scan: surface pending ownership transitions without writing.
     // Actual transitions happen in `repo repair` to keep status side-effect-free.
@@ -273,8 +273,8 @@ fn cmd_repo_status(
     Ok(classify_integrity_exit(&report))
 }
 
-fn empty_repo_status_report() -> repo::IntegrityReport {
-    repo::IntegrityReport {
+fn empty_repo_status_report() -> repo::IntegrityReportV2 {
+    repo::IntegrityReportV2 {
         items: Vec::new(),
         orphan_store_items: Vec::new(),
         repo_root_matches_index: true,
@@ -560,40 +560,41 @@ fn repair_change_label(changed: bool, dry_run: bool) -> &'static str {
     }
 }
 
-fn print_repo_status(report: &repo::IntegrityReport, verbose: bool, repo_root: &Path) {
+fn print_repo_status(report: &repo::IntegrityReportV2, verbose: bool, repo_root: &Path) {
     println!("repo: {}", repo_root.display());
 
     let total = report.items.len();
-    let errors = report.items.iter().filter(|s| !s.ok).count();
-    let overall = if errors > 0 { "ERROR" } else { "OK" };
+    let errors = report
+        .items
+        .iter()
+        .filter(|s| s.severity == repo::StatusSeverity::Error)
+        .count();
+    let warnings = report
+        .items
+        .iter()
+        .filter(|s| s.severity == repo::StatusSeverity::Warning)
+        .count();
+    let overall = if errors > 0 {
+        "ERROR"
+    } else if warnings > 0 {
+        "WARN"
+    } else {
+        "OK"
+    };
 
     println!("items: {total} total, {errors} with issues  [{overall}]");
 
     for s in &report.items {
-        let label = if s.ok { "OK" } else { "ERROR" };
+        let label = repo_status_label(s.severity);
         if verbose {
             println!("  {label:<8} {}", s.path);
-            println!("    link_exists:  {}", s.link_exists);
-            println!("    link_valid:   {}", s.link_valid);
+            println!("    materialization: {:?}", s.observed_materialization);
+            println!("    materialization_valid: {}", s.materialization_valid);
             println!("    store_exists: {}", s.store_exists);
             println!("    in_exclude:   {}", s.in_exclude);
             println!("    not_tracked:  {}", s.not_tracked);
         } else {
-            let mut issues: Vec<&str> = Vec::new();
-            if !s.link_exists {
-                issues.push("symlink missing");
-            } else if !s.link_valid {
-                issues.push("symlink invalid");
-            }
-            if !s.store_exists {
-                issues.push("store item missing");
-            }
-            if !s.in_exclude {
-                issues.push("not in exclude");
-            }
-            if !s.not_tracked {
-                issues.push("tracked by git");
-            }
+            let issues = repo_status_issue_labels(s);
             if issues.is_empty() {
                 println!("  {label:<8} {}", s.path);
             } else {
@@ -620,9 +621,9 @@ fn print_repo_status(report: &repo::IntegrityReport, verbose: bool, repo_root: &
     println!("index root: [{root_label}]");
 }
 
-fn print_repo_status_plain(report: &repo::IntegrityReport) {
+fn print_repo_status_plain(report: &repo::IntegrityReportV2) {
     for s in &report.items {
-        let label = if s.ok { "OK" } else { "ERROR" };
+        let label = repo_status_label(s.severity);
         println!("{label} {}", s.path);
     }
     for o in &report.orphan_store_items {
@@ -633,21 +634,54 @@ fn print_repo_status_plain(report: &repo::IntegrityReport) {
     }
 }
 
-/// Determine the exit code for `repo status` based on the integrity report.
-///
-/// - 2: structural ERROR (broken/missing symlink, missing store item, git-tracked)
-/// - 1: WARN only (missing exclude entry, unreferenced store items, root mismatch)
-/// - 0: all clear
-fn classify_integrity_exit(report: &repo::IntegrityReport) -> ExitCode {
+fn repo_status_label(severity: repo::StatusSeverity) -> &'static str {
+    match severity {
+        repo::StatusSeverity::Healthy => "OK",
+        repo::StatusSeverity::Warning => "WARN",
+        repo::StatusSeverity::Error => "ERROR",
+    }
+}
+
+fn repo_status_issue_labels(status: &repo::ItemStatusV2) -> Vec<String> {
+    status
+        .issues
+        .iter()
+        .map(|issue| repo_status_issue_label(issue.code).to_string())
+        .collect()
+}
+
+/// Maps stable machine-readable issue codes to the CLI's human-readable text.
+/// Severity and issue selection stay in the core policy layer.
+fn repo_status_issue_label(code: repo::StatusIssueCode) -> &'static str {
+    match code {
+        repo::StatusIssueCode::MaterializationMissing => "materialization missing",
+        repo::StatusIssueCode::MaterializationInvalid => "materialization invalid",
+        repo::StatusIssueCode::StoreMissing => "store item missing",
+        repo::StatusIssueCode::MissingExclude => "not in exclude",
+        repo::StatusIssueCode::TrackedByGit => "tracked by git",
+        repo::StatusIssueCode::ContentDiverged => "content diverged",
+        repo::StatusIssueCode::ContentUnreadable => "content unreadable",
+        repo::StatusIssueCode::HardlinkUnsafe => "hardlink unsafe",
+        repo::StatusIssueCode::PathEscape => "path escapes repository",
+        repo::StatusIssueCode::UnfinishedOperationConflict => "unfinished operation conflict",
+    }
+}
+
+/// Exit codes project core severity, with repository-level observations adding
+/// warnings only.
+fn classify_integrity_exit(report: &repo::IntegrityReportV2) -> ExitCode {
     let has_error = report
         .items
         .iter()
-        .any(|s| !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked);
+        .any(|s| s.severity == repo::StatusSeverity::Error);
     if has_error {
         return ExitCode::from(2);
     }
 
-    let has_warn = report.items.iter().any(|s| !s.in_exclude)
+    let has_warn = report
+        .items
+        .iter()
+        .any(|s| s.severity == repo::StatusSeverity::Warning)
         || !report.orphan_store_items.is_empty()
         || !report.repo_root_matches_index;
     if has_warn {

@@ -370,13 +370,13 @@ fn item_status_exit_codes_are_locked_for_associated_repo() {
     output.assert_code(2);
     assert_eq!(
         output.stdout,
-        "ERROR secret.txt symlink missing,not in exclude\n"
+        "ERROR secret.txt materialization missing,not in exclude\n"
     );
     assert_eq!(output.stderr, "");
 }
 
 #[test]
-fn symlink_status_json_matches_v1_golden_fixtures() {
+fn symlink_status_json_matches_v2_golden_fixtures() {
     if !common::require_symlink_support() {
         return;
     }
@@ -401,7 +401,7 @@ fn symlink_status_json_matches_v1_golden_fixtures() {
     assert_eq!(item_status.stderr, "");
     assert_json_golden(
         &item_status.stdout,
-        include_str!("fixtures/item-status-symlink-v1.json"),
+        include_str!("../../shelfbox-core/tests/fixtures/item-status-symlink-v2.json"),
     );
 
     let repo_status = fixture.run(
@@ -412,7 +412,7 @@ fn symlink_status_json_matches_v1_golden_fixtures() {
     assert_eq!(repo_status.stderr, "");
     assert_json_golden(
         &repo_status.stdout,
-        include_str!("fixtures/repo-status-symlink-v1.json"),
+        include_str!("../../shelfbox-core/tests/fixtures/repo-status-symlink-v2.json"),
     );
 }
 
@@ -449,7 +449,7 @@ fn repo_status_exit_codes_are_locked_for_associated_repo() {
         store_args(store.path(), ["repo", "status", "--format", "plain"]),
     );
     output.assert_code(1);
-    assert_eq!(output.stdout, "ERROR repo-secret.txt\n");
+    assert_eq!(output.stdout, "WARN repo-secret.txt\n");
     assert_eq!(output.stderr, "");
 
     std::fs::remove_file(&item_path).unwrap();

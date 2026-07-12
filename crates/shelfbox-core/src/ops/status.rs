@@ -1,9 +1,21 @@
-use std::{io::ErrorKind, path::Path};
-
 use serde::Serialize;
 
 use crate::{
-    context::RepoContext, error::Result, git, ignore::IgnoreBackend, link::LinkStrategy,
+    context::RepoContext,
+    domain::materialization::{
+        CopyContentState as DomainCopyContentState, ExcludeState, GitState,
+        MaterializationFacts as DomainMaterializationFacts, MaterializationRelation,
+        RepoEntryKind as DomainRepoEntryKind, StoreState,
+    },
+    error::Result,
+    fs::materializer::{
+        DefaultMaterializer, InspectionPurpose, MaterializationInspectionRequest,
+        MaterializationLocation, Materializer, RepoEntryKind as FsRepoEntryKind,
+    },
+    git,
+    ignore::IgnoreBackend,
+    link::LinkStrategy,
+    policy::materialization_policy::evaluate_materialization_status,
     store::manifest::Item,
 };
 
@@ -111,10 +123,17 @@ pub fn status(
     link: &dyn LinkStrategy,
     ignore: &dyn IgnoreBackend,
 ) -> Result<Vec<ItemStatus>> {
+    let materializer = DefaultMaterializer::with_link_strategy(
+        ctx.repo_root.clone(),
+        ctx.repo_store.clone(),
+        link,
+    );
     ctx.manifest
         .items
         .iter()
-        .map(|item| check_item_facts(ctx, item, link, ignore).map(|facts| facts.to_legacy()))
+        .map(|item| {
+            check_item_facts(ctx, item, &materializer, ignore).map(|facts| facts.to_legacy())
+        })
         .collect()
 }
 
@@ -125,12 +144,19 @@ pub fn status_v2(
     ignore: &dyn IgnoreBackend,
     options: StatusOptions,
 ) -> Result<Vec<ItemStatusV2>> {
+    let materializer = DefaultMaterializer::with_link_strategy(
+        ctx.repo_root.clone(),
+        ctx.repo_store.clone(),
+        link,
+    );
     match options.schema_version {
         StatusSchemaVersion::V2 => ctx
             .manifest
             .items
             .iter()
-            .map(|item| check_item_facts(ctx, item, link, ignore).map(|facts| facts.to_v2()))
+            .map(|item| {
+                check_item_facts(ctx, item, &materializer, ignore).map(|facts| facts.to_v2())
+            })
             .collect(),
     }
 }
@@ -142,7 +168,9 @@ struct StatusFacts {
     observed_materialization: ObservedMaterialization,
     link_exists: bool,
     link_valid: bool,
+    hardlink_free: bool,
     store_exists: bool,
+    content_state: CopyContentState,
     in_exclude: bool,
     not_tracked: bool,
 }
@@ -165,108 +193,121 @@ impl StatusFacts {
     }
 
     fn to_v2(&self) -> ItemStatusV2 {
-        let materialization_exists =
-            self.observed_materialization != ObservedMaterialization::Missing;
-        let materialization_valid = match self.configured_strategy {
-            MaterializationStrategy::Symlink => {
-                self.observed_materialization == ObservedMaterialization::ManagedSymlink
-            }
-            MaterializationStrategy::Copy => {
-                self.observed_materialization == ObservedMaterialization::RegularFile
-            }
-        };
-        let evaluation = evaluate_status(self, materialization_exists, materialization_valid);
+        let evaluation =
+            evaluate_materialization_status(self.policy_facts(), self.configured_strategy);
 
         ItemStatusV2 {
             status_schema_version: STATUS_SCHEMA_VERSION_V2,
             path: self.path.clone(),
             configured_strategy: self.configured_strategy,
             observed_materialization: self.observed_materialization,
-            materialization_exists,
-            materialization_valid,
-            content_state: CopyContentState::NotApplicable,
+            materialization_exists: evaluation.materialization_exists,
+            materialization_valid: evaluation.materialization_valid,
+            content_state: self.content_state,
             store_exists: self.store_exists,
             in_exclude: self.in_exclude,
             not_tracked: self.not_tracked,
             severity: evaluation.severity,
             issues: evaluation.issues,
-            notes: Vec::new(),
-            ok: evaluation.ok,
-            link_exists: Some(self.link_exists),
-            link_valid: Some(self.link_valid),
+            notes: evaluation.notes,
+            ok: evaluation.severity == StatusSeverity::Healthy,
+            link_exists: (self.observed_materialization != ObservedMaterialization::RegularFile)
+                .then_some(self.link_exists),
+            link_valid: (self.observed_materialization != ObservedMaterialization::RegularFile)
+                .then_some(self.link_valid),
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StatusEvaluation {
-    severity: StatusSeverity,
-    issues: Vec<StatusIssue>,
-    ok: bool,
-}
-
-fn evaluate_status(
-    facts: &StatusFacts,
-    materialization_exists: bool,
-    materialization_valid: bool,
-) -> StatusEvaluation {
-    let mut issues = Vec::new();
-
-    if !materialization_exists {
-        issues.push(StatusIssue {
-            code: StatusIssueCode::MaterializationMissing,
-        });
-    } else if !materialization_valid {
-        issues.push(StatusIssue {
-            code: StatusIssueCode::MaterializationInvalid,
-        });
-    }
-    if !facts.store_exists {
-        issues.push(StatusIssue {
-            code: StatusIssueCode::StoreMissing,
-        });
-    }
-    if !facts.in_exclude {
-        issues.push(StatusIssue {
-            code: StatusIssueCode::MissingExclude,
-        });
-    }
-    if !facts.not_tracked {
-        issues.push(StatusIssue {
-            code: StatusIssueCode::TrackedByGit,
-        });
-    }
-
-    let severity = if !materialization_valid || !facts.store_exists || !facts.not_tracked {
-        StatusSeverity::Error
-    } else if !facts.in_exclude {
-        StatusSeverity::Warning
-    } else {
-        StatusSeverity::Healthy
-    };
-
-    StatusEvaluation {
-        severity,
-        issues,
-        ok: severity == StatusSeverity::Healthy,
+    fn policy_facts(&self) -> DomainMaterializationFacts {
+        let (repo_entry, relation) = match self.observed_materialization {
+            ObservedMaterialization::Missing => (
+                DomainRepoEntryKind::Missing,
+                MaterializationRelation::NotApplicable,
+            ),
+            ObservedMaterialization::ManagedSymlink => (
+                DomainRepoEntryKind::Symlink,
+                MaterializationRelation::ManagedSymlink,
+            ),
+            ObservedMaterialization::UnmanagedSymlink => (
+                DomainRepoEntryKind::Symlink,
+                MaterializationRelation::UnexpectedSymlink,
+            ),
+            ObservedMaterialization::RegularFile => {
+                let relation = if self.hardlink_free {
+                    MaterializationRelation::IsolatedRegularCopy
+                } else {
+                    MaterializationRelation::UnsafeHardlink
+                };
+                (DomainRepoEntryKind::RegularFile, relation)
+            }
+            ObservedMaterialization::Directory | ObservedMaterialization::Other => (
+                DomainRepoEntryKind::Unsupported,
+                MaterializationRelation::NotApplicable,
+            ),
+        };
+        DomainMaterializationFacts {
+            repo_entry,
+            relation,
+            copy_content: match self.content_state {
+                CopyContentState::NotApplicable | CopyContentState::StoreMissing => {
+                    DomainCopyContentState::NotCompared
+                }
+                CopyContentState::Equal => DomainCopyContentState::Equal,
+                CopyContentState::Diverged => DomainCopyContentState::Diverged,
+                CopyContentState::RepoUnreadable | CopyContentState::StoreUnreadable => {
+                    DomainCopyContentState::Unreadable
+                }
+                CopyContentState::Unknown => DomainCopyContentState::ComparisonFailed,
+            },
+            store_state: match (self.store_exists, self.content_state) {
+                (false, _) => StoreState::Missing,
+                (_, CopyContentState::StoreUnreadable) => StoreState::Unreadable,
+                _ => StoreState::Present,
+            },
+            git_state: if self.not_tracked {
+                GitState::Untracked
+            } else {
+                GitState::Tracked
+            },
+            exclude_state: if self.in_exclude {
+                ExcludeState::Present
+            } else {
+                ExcludeState::Missing
+            },
+        }
     }
 }
 
 fn check_item_facts(
     ctx: &RepoContext,
     item: &Item,
-    link: &dyn LinkStrategy,
+    materializer: &dyn Materializer,
     ignore: &dyn IgnoreBackend,
 ) -> Result<StatusFacts> {
     let abs_path = ctx.repo_root.join(&item.path);
-    let store_path = ctx.repo_store.join(&item.store_path);
-
-    // Does a symlink exist at the repo-side path (via the link strategy)?
-    let link_exists = link.is_link(&abs_path);
-    // Is it specifically a managed symlink pointing into the store?
-    let link_valid = link.is_managed_link(&abs_path, &ctx.config.store);
-    // Does the store-side copy exist?
-    let store_exists = store_path.exists();
+    let location = MaterializationLocation::new(
+        item.path
+            .parse()
+            .map_err(|_| crate::error::AppError::Internal("invalid manifest repo path".into()))?,
+        item.store_path
+            .parse()
+            .map_err(|_| crate::error::AppError::Internal("invalid manifest store path".into()))?,
+    );
+    let inspection = materializer.inspect(MaterializationInspectionRequest {
+        location,
+        purpose: InspectionPurpose::Planning,
+    })?;
+    let observed_materialization = observed_materialization(inspection.repo_entry_kind);
+    let (link_exists, link_valid) = match inspection.repo_entry_kind {
+        FsRepoEntryKind::ManagedSymlink => (true, true),
+        FsRepoEntryKind::UnmanagedSymlinkOrReparsePoint => (true, false),
+        _ => (false, false),
+    };
+    let content_state = copy_content_state(
+        observed_materialization,
+        inspection.store_exists,
+        inspection.copy_content,
+    );
     // Is the path listed in .git/info/exclude?
     let in_exclude = ignore.has_entry(&ctx.repo_root, &item.path)?;
     // Is the path not tracked by Git (i.e. not accidentally staged as the symlink)?
@@ -274,44 +315,50 @@ fn check_item_facts(
 
     Ok(StatusFacts {
         path: item.path.clone(),
-        configured_strategy: MaterializationStrategy::Symlink,
-        observed_materialization: observed_materialization(&abs_path, link_exists, link_valid),
+        configured_strategy: ctx.config.materialization,
+        observed_materialization,
         link_exists,
         link_valid,
-        store_exists,
+        hardlink_free: inspection.hardlink_free,
+        store_exists: inspection.store_exists,
+        content_state,
         in_exclude,
         not_tracked,
     })
 }
 
-fn observed_materialization(
-    abs_path: &Path,
-    link_exists: bool,
-    link_valid: bool,
-) -> ObservedMaterialization {
-    let metadata = match std::fs::symlink_metadata(abs_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return ObservedMaterialization::Missing;
-        }
-        Err(_) => return ObservedMaterialization::Other,
-    };
-    let file_type = metadata.file_type();
+fn copy_content_state(
+    observed: ObservedMaterialization,
+    store_exists: bool,
+    inspected: DomainCopyContentState,
+) -> CopyContentState {
+    if observed != ObservedMaterialization::RegularFile {
+        return CopyContentState::NotApplicable;
+    }
+    if !store_exists {
+        return CopyContentState::StoreMissing;
+    }
 
-    if file_type.is_symlink() {
-        if link_valid {
-            ObservedMaterialization::ManagedSymlink
-        } else if link_exists {
-            ObservedMaterialization::UnmanagedSymlink
-        } else {
-            ObservedMaterialization::Other
+    match inspected {
+        DomainCopyContentState::Equal => CopyContentState::Equal,
+        DomainCopyContentState::Diverged => CopyContentState::Diverged,
+        DomainCopyContentState::Unreadable => CopyContentState::RepoUnreadable,
+        DomainCopyContentState::NotCompared | DomainCopyContentState::ComparisonFailed => {
+            CopyContentState::Unknown
         }
-    } else if file_type.is_file() {
-        ObservedMaterialization::RegularFile
-    } else if file_type.is_dir() {
-        ObservedMaterialization::Directory
-    } else {
-        ObservedMaterialization::Other
+    }
+}
+
+fn observed_materialization(entry_kind: FsRepoEntryKind) -> ObservedMaterialization {
+    match entry_kind {
+        FsRepoEntryKind::Missing => ObservedMaterialization::Missing,
+        FsRepoEntryKind::ManagedSymlink => ObservedMaterialization::ManagedSymlink,
+        FsRepoEntryKind::UnmanagedSymlinkOrReparsePoint => {
+            ObservedMaterialization::UnmanagedSymlink
+        }
+        FsRepoEntryKind::RegularFile => ObservedMaterialization::RegularFile,
+        FsRepoEntryKind::Directory => ObservedMaterialization::Directory,
+        FsRepoEntryKind::Other => ObservedMaterialization::Other,
     }
 }
 
@@ -322,24 +369,19 @@ pub(crate) fn healthy_symlink_status_v2_fixture() -> ItemStatusV2 {
 
 #[cfg(test)]
 pub(crate) fn copy_item_status_v2_fixture() -> ItemStatusV2 {
-    ItemStatusV2 {
-        status_schema_version: STATUS_SCHEMA_VERSION_V2,
+    StatusFacts {
         path: "copy.txt".into(),
         configured_strategy: MaterializationStrategy::Copy,
         observed_materialization: ObservedMaterialization::RegularFile,
-        materialization_exists: true,
-        materialization_valid: true,
         content_state: CopyContentState::Equal,
         store_exists: true,
         in_exclude: true,
         not_tracked: true,
-        severity: StatusSeverity::Healthy,
-        issues: Vec::new(),
-        notes: Vec::new(),
-        ok: true,
-        link_exists: None,
-        link_valid: None,
+        link_exists: false,
+        link_valid: false,
+        hardlink_free: true,
     }
+    .to_v2()
 }
 
 #[cfg(test)]
@@ -350,7 +392,9 @@ fn healthy_symlink_facts() -> StatusFacts {
         observed_materialization: ObservedMaterialization::ManagedSymlink,
         link_exists: true,
         link_valid: true,
+        hardlink_free: true,
         store_exists: true,
+        content_state: CopyContentState::NotApplicable,
         in_exclude: true,
         not_tracked: true,
     }
@@ -408,7 +452,9 @@ mod tests {
             observed_materialization: ObservedMaterialization::Missing,
             link_exists: false,
             link_valid: false,
+            hardlink_free: true,
             store_exists: false,
+            content_state: CopyContentState::NotApplicable,
             in_exclude: false,
             not_tracked: false,
         };
@@ -430,8 +476,8 @@ mod tests {
                 "issues": [
                     {"code": "materialization_missing"},
                     {"code": "store_missing"},
-                    {"code": "missing_exclude"},
-                    {"code": "tracked_by_git"}
+                    {"code": "tracked_by_git"},
+                    {"code": "missing_exclude"}
                 ],
                 "notes": [],
                 "ok": false,

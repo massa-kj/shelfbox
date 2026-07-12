@@ -12,7 +12,7 @@ use std::{
 use crate::{
     domain::{
         copy_safety::{ArtifactScope, WritePreconditionCheck, WRITE_PRECONDITION_CHECKS},
-        materialization::MaterializationStrategy,
+        materialization::{CopyContentState, MaterializationStrategy},
         path::{RepoRelativePath, StoreRelativePath},
     },
     error::{AppError, Result},
@@ -93,6 +93,8 @@ pub(crate) struct MaterializationFacts {
     pub final_component: FinalComponentInspection,
     pub link_count: Option<u64>,
     pub hardlink_free: bool,
+    pub store_exists: bool,
+    pub copy_content: CopyContentState,
     snapshot: InspectionSnapshot,
 }
 
@@ -104,6 +106,8 @@ impl fmt::Debug for MaterializationFacts {
             .field("final_component", &self.final_component)
             .field("link_count", &self.link_count)
             .field("hardlink_free", &self.hardlink_free)
+            .field("store_exists", &self.store_exists)
+            .field("copy_content", &self.copy_content)
             .field("snapshot", &"opaque")
             .finish()
     }
@@ -136,6 +140,8 @@ impl MaterializationFacts {
             final_component: FinalComponentInspection::InspectedWithoutFollowing,
             link_count: Some(1),
             hardlink_free: true,
+            store_exists: true,
+            copy_content: CopyContentState::NotCompared,
             snapshot: InspectionSnapshot::for_test(1),
         }
     }
@@ -491,6 +497,10 @@ impl<L> DefaultMaterializer<L> {
 impl<L: LinkStrategy> DefaultMaterializer<L> {
     fn inspect_location(&self, location: &MaterializationLocation) -> Result<MaterializationFacts> {
         let (repo, store) = self.validate_location(location)?;
+        let store_exists = !matches!(
+            platform::inspect_no_follow(&store),
+            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+        );
         let entry = match platform::inspect_no_follow(&repo) {
             Ok(entry) => entry,
             Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -499,6 +509,8 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
                     final_component: FinalComponentInspection::Missing,
                     link_count: None,
                     hardlink_free: true,
+                    store_exists,
+                    copy_content: CopyContentState::NotCompared,
                     snapshot: InspectionSnapshot::from_entry(None),
                 });
             }
@@ -517,11 +529,22 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
                 }
             }
         };
+        let copy_content = if repo_entry_kind == RepoEntryKind::RegularFile && store_exists {
+            match secure_transfer::compare_regular_files(&repo, &store) {
+                Ok(true) => CopyContentState::Equal,
+                Ok(false) => CopyContentState::Diverged,
+                Err(_) => CopyContentState::ComparisonFailed,
+            }
+        } else {
+            CopyContentState::NotCompared
+        };
         Ok(MaterializationFacts {
             repo_entry_kind,
             final_component: FinalComponentInspection::InspectedWithoutFollowing,
             link_count: Some(entry.link_count),
             hardlink_free: entry.link_count <= 1,
+            store_exists,
+            copy_content,
             snapshot: InspectionSnapshot::from_entry(Some(entry)),
         })
     }
@@ -553,7 +576,11 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
                 self.create(&store, &repo, strategy)?;
                 Ok(MaterializationCommitOutcome::Applied)
             }
-            MaterializationAction::Replace { location, strategy, expected } => {
+            MaterializationAction::Replace {
+                location,
+                strategy,
+                expected,
+            } => {
                 let (repo, store) = self.validate_location(&location)?;
                 self.ensure_expected(&repo, &expected)?;
                 self.replace(&store, &repo, strategy)?;
@@ -582,7 +609,9 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
 
     fn ensure_missing(&self, path: &Path) -> Result<()> {
         match platform::inspect_no_follow(path) {
-            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                Ok(())
+            }
             Ok(_) => Err(AppError::UnsafeFilesystemEntry {
                 path: path.to_path_buf(),
                 reason: "destination is no longer missing",
@@ -595,7 +624,9 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
         if InspectionSnapshot::from_entry(Some(platform::inspect_no_follow(path)?))
             != expected.snapshot
         {
-            return Err(AppError::FilesystemEntryChanged { path: path.to_path_buf() });
+            return Err(AppError::FilesystemEntryChanged {
+                path: path.to_path_buf(),
+            });
         }
         Ok(())
     }
@@ -625,10 +656,12 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
                 secure_transfer::PermissionMode::FromSource,
             ),
             MaterializationStrategy::Symlink => {
-                let parent = repo.parent().ok_or_else(|| AppError::UnsafeFilesystemEntry {
-                    path: repo.to_path_buf(),
-                    reason: "destination has no parent",
-                })?;
+                let parent = repo
+                    .parent()
+                    .ok_or_else(|| AppError::UnsafeFilesystemEntry {
+                        path: repo.to_path_buf(),
+                        reason: "destination has no parent",
+                    })?;
                 let temp = parent.join(format!(".shelfbox-link-{}.tmp", ulid::Ulid::new()));
                 self.link.create(store, &temp)?;
                 platform::atomic_replace(&temp, repo)
@@ -642,7 +675,11 @@ impl<L: LinkStrategy> Materializer for DefaultMaterializer<L> {
         self.inspect_location(&request.location)
     }
 
-    fn prepare(&mut self, action: MaterializationAction, journal: &mut dyn MutationJournal) -> Result<PreparedMaterialization> {
+    fn prepare(
+        &mut self,
+        action: MaterializationAction,
+        journal: &mut dyn MutationJournal,
+    ) -> Result<PreparedMaterialization> {
         // Phase 5 supplies a persistent journal.  Acquiring and authorizing a
         // lease here keeps this adapter on the same opaque lifecycle today.
         let lease = journal.acquire_artifact_lease(ArtifactScope::RepoSide)?;
@@ -664,7 +701,11 @@ impl<L: LinkStrategy> Materializer for DefaultMaterializer<L> {
         }
     }
 
-    fn abort(&mut self, prepared: PreparedMaterialization, journal: &mut dyn MutationJournal) -> Result<()> {
+    fn abort(
+        &mut self,
+        prepared: PreparedMaterialization,
+        journal: &mut dyn MutationJournal,
+    ) -> Result<()> {
         journal.cleanup_prepared_artifact(prepared.context)
     }
 }
@@ -680,7 +721,10 @@ impl InspectionSnapshot {
     pub(in crate::fs) fn for_test(token: u64) -> Self {
         Self(Some(platform::InspectedEntry {
             kind: platform::EntryKind::RegularFile,
-            identity: platform::FileIdentity { volume: token, file: [0; 16] },
+            identity: platform::FileIdentity {
+                volume: token,
+                file: [0; 16],
+            },
             link_count: 1,
         }))
     }
@@ -734,27 +778,47 @@ mod tests {
         let store = tempfile::tempdir().unwrap();
         std::fs::create_dir(store.path().join("items")).unwrap();
         let repo_file = repo.path().join("secret.env");
+        let store_file = store.path().join("items/secret.env");
         std::fs::write(&repo_file, "repo copy").unwrap();
-        let materializer = DefaultMaterializer::new(
-            repo.path().to_path_buf(),
-            store.path().to_path_buf(),
-        );
-        let regular = materializer.inspect(MaterializationInspectionRequest {
-            location: MaterializationLocation::new(
-                "secret.env".parse().unwrap(), "items/secret.env".parse().unwrap(),
-            ),
-            purpose: InspectionPurpose::Planning,
-        }).unwrap();
+        std::fs::write(&store_file, "repo copy").unwrap();
+        let materializer =
+            DefaultMaterializer::new(repo.path().to_path_buf(), store.path().to_path_buf());
+        let regular = materializer
+            .inspect(MaterializationInspectionRequest {
+                location: MaterializationLocation::new(
+                    "secret.env".parse().unwrap(),
+                    "items/secret.env".parse().unwrap(),
+                ),
+                purpose: InspectionPurpose::Planning,
+            })
+            .unwrap();
         assert_eq!(regular.repo_entry_kind, RepoEntryKind::RegularFile);
         assert!(regular.hardlink_free);
+        assert!(regular.store_exists);
+        assert_eq!(regular.copy_content, CopyContentState::Equal);
         assert_eq!(std::fs::read_to_string(&repo_file).unwrap(), "repo copy");
 
-        let missing = materializer.inspect(MaterializationInspectionRequest {
-            location: MaterializationLocation::new(
-                "missing.env".parse().unwrap(), "items/missing.env".parse().unwrap(),
-            ),
-            purpose: InspectionPurpose::Planning,
-        }).unwrap();
+        std::fs::write(&repo_file, "diverged copy").unwrap();
+        let diverged = materializer
+            .inspect(MaterializationInspectionRequest {
+                location: MaterializationLocation::new(
+                    "secret.env".parse().unwrap(),
+                    "items/secret.env".parse().unwrap(),
+                ),
+                purpose: InspectionPurpose::Planning,
+            })
+            .unwrap();
+        assert_eq!(diverged.copy_content, CopyContentState::Diverged);
+
+        let missing = materializer
+            .inspect(MaterializationInspectionRequest {
+                location: MaterializationLocation::new(
+                    "missing.env".parse().unwrap(),
+                    "items/missing.env".parse().unwrap(),
+                ),
+                purpose: InspectionPurpose::Planning,
+            })
+            .unwrap();
         assert_eq!(missing.repo_entry_kind, RepoEntryKind::Missing);
         assert_eq!(missing.final_component, FinalComponentInspection::Missing);
     }
@@ -769,12 +833,28 @@ mod tests {
         std::fs::write(&item, "secret").unwrap();
         let path = repo.path().join("secret.env");
         DefaultLinkStrategy.create(&item, &path).unwrap();
-        let materializer = DefaultMaterializer::new(repo.path().to_path_buf(), store.path().to_path_buf());
-        let request = |store_path| MaterializationInspectionRequest {
-            location: MaterializationLocation::new("secret.env".parse().unwrap(), store_path.parse().unwrap()),
+        let materializer =
+            DefaultMaterializer::new(repo.path().to_path_buf(), store.path().to_path_buf());
+        let request = |store_path: &str| MaterializationInspectionRequest {
+            location: MaterializationLocation::new(
+                "secret.env".parse().unwrap(),
+                store_path.parse().unwrap(),
+            ),
             purpose: InspectionPurpose::Planning,
         };
-        assert_eq!(materializer.inspect(request("items/secret.env")).unwrap().repo_entry_kind, RepoEntryKind::ManagedSymlink);
-        assert_eq!(materializer.inspect(request("items/other.env")).unwrap().repo_entry_kind, RepoEntryKind::UnmanagedSymlinkOrReparsePoint);
+        assert_eq!(
+            materializer
+                .inspect(request("items/secret.env"))
+                .unwrap()
+                .repo_entry_kind,
+            RepoEntryKind::ManagedSymlink
+        );
+        assert_eq!(
+            materializer
+                .inspect(request("items/other.env"))
+                .unwrap()
+                .repo_entry_kind,
+            RepoEntryKind::UnmanagedSymlinkOrReparsePoint
+        );
     }
 }

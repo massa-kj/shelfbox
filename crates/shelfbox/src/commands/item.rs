@@ -498,7 +498,7 @@ fn cmd_status(
         .context("failed to initialise read-only repo context")?;
     let fmt = OutputFormat::resolve(format, &read_only.config.default_format);
     let Some(ctx) = read_only.repo else {
-        let statuses: Vec<item::ItemStatus> = Vec::new();
+        let statuses: Vec<item::ItemStatusV2> = Vec::new();
         match fmt {
             OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&statuses)?),
             OutputFormat::Plain => print_status_plain(&statuses),
@@ -506,7 +506,7 @@ fn cmd_status(
         }
         return Ok(ExitCode::SUCCESS);
     };
-    let statuses = item::status(&ctx)?;
+    let statuses = item::status_v2(&ctx, item::StatusOptions::v2())?;
 
     match fmt {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&statuses)?),
@@ -715,9 +715,10 @@ fn print_list(items: &[item::Item], verbose: bool, ctx: &item::RepoContext) {
 }
 
 /// Plain format: `label path [issue,issue,...]`
-fn print_status_plain(statuses: &[item::ItemStatus]) {
+fn print_status_plain(statuses: &[item::ItemStatusV2]) {
     for s in statuses {
-        let (label, issues) = classify_status(s);
+        let label = status_label(s.severity);
+        let issues = status_issue_labels(s);
         if issues.is_empty() {
             println!("{} {}", label, s.path);
         } else {
@@ -726,13 +727,14 @@ fn print_status_plain(statuses: &[item::ItemStatus]) {
     }
 }
 
-fn print_status(statuses: &[item::ItemStatus], verbose: bool, ctx: &item::RepoContext) {
+fn print_status(statuses: &[item::ItemStatusV2], verbose: bool, ctx: &item::RepoContext) {
     if statuses.is_empty() {
         println!("(no shelved items)");
         return;
     }
     for (s, item) in statuses.iter().zip(ctx.manifest.items.iter()) {
-        let (label, issues) = classify_status(s);
+        let label = status_label(s.severity);
+        let issues = status_issue_labels(s);
         if issues.is_empty() {
             println!("{:<8} {}", label, s.path);
         } else {
@@ -746,7 +748,8 @@ fn print_status(statuses: &[item::ItemStatus], verbose: bool, ctx: &item::RepoCo
                 Some(t) => println!("    link\u{2192}         {}", t.display()),
                 None => println!("    link\u{2192}         (none)"),
             }
-            println!("    link_valid:   {}", s.link_valid);
+            println!("    materialization: {:?}", s.observed_materialization);
+            println!("    materialization_valid: {}", s.materialization_valid);
             println!("    store_exists: {}", s.store_exists);
             println!("    in_exclude:   {}", s.in_exclude);
             println!("    not_tracked:  {}", s.not_tracked);
@@ -754,61 +757,52 @@ fn print_status(statuses: &[item::ItemStatus], verbose: bool, ctx: &item::RepoCo
     }
 }
 
-/// Returns `(severity_label, list_of_problem_descriptions)` for one item.
-///
-/// Severity rules:
-/// - ERROR: any structural failure (symlink missing/invalid, store item gone,
-///   or Git can see the file — the primary shelfbox contract is broken).
-/// - WARN:  exclude entry missing but Git still ignores the file for now.
-/// - OK:    all checks pass.
-fn classify_status(s: &item::ItemStatus) -> (&'static str, Vec<&'static str>) {
-    let mut issues: Vec<&'static str> = Vec::new();
-
-    if !s.link_exists {
-        issues.push("symlink missing");
-    } else if !s.link_valid {
-        issues.push("symlink invalid");
+fn status_label(severity: item::StatusSeverity) -> &'static str {
+    match severity {
+        item::StatusSeverity::Healthy => "OK",
+        item::StatusSeverity::Warning => "WARN",
+        item::StatusSeverity::Error => "ERROR",
     }
-    if !s.store_exists {
-        issues.push("store item missing");
-    }
-    if !s.in_exclude {
-        issues.push("not in exclude");
-    }
-    if !s.not_tracked {
-        // Git can see the shelved file — the primary shelfbox contract
-        // ("hide from Git") is broken.  This warrants ERROR, not WARN.
-        issues.push("tracked by git");
-    }
-
-    let label = if !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked {
-        "ERROR"
-    } else if !issues.is_empty() {
-        // Only !in_exclude remains: the symlink is healthy and Git does not
-        // currently track the file, but the exclude entry is gone.  A future
-        // `git add .` could stage it, so this is a real warning.
-        "WARN"
-    } else {
-        "OK"
-    };
-
-    (label, issues)
 }
 
-/// Determine the exit code for `item status` based on the item statuses.
-///
-/// - 2: structural ERROR (broken/missing symlink, missing store item, git-tracked)
-/// - 1: WARN only (exclude entry missing)
-/// - 0: all clear
-fn classify_status_exit(statuses: &[item::ItemStatus]) -> ExitCode {
+fn status_issue_labels(status: &item::ItemStatusV2) -> Vec<String> {
+    status
+        .issues
+        .iter()
+        .map(|issue| status_issue_label(issue.code).to_string())
+        .collect()
+}
+
+/// Maps stable machine-readable issue codes to the CLI's human-readable text.
+/// Severity and issue selection stay in the core policy layer.
+fn status_issue_label(code: item::StatusIssueCode) -> &'static str {
+    match code {
+        item::StatusIssueCode::MaterializationMissing => "materialization missing",
+        item::StatusIssueCode::MaterializationInvalid => "materialization invalid",
+        item::StatusIssueCode::StoreMissing => "store item missing",
+        item::StatusIssueCode::MissingExclude => "not in exclude",
+        item::StatusIssueCode::TrackedByGit => "tracked by git",
+        item::StatusIssueCode::ContentDiverged => "content diverged",
+        item::StatusIssueCode::ContentUnreadable => "content unreadable",
+        item::StatusIssueCode::HardlinkUnsafe => "hardlink unsafe",
+        item::StatusIssueCode::PathEscape => "path escapes repository",
+        item::StatusIssueCode::UnfinishedOperationConflict => "unfinished operation conflict",
+    }
+}
+
+/// Exit codes are a direct projection of core policy severity: 0 healthy,
+/// 1 warning-only, and 2 when any error exists.
+fn classify_status_exit(statuses: &[item::ItemStatusV2]) -> ExitCode {
     let has_error = statuses
         .iter()
-        .any(|s| !s.link_exists || !s.link_valid || !s.store_exists || !s.not_tracked);
+        .any(|s| s.severity == item::StatusSeverity::Error);
     if has_error {
         return ExitCode::from(2);
     }
 
-    let has_warn = statuses.iter().any(|s| !s.in_exclude);
+    let has_warn = statuses
+        .iter()
+        .any(|s| s.severity == item::StatusSeverity::Warning);
     if has_warn {
         return ExitCode::from(1);
     }

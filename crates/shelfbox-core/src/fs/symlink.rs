@@ -41,6 +41,28 @@ pub trait LinkStrategy {
     fn read_target(&self, path: &Path) -> Result<std::path::PathBuf>;
 }
 
+impl<T: LinkStrategy + ?Sized> LinkStrategy for &T {
+    fn create(&self, target: &Path, link_path: &Path) -> Result<()> {
+        (*self).create(target, link_path)
+    }
+
+    fn remove(&self, link_path: &Path) -> Result<()> {
+        (*self).remove(link_path)
+    }
+
+    fn is_managed_link(&self, link_path: &Path, store_root: &Path) -> bool {
+        (*self).is_managed_link(link_path, store_root)
+    }
+
+    fn is_link(&self, path: &Path) -> bool {
+        (*self).is_link(path)
+    }
+
+    fn read_target(&self, path: &Path) -> Result<std::path::PathBuf> {
+        (*self).read_target(path)
+    }
+}
+
 // ── UnixSymlinkStrategy ───────────────────────────────────────────────────────
 
 /// [`LinkStrategy`] that uses Unix symbolic links.
