@@ -32,6 +32,7 @@ pub trait LinkStrategy {
     ///
     /// Unlike [`Self::is_managed_link`], this does **not** verify that the target
     /// falls inside the shelfbox store.
+    #[allow(dead_code)] // retained as a platform-neutral public link probe
     fn is_link(&self, path: &Path) -> bool;
 
     /// Returns the immediate target of the link at `path`.

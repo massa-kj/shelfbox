@@ -465,6 +465,15 @@ fn fix_symlinks(
                 data_loss_warnings.push(msg.clone());
                 actions.push(FixResult::CannotFix(msg));
             }
+            Ok(RepairOutcome::CopyDiverged) => {
+                actions.push(FixResult::CannotFix(format!(
+                    "'{}': regular copy diverges from the store; run an explicit sync",
+                    item.path
+                )));
+            }
+            Ok(RepairOutcome::DetachedDisabled) => {
+                // Detached ownership intentionally has no materialization repair.
+            }
             Ok(RepairOutcome::NotManaged) => {
                 // Should not happen (we are iterating the manifest), ignore.
             }

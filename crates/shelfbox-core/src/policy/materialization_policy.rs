@@ -98,7 +98,7 @@ pub(crate) fn evaluate_materialization_status(
         _ => None,
     };
     let notes = (actual_strategy.is_some() && actual_strategy != Some(configured_strategy))
-        .then(|| StatusNote {
+        .then_some(StatusNote {
             code: StatusNoteCode::StrategyMismatch,
         })
         .into_iter()

@@ -548,6 +548,19 @@ fn cmd_repair(
                     path.display()
                 );
             }
+            item::RepairOutcome::CopyDiverged => {
+                eprintln!(
+                    "warning: '{}' is a regular copy that differs from the store; \
+                     repair leaves it unchanged. Use an explicit sync.",
+                    path.display()
+                );
+            }
+            item::RepairOutcome::DetachedDisabled => {
+                eprintln!(
+                    "warning: '{}' is detached; item repair does not recreate detached materializations",
+                    path.display()
+                );
+            }
             item::RepairOutcome::NotManaged => {
                 eprintln!("error: '{}' is not managed by shelfbox", path.display());
             }
@@ -561,18 +574,32 @@ fn print_repair_report(report: &item::ItemRepairReport) {
         return;
     }
 
-    if let item::RepoRepairSymlinkAction::Recreate {
-        path,
-        abs_path,
-        store_path,
-    } = &report.action
-    {
-        println!("[dry-run] repair '{path}'");
-        println!(
-            "  recreate symlink {} → {}",
-            abs_path.display(),
-            store_path.display()
-        );
+    match &report.action {
+        item::RepoRepairSymlinkAction::Recreate {
+            path,
+            abs_path,
+            store_path,
+        } => {
+            println!("[dry-run] repair '{path}'");
+            println!(
+                "  recreate symlink {} → {}",
+                abs_path.display(),
+                store_path.display()
+            );
+        }
+        item::RepoRepairSymlinkAction::CreateCopy {
+            path,
+            abs_path,
+            store_path,
+        } => {
+            println!("[dry-run] repair '{path}'");
+            println!(
+                "  create regular copy {} ← {}",
+                abs_path.display(),
+                store_path.display()
+            );
+        }
+        _ => {}
     }
 }
 

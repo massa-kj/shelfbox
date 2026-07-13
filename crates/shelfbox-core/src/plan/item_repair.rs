@@ -8,6 +8,11 @@ pub enum RepairOutcome {
     AlreadyHealthy,
     /// The store-side file is missing; cannot repair without data recovery.
     StoreMissing,
+    /// A Copy materialization differs from its canonical store content.
+    /// Repair intentionally leaves it untouched; use explicit sync instead.
+    CopyDiverged,
+    /// The item is detached, so repair must not recreate a materialization.
+    DetachedDisabled,
     /// The path is not recorded in the manifest.
     NotManaged,
 }

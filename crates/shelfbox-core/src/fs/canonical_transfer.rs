@@ -411,8 +411,9 @@ impl CanonicalTransfer for DefaultCanonicalTransfer {
     fn commit(
         &mut self,
         prepared: PreparedCanonicalTransfer,
-        _permit: CommitPermit,
+        permit: CommitPermit,
     ) -> Result<CanonicalTransferCommitOutcome> {
+        permit.require_context(&prepared.context)?;
         let action = prepared
             .action
             .ok_or_else(|| AppError::Internal("missing prepared canonical action".into()))?;
@@ -506,5 +507,23 @@ mod tests {
         };
 
         assert!(format!("{action:?}").contains("snapshot: \"opaque\""));
+    }
+
+    #[test]
+    fn commit_rejects_a_permit_for_a_different_prepared_transfer() {
+        let repo = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let mut transfer =
+            DefaultCanonicalTransfer::new(repo.path().to_path_buf(), store.path().to_path_buf());
+
+        let error = transfer
+            .commit(
+                PreparedCanonicalTransfer::for_test(41),
+                CommitPermit::for_test(42),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::Internal(message) if message.contains("does not authorize"))
+        );
     }
 }

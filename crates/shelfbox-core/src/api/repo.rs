@@ -15,7 +15,9 @@ pub use crate::{
         },
     },
     plan::repo_reclaim::{CandidateState, ReclaimCandidate, ReclaimOutcome, ReclaimPlan},
-    plan::repo_repair::{RepairRepoReport, RepoRepairPlan, RepoRepairSymlinkAction},
+    plan::repo_repair::{
+        RepairRepoReport, RepoRepairAction, RepoRepairPlan, RepoRepairSymlinkAction,
+    },
     store::{
         index::{Index, RepoEntry},
         manifest::{Manifest, OwnershipState},

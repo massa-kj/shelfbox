@@ -22,6 +22,10 @@ pub(crate) enum Failpoint {
     KeepStoreManifestSaved,
     DirectionlessRelinkMaterialized,
     DirectionlessRelinkManifestSaved,
+    RepoRepairTargetExcludeUpdated,
+    /// Runs after operation-level preconditions and before the journal repeats
+    /// Git/exclude and artifact checks to authorize commit.
+    WritePreconditionsValidated,
 }
 
 /// Runs the injected hook after a mutation boundary.
@@ -32,7 +36,7 @@ pub(crate) fn after(_point: Failpoint) -> Result<()> {
 
 #[cfg(test)]
 mod test_hook {
-    use std::{cell::RefCell, mem};
+    use std::cell::RefCell;
 
     use super::*;
 
@@ -60,7 +64,7 @@ mod test_hook {
         hook: impl FnMut(&Failpoint) -> Result<()> + 'static,
     ) -> TestHookGuard {
         HOOK.with(|slot| TestHookGuard {
-            previous: mem::replace(&mut *slot.borrow_mut(), Some(Box::new(hook))),
+            previous: (*slot.borrow_mut()).replace(Box::new(hook)),
         })
     }
 
@@ -102,6 +106,8 @@ mod tests {
             Failpoint::KeepStoreManifestSaved,
             Failpoint::DirectionlessRelinkMaterialized,
             Failpoint::DirectionlessRelinkManifestSaved,
+            Failpoint::RepoRepairTargetExcludeUpdated,
+            Failpoint::WritePreconditionsValidated,
         ];
         for point in points.clone() {
             after(point).unwrap();

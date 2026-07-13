@@ -95,7 +95,12 @@ pub(crate) struct MaterializationFacts {
     pub link_count: Option<u64>,
     pub hardlink_free: bool,
     pub store_exists: bool,
+    pub store_regular: bool,
+    pub store_hardlink_free: bool,
     pub copy_content: CopyContentState,
+    /// Absolute resolved target for an unmanaged symlink/reparse point.
+    /// Operations may report it, but never use it to perform replacement.
+    pub unmanaged_symlink_target: Option<PathBuf>,
     snapshot: InspectionSnapshot,
 }
 
@@ -108,7 +113,10 @@ impl fmt::Debug for MaterializationFacts {
             .field("link_count", &self.link_count)
             .field("hardlink_free", &self.hardlink_free)
             .field("store_exists", &self.store_exists)
+            .field("store_regular", &self.store_regular)
+            .field("store_hardlink_free", &self.store_hardlink_free)
             .field("copy_content", &self.copy_content)
+            .field("unmanaged_symlink_target", &self.unmanaged_symlink_target)
             .field("snapshot", &"opaque")
             .finish()
     }
@@ -142,7 +150,10 @@ impl MaterializationFacts {
             link_count: Some(1),
             hardlink_free: true,
             store_exists: true,
+            store_regular: true,
+            store_hardlink_free: true,
             copy_content: CopyContentState::NotCompared,
+            unmanaged_symlink_target: None,
             snapshot: InspectionSnapshot::for_test(1),
         }
     }
@@ -406,16 +417,27 @@ impl PreparedMaterialization {
 enum PreparedAction {
     NoOp,
     Execute(MaterializationAction),
-    CopyCreate {
+    CopyInstall {
         location: MaterializationLocation,
+        destination: CopyDestinationExpectation,
+        expected_store: InspectionSnapshot,
         temp: AuthorizedTemp,
     },
+}
+
+/// The only destination states a prepared regular-copy install may commit
+/// over.  The expectation remains adapter-private so operations cannot turn a
+/// checked create into an unchecked replacement.
+#[derive(Clone, PartialEq, Eq)]
+enum CopyDestinationExpectation {
+    Missing,
+    Expected(ExpectedMaterialization),
 }
 
 /// Opaque authorization issued only after fresh write preconditions pass.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CommitPermit {
-    token: u64,
+    context: CommitContext,
 }
 
 impl fmt::Debug for CommitPermit {
@@ -425,13 +447,31 @@ impl fmt::Debug for CommitPermit {
 }
 
 impl CommitPermit {
-    pub(crate) fn issued() -> Self {
-        Self { token: 0 }
+    /// Issues a permit that is valid only for the prepared mutation whose
+    /// opaque context was observed by the precondition guard.
+    pub(in crate::fs) fn from_guard(guard: WritePreconditionGuard) -> Self {
+        Self {
+            context: guard.context,
+        }
+    }
+
+    /// Rejects a permit that was issued for another prepared mutation.  This
+    /// makes the prepare / revalidate / commit boundary enforceable rather
+    /// than merely documentary.
+    pub(in crate::fs) fn require_context(&self, context: &CommitContext) -> Result<()> {
+        if &self.context != context {
+            return Err(AppError::Internal(
+                "commit permit does not authorize this prepared mutation".into(),
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn for_test(token: u64) -> Self {
-        Self { token }
+        Self {
+            context: CommitContext::for_test(token),
+        }
     }
 }
 
@@ -464,6 +504,10 @@ impl WritePreconditionGuard {
     /// must evaluate immediately before a destructive commit.
     pub(crate) const fn required_checks(&self) -> &'static [WritePreconditionCheck] {
         WRITE_PRECONDITION_CHECKS
+    }
+
+    pub(in crate::fs) fn commit_context(&self) -> &CommitContext {
+        &self.context
     }
 
     pub(in crate::fs) fn for_canonical_transfer(
@@ -528,8 +572,8 @@ impl MutationJournal for NoArtifactJournal {
         Ok(())
     }
 
-    fn issue_commit_permit(&mut self, _guard: WritePreconditionGuard) -> Result<CommitPermit> {
-        Ok(CommitPermit::issued())
+    fn issue_commit_permit(&mut self, guard: WritePreconditionGuard) -> Result<CommitPermit> {
+        Ok(CommitPermit::from_guard(guard))
     }
 
     fn cleanup_prepared_artifact(&mut self, _context: CommitContext) -> Result<()> {
@@ -607,10 +651,24 @@ impl<L> DefaultMaterializer<L> {
 impl<L: LinkStrategy> DefaultMaterializer<L> {
     fn inspect_location(&self, location: &MaterializationLocation) -> Result<MaterializationFacts> {
         let (repo, store) = self.validate_location(location)?;
-        let store_exists = !matches!(
-            platform::inspect_no_follow(&store),
-            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+        let store_entry = match platform::inspect_no_follow(&store) {
+            Ok(entry) => Some(entry),
+            Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let store_exists = store_entry.is_some();
+        let store_regular = matches!(
+            store_entry,
+            Some(platform::InspectedEntry {
+                kind: platform::EntryKind::RegularFile,
+                ..
+            })
         );
+        let store_hardlink_free = store_entry
+            .map(|entry| entry.link_count <= 1)
+            .unwrap_or(true);
         let entry = match platform::inspect_no_follow(&repo) {
             Ok(entry) => entry,
             Err(AppError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -620,26 +678,36 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
                     link_count: None,
                     hardlink_free: true,
                     store_exists,
+                    store_regular,
+                    store_hardlink_free,
                     copy_content: CopyContentState::NotCompared,
+                    unmanaged_symlink_target: None,
                     snapshot: InspectionSnapshot::from_entry(None),
                 });
             }
             Err(error) => return Err(error),
         };
 
-        let repo_entry_kind = match entry.kind {
-            platform::EntryKind::RegularFile => RepoEntryKind::RegularFile,
-            platform::EntryKind::Directory => RepoEntryKind::Directory,
-            platform::EntryKind::Other => RepoEntryKind::Other,
+        let (repo_entry_kind, unmanaged_symlink_target) = match entry.kind {
+            platform::EntryKind::RegularFile => (RepoEntryKind::RegularFile, None),
+            platform::EntryKind::Directory => (RepoEntryKind::Directory, None),
+            platform::EntryKind::Other => (RepoEntryKind::Other, None),
             platform::EntryKind::SymlinkOrReparsePoint => {
-                if self.is_expected_managed_link(&repo, &store) {
-                    RepoEntryKind::ManagedSymlink
+                let target = self.inspect_link_target(&repo)?;
+                // Both paths were containment-checked before this method is
+                // called. Canonicalization accepts an expected relative link
+                // without exposing platform-specific link mechanics to ops.
+                if target.canonicalize().ok() == store.canonicalize().ok() {
+                    (RepoEntryKind::ManagedSymlink, None)
                 } else {
-                    RepoEntryKind::UnmanagedSymlinkOrReparsePoint
+                    (RepoEntryKind::UnmanagedSymlinkOrReparsePoint, Some(target))
                 }
             }
         };
-        let copy_content = if repo_entry_kind == RepoEntryKind::RegularFile && store_exists {
+        let copy_content = if repo_entry_kind == RepoEntryKind::RegularFile
+            && store_regular
+            && store_hardlink_free
+        {
             match secure_transfer::compare_regular_files(&repo, &store) {
                 Ok(true) => CopyContentState::Equal,
                 Ok(false) => CopyContentState::Diverged,
@@ -654,27 +722,22 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
             link_count: Some(entry.link_count),
             hardlink_free: entry.link_count <= 1,
             store_exists,
+            store_regular,
+            store_hardlink_free,
             copy_content,
+            unmanaged_symlink_target,
             snapshot: InspectionSnapshot::from_entry(Some(entry)),
         })
     }
 
-    fn is_expected_managed_link(&self, link_path: &Path, expected_store: &Path) -> bool {
-        if !self.link.is_link(link_path) {
-            return false;
-        }
-        let Ok(target) = self.link.read_target(link_path) else {
-            return false;
-        };
+    fn inspect_link_target(&self, link_path: &Path) -> Result<PathBuf> {
+        let target = self.link.read_target(link_path)?;
         let target = if target.is_absolute() {
             target
         } else {
             link_path.parent().unwrap_or(&self.repo_root).join(target)
         };
-        // Both paths were containment-checked before this method is called.
-        // Canonicalization makes a relative managed link compare equal without
-        // treating any other store entry as the expected item.
-        target.canonicalize().ok() == expected_store.canonicalize().ok()
+        Ok(target)
     }
 
     fn execute(&self, action: MaterializationAction) -> Result<MaterializationCommitOutcome> {
@@ -683,6 +746,12 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
             MaterializationAction::Create { location, strategy } => {
                 let (repo, store) = self.validate_location(&location)?;
                 self.ensure_missing(&repo)?;
+                if strategy == MaterializationStrategy::Copy {
+                    return Err(AppError::Internal(
+                        "regular-copy materialization must be prepared through a mutation journal"
+                            .into(),
+                    ));
+                }
                 self.create(&store, &repo, strategy)?;
                 Ok(MaterializationCommitOutcome::Applied)
             }
@@ -693,6 +762,12 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
             } => {
                 let (repo, store) = self.validate_location(&location)?;
                 self.ensure_expected(&repo, &expected)?;
+                if strategy == MaterializationStrategy::Copy {
+                    return Err(AppError::Internal(
+                        "regular-copy materialization must be prepared through a mutation journal"
+                            .into(),
+                    ));
+                }
                 self.replace(&store, &repo, strategy)?;
                 Ok(MaterializationCommitOutcome::Applied)
             }
@@ -703,16 +778,11 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
                 Ok(MaterializationCommitOutcome::Applied)
             }
             MaterializationAction::RestoreToRegular { location, expected } => {
-                let (repo, store) = self.validate_location(&location)?;
+                let (repo, _) = self.validate_location(&location)?;
                 self.ensure_expected(&repo, &expected)?;
-                secure_transfer::copy_replace(
-                    &self.store_root,
-                    &store,
-                    &self.repo_root,
-                    &repo,
-                    secure_transfer::PermissionMode::FromSource,
-                )?;
-                Ok(MaterializationCommitOutcome::Applied)
+                Err(AppError::Internal(
+                    "regular-copy restoration must be prepared through a mutation journal".into(),
+                ))
             }
         }
     }
@@ -742,41 +812,71 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
     }
 
     fn create(&self, store: &Path, repo: &Path, strategy: MaterializationStrategy) -> Result<()> {
-        match strategy {
-            MaterializationStrategy::Symlink => self.link.create(store, repo),
-            MaterializationStrategy::Copy => secure_transfer::copy_replace(
-                &self.store_root,
-                store,
-                &self.repo_root,
-                repo,
-                secure_transfer::PermissionMode::FromSource,
-            ),
-        }
+        debug_assert_eq!(strategy, MaterializationStrategy::Symlink);
+        self.link.create(store, repo)
     }
 
     fn replace(&self, store: &Path, repo: &Path, strategy: MaterializationStrategy) -> Result<()> {
         // Copy replacement is already atomic.  A symlink is prepared beside
         // its destination and atomically installed through the platform port.
-        match strategy {
-            MaterializationStrategy::Copy => secure_transfer::copy_replace(
-                &self.store_root,
-                store,
-                &self.repo_root,
-                repo,
-                secure_transfer::PermissionMode::FromSource,
-            ),
-            MaterializationStrategy::Symlink => {
-                let parent = repo
-                    .parent()
-                    .ok_or_else(|| AppError::UnsafeFilesystemEntry {
-                        path: repo.to_path_buf(),
-                        reason: "destination has no parent",
-                    })?;
-                let temp = parent.join(format!(".shelfbox-link-{}.tmp", ulid::Ulid::new()));
-                self.link.create(store, &temp)?;
-                platform::atomic_replace(&temp, repo)
+        debug_assert_eq!(strategy, MaterializationStrategy::Symlink);
+        let parent = repo
+            .parent()
+            .ok_or_else(|| AppError::UnsafeFilesystemEntry {
+                path: repo.to_path_buf(),
+                reason: "destination has no parent",
+            })?;
+        let temp = parent.join(format!(".shelfbox-link-{}.tmp", ulid::Ulid::new()));
+        self.link.create(store, &temp)?;
+        platform::atomic_replace(&temp, repo)
+    }
+
+    fn prepare_copy_install(
+        &self,
+        location: MaterializationLocation,
+        destination: CopyDestinationExpectation,
+        journal: &mut dyn MutationJournal,
+    ) -> Result<PreparedMaterialization> {
+        let (repo, store) = self.validate_location(&location)?;
+        match &destination {
+            CopyDestinationExpectation::Missing => self.ensure_missing(&repo)?,
+            CopyDestinationExpectation::Expected(expected) => {
+                self.ensure_expected(&repo, expected)?
             }
         }
+
+        // Capture the canonical source identity before plaintext population.
+        // Commit compares this opaque snapshot again, so an external store
+        // replacement or new hardlink cannot be silently materialized.
+        let store_entry = platform::inspect_no_follow(&store)?;
+        if store_entry.kind != platform::EntryKind::RegularFile || store_entry.link_count > 1 {
+            return Err(AppError::UnsafeFilesystemEntry {
+                path: store,
+                reason: "copy source is not an isolated regular file",
+            });
+        }
+        let expected_store = InspectionSnapshot::from_entry(Some(store_entry));
+
+        let lease = journal.acquire_artifact_lease(ArtifactScope::RepoSide)?;
+        let writable = journal.authorize_plaintext_write(lease)?;
+        let temp = writable.authorized_temp()?.clone();
+        secure_transfer::populate_authorized_temp(
+            &self.store_root,
+            &store,
+            temp.path(),
+            temp.identity(),
+            secure_transfer::PermissionMode::FromSource,
+        )?;
+        let (context, _) = writable.into_parts();
+        Ok(PreparedMaterialization {
+            context,
+            action: PreparedAction::CopyInstall {
+                location,
+                destination,
+                expected_store,
+                temp,
+            },
+        })
     }
 }
 
@@ -794,25 +894,18 @@ impl<L: LinkStrategy> Materializer for DefaultMaterializer<L> {
             MaterializationAction::Create {
                 location,
                 strategy: MaterializationStrategy::Copy,
-            } => {
-                let (repo, store) = self.validate_location(&location)?;
-                self.ensure_missing(&repo)?;
-                let lease = journal.acquire_artifact_lease(ArtifactScope::RepoSide)?;
-                let writable = journal.authorize_plaintext_write(lease)?;
-                let temp = writable.authorized_temp()?.clone();
-                secure_transfer::populate_authorized_temp(
-                    &self.store_root,
-                    &store,
-                    temp.path(),
-                    temp.identity(),
-                    secure_transfer::PermissionMode::FromSource,
-                )?;
-                let (context, _) = writable.into_parts();
-                Ok(PreparedMaterialization {
-                    context,
-                    action: PreparedAction::CopyCreate { location, temp },
-                })
+            } => self.prepare_copy_install(location, CopyDestinationExpectation::Missing, journal),
+            MaterializationAction::Replace {
+                location,
+                strategy: MaterializationStrategy::Copy,
+                expected,
             }
+            | MaterializationAction::RestoreToRegular { location, expected } => self
+                .prepare_copy_install(
+                    location,
+                    CopyDestinationExpectation::Expected(expected),
+                    journal,
+                ),
             action => Ok(PreparedMaterialization {
                 // Symlink creation contains no plaintext temporary artifact.
                 context: CommitContext::for_non_artifact(),
@@ -824,14 +917,30 @@ impl<L: LinkStrategy> Materializer for DefaultMaterializer<L> {
     fn commit(
         &mut self,
         prepared: PreparedMaterialization,
-        _permit: CommitPermit,
+        permit: CommitPermit,
     ) -> Result<MaterializationCommitOutcome> {
+        permit.require_context(&prepared.context)?;
         let outcome = match prepared.action {
             PreparedAction::NoOp => Ok(MaterializationCommitOutcome::NoOp),
             PreparedAction::Execute(action) => self.execute(action),
-            PreparedAction::CopyCreate { location, temp } => {
-                let (repo, _) = self.validate_location(&location)?;
-                self.ensure_missing(&repo)?;
+            PreparedAction::CopyInstall {
+                location,
+                destination,
+                expected_store,
+                temp,
+            } => {
+                let (repo, store) = self.validate_location(&location)?;
+                let actual_store =
+                    InspectionSnapshot::from_entry(Some(platform::inspect_no_follow(&store)?));
+                if actual_store != expected_store {
+                    return Err(AppError::FilesystemEntryChanged { path: store });
+                }
+                match destination {
+                    CopyDestinationExpectation::Missing => self.ensure_missing(&repo)?,
+                    CopyDestinationExpectation::Expected(expected) => {
+                        self.ensure_expected(&repo, &expected)?
+                    }
+                }
                 secure_transfer::commit_authorized_temp(
                     &self.repo_root,
                     temp.path(),
@@ -918,6 +1027,46 @@ mod tests {
             FinalComponentInspection::InspectedWithoutFollowing
         );
         assert!(facts.hardlink_free);
+    }
+
+    #[test]
+    fn commit_rejects_a_permit_for_a_different_prepared_mutation() {
+        let repo = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let mut materializer =
+            DefaultMaterializer::new(repo.path().to_path_buf(), store.path().to_path_buf());
+
+        let error = materializer
+            .commit(
+                PreparedMaterialization::for_test(41),
+                CommitPermit::for_test(42),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::Internal(message) if message.contains("does not authorize"))
+        );
+    }
+
+    #[test]
+    fn copy_prepare_fails_closed_without_a_durable_artifact_journal() {
+        let repo = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        std::fs::create_dir(store.path().join("items")).unwrap();
+        std::fs::write(store.path().join("items/secret.env"), "secret").unwrap();
+        let mut materializer =
+            DefaultMaterializer::new(repo.path().to_path_buf(), store.path().to_path_buf());
+        let action = MaterializationAction::Create {
+            location: MaterializationLocation::new(
+                "secret.env".parse().unwrap(),
+                "items/secret.env".parse().unwrap(),
+            ),
+            strategy: MaterializationStrategy::Copy,
+        };
+
+        assert!(materializer
+            .prepare(action, &mut NoArtifactJournal)
+            .is_err());
+        assert!(!repo.path().join("secret.env").exists());
     }
 
     #[test]

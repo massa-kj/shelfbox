@@ -23,6 +23,7 @@ const BUFFER_SIZE: usize = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermissionMode {
     FromSource,
+    #[cfg(all(test, unix))]
     PreserveDestination,
 }
 
@@ -105,6 +106,10 @@ pub(crate) fn compare_regular_files(left: &Path, right: &Path) -> Result<bool> {
 
 /// Copy an isolated source through a private create-new temp and atomically
 /// replace the destination. Existing destinations are never deleted first.
+///
+/// The production copy path uses the write-ahead artifact protocol below;
+/// this direct helper remains only to regression-test the platform primitive.
+#[cfg(test)]
 pub(crate) fn copy_replace(
     source_root: &Path,
     source: &Path,
@@ -154,6 +159,7 @@ pub(crate) fn copy_replace(
                     .permissions(),
             )
             .map_err(|e| AppError::io(temp.path(), e))?,
+        #[cfg(all(test, unix))]
         PermissionMode::PreserveDestination => {
             if let Ok(metadata) = fs::metadata(destination) {
                 temp.file_mut()
@@ -166,6 +172,7 @@ pub(crate) fn copy_replace(
     temp.commit(destination)
 }
 
+#[cfg(all(test, unix))]
 pub(crate) fn copy_replace_then_remove_source(
     source_root: &Path,
     source: &Path,
@@ -225,6 +232,7 @@ pub(crate) fn populate_authorized_temp(
                     .permissions(),
             )
             .map_err(|e| AppError::io(temp, e))?,
+        #[cfg(all(test, unix))]
         PermissionMode::PreserveDestination => {}
     }
     output.sync_all().map_err(|e| AppError::io(temp, e))?;
@@ -329,12 +337,14 @@ fn stream_copy(source: &mut File, destination: &mut File, source_path: &Path) ->
 
 /// A private, empty, create-new temp file. Phase 5 records its identity before
 /// granting the caller permission to place plaintext in it.
+#[cfg(test)]
 pub(crate) struct PrivateTemp {
     path: PathBuf,
     file: Option<File>,
     identity: platform::FileIdentity,
     committed: bool,
 }
+#[cfg(test)]
 impl PrivateTemp {
     fn create(parent: &Path, destination_name: &std::ffi::OsStr) -> Result<Self> {
         for _ in 0..64 {
@@ -391,12 +401,14 @@ impl PrivateTemp {
 /// Allocates an empty private temp without writing plaintext. Keeping this
 /// separate from transfer execution is required for the durable artifact-lease
 /// protocol introduced in Phase 5.
+#[cfg(test)]
 pub(crate) fn create_empty_private_temp(
     parent: &Path,
     destination_name: &std::ffi::OsStr,
 ) -> Result<PrivateTemp> {
     PrivateTemp::create(parent, destination_name)
 }
+#[cfg(test)]
 impl Drop for PrivateTemp {
     fn drop(&mut self) {
         if !self.committed

@@ -408,6 +408,9 @@ fn validate_add_transfer_preconditions(
             "managed add exclude was removed before transfer".into(),
         ));
     }
+    // Test hooks may mutate Git/exclude state here. The journal must detect
+    // that change again before it issues the permit consumed by commit.
+    failpoint::after(Failpoint::WritePreconditionsValidated)?;
     Ok(())
 }
 
@@ -432,6 +435,8 @@ fn validate_add_materialization_preconditions(
             path: plan.abs_path.clone(),
         });
     }
+    // See the corresponding transfer precondition boundary above.
+    failpoint::after(Failpoint::WritePreconditionsValidated)?;
     Ok(())
 }
 

@@ -520,6 +520,13 @@ fn print_repo_repair_report(report: &repo::RepairRepoReport, dry_run: bool) {
     for (path, reason) in &report.symlinks_failed {
         eprintln!("    failed {path}: {reason}");
     }
+    for action in &report.plan.symlink_actions {
+        if let repo::RepoRepairSymlinkAction::CopyDiverged { path } = action {
+            eprintln!(
+                "    warning {path}: regular copy differs from the store; repair left it unchanged"
+            );
+        }
+    }
     println!(
         "  exclude: {}",
         repair_change_label(report.exclude_updated, dry_run)
@@ -536,18 +543,32 @@ fn print_repo_repair_report(report: &repo::RepairRepoReport, dry_run: bool) {
 
 fn print_repo_repair_dry_run_plan(plan: &repo::RepoRepairPlan) {
     for action in &plan.symlink_actions {
-        if let repo::RepoRepairSymlinkAction::Recreate {
-            path,
-            abs_path,
-            store_path,
-        } = action
-        {
-            println!("[dry-run] repair '{path}'");
-            println!(
-                "  recreate symlink {} → {}",
-                abs_path.display(),
-                store_path.display()
-            );
+        match action {
+            repo::RepoRepairSymlinkAction::Recreate {
+                path,
+                abs_path,
+                store_path,
+            } => {
+                println!("[dry-run] repair '{path}'");
+                println!(
+                    "  recreate symlink {} → {}",
+                    abs_path.display(),
+                    store_path.display()
+                );
+            }
+            repo::RepoRepairSymlinkAction::CreateCopy {
+                path,
+                abs_path,
+                store_path,
+            } => {
+                println!("[dry-run] repair '{path}'");
+                println!(
+                    "  create regular copy {} ← {}",
+                    abs_path.display(),
+                    store_path.display()
+                );
+            }
+            _ => {}
         }
     }
 }

@@ -32,6 +32,7 @@ use crate::{
         permissions::{self, ParentDirMode},
         secure_transfer,
     },
+    git,
     ignore::IgnoreBackend,
     storage::operation_record_store,
 };
@@ -114,6 +115,82 @@ impl<'a> AddMutationJournal<'a> {
                 "add mutation journal requires an operation record".into(),
             )),
         }
+    }
+
+    fn operation(&self) -> Result<&crate::domain::operation_record::OperationRecord> {
+        match &self.operation.record {
+            RecoveryRecordKind::Operation(operation) => Ok(operation),
+            RecoveryRecordKind::Artifact(_) => Err(AppError::Internal(
+                "add mutation journal requires an operation record".into(),
+            )),
+        }
+    }
+
+    /// Revalidates every condition that this journal can observe immediately
+    /// before issuing a permit.  The transfer/materializer commit then checks
+    /// the opaque identity snapshots bound to that permit.  Git and exclude
+    /// state are deliberately checked again here because neither is part of
+    /// the filesystem atomic-replace primitive.
+    fn validate_commit_preconditions(&self, guard: &WritePreconditionGuard) -> Result<()> {
+        let operation = self.operation()?;
+        secure_transfer::validate_parent_path(self.repo_root, &self.repo_destination)?;
+        secure_transfer::validate_parent_path(self.store_root, &self.store_destination)?;
+
+        if git::is_tracked(self.repo_root, &self.repo_destination)? {
+            return Err(AppError::PathIsTracked {
+                path: self.repo_destination.clone(),
+            });
+        }
+        let repo_path = operation.pre_state.repo_path.as_ref().ok_or_else(|| {
+            AppError::Internal("add operation is missing its repository path pre-state".into())
+        })?;
+        if !self.ignore.has_entry(self.repo_root, repo_path.as_str())? {
+            return Err(AppError::Internal(
+                "managed add exclude was removed before commit authorization".into(),
+            ));
+        }
+
+        for active in self.artifacts.values() {
+            let RecoveryRecordKind::Artifact(artifact) = &active.record.record else {
+                unreachable!()
+            };
+            if let Some(exclude) = &artifact.repo_temp_exclude {
+                if exclude.added_by_operation
+                    && exclude.verified
+                    && !self
+                        .ignore
+                        .has_entry(self.repo_root, exclude.path.as_str())?
+                {
+                    return Err(AppError::Internal(
+                        "managed temporary exclude was removed before commit authorization".into(),
+                    ));
+                }
+            }
+        }
+
+        let token = guard.commit_context().artifact_token();
+        if token != 0 {
+            let active = self.artifacts.get(&token).ok_or_else(|| {
+                AppError::Internal("commit guard references an unknown artifact lease".into())
+            })?;
+            let RecoveryRecordKind::Artifact(artifact) = &active.record.record else {
+                unreachable!()
+            };
+            if !matches!(
+                artifact.state,
+                ArtifactState::Created {
+                    plaintext_authorized: true,
+                    ..
+                }
+            ) || active.native_identity.is_none()
+            {
+                return Err(AppError::Internal(
+                    "commit guard references an artifact without durable plaintext authorization"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn reserve_artifact(&mut self, scope: ArtifactScope) -> Result<ArtifactLease> {
@@ -298,12 +375,289 @@ impl MutationJournal for AddMutationJournal<'_> {
     }
 
     fn issue_commit_permit(&mut self, guard: WritePreconditionGuard) -> Result<CommitPermit> {
-        // The add workflow obtains a fresh materializer/transfer inspection,
-        // rechecks Git and excludes, then asks for this permit immediately
-        // before commit. Keeping the opaque guard consumed here prevents an
-        // operation from carrying a raw identity snapshot across the boundary.
+        // The operation supplies fresh no-follow facts, while the journal
+        // performs the Git/exclude and durable-artifact half of D5 again at
+        // the authorization boundary.  The resulting permit is accepted only
+        // by the prepared mutation whose opaque context it carries.
         let _ = guard.required_checks();
-        Ok(CommitPermit::issued())
+        self.validate_commit_preconditions(&guard)?;
+        Ok(CommitPermit::from_guard(guard))
+    }
+
+    fn cleanup_prepared_artifact(&mut self, context: CommitContext) -> Result<()> {
+        if context.artifact_token() == 0 {
+            return Ok(());
+        }
+        self.cleanup_token(context.artifact_token())
+    }
+}
+
+/// Artifact-only journal for repair operations.
+///
+/// Repair deliberately has no high-level ownership transaction: it either
+/// recreates a missing materialization or leaves existing user content alone.
+/// A regular-copy repair still needs the complete D5 temp protocol, so this
+/// journal persists independent recovery-artifact records without inventing a
+/// misleading add/move operation record.
+pub(crate) struct RepairMutationJournal<'a> {
+    store_root: &'a Path,
+    repo_root: &'a Path,
+    ignore: &'a dyn IgnoreBackend,
+    repo_id: String,
+    target_exclude: String,
+    repo_destination: PathBuf,
+    store_destination: PathBuf,
+    next_token: u64,
+    artifacts: BTreeMap<u64, ActiveArtifact>,
+}
+
+impl<'a> RepairMutationJournal<'a> {
+    pub(crate) fn new(
+        store_root: &'a Path,
+        repo_root: &'a Path,
+        ignore: &'a dyn IgnoreBackend,
+        repo_id: impl Into<String>,
+        target_exclude: impl Into<String>,
+        repo_destination: PathBuf,
+        store_destination: PathBuf,
+    ) -> Self {
+        Self {
+            store_root,
+            repo_root,
+            ignore,
+            repo_id: repo_id.into(),
+            target_exclude: target_exclude.into(),
+            repo_destination,
+            store_destination,
+            next_token: 1,
+            artifacts: BTreeMap::new(),
+        }
+    }
+
+    /// Removes only identity-matching temps after the caller has validated
+    /// the final materialization.  A failure leaves the durable artifact
+    /// record for the normal recovery gate instead of guessing at cleanup.
+    pub(crate) fn cleanup_all(&mut self) -> Result<()> {
+        let tokens: Vec<u64> = self.artifacts.keys().copied().collect();
+        for token in tokens {
+            self.cleanup_token(token)?;
+        }
+        Ok(())
+    }
+
+    fn reserve_artifact(&mut self, scope: ArtifactScope) -> Result<ArtifactLease> {
+        let (root, destination) = match scope {
+            ArtifactScope::RepoSide => (self.repo_root, &self.repo_destination),
+            ArtifactScope::StoreSide => (self.store_root, &self.store_destination),
+        };
+        permissions::ensure_parent_dir(destination, ParentDirMode::Default)?;
+        secure_transfer::validate_parent_path(root, destination)?;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| AppError::UnsafeFilesystemEntry {
+                path: destination.clone(),
+                reason: "artifact destination has no parent",
+            })?;
+        let temp_path = secure_transfer::allocate_private_temp_path(
+            parent,
+            destination.file_name().unwrap_or_default(),
+        )?;
+        let token = self.next_token;
+        self.next_token += 1;
+        let location = artifact_location(scope, root, &temp_path)?;
+        let repo_temp_exclude = match &location {
+            ArtifactLocation::Repo { path, .. } => Some(RepoTempExclude {
+                path: path.clone(),
+                added_by_operation: true,
+                verified: false,
+            }),
+            ArtifactLocation::Store { .. } => None,
+        };
+        let mut record = RecoveryRecord {
+            schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            record_id: Ulid::new().to_string(),
+            created_at: crate::context::now_iso8601(),
+            record: RecoveryRecordKind::Artifact(ArtifactRecord {
+                repo_id: self.repo_id.clone(),
+                scope,
+                location,
+                state: ArtifactState::Planned,
+                repo_temp_exclude,
+            }),
+        };
+        operation_record_store::create(self.store_root, &record)?;
+
+        if scope == ArtifactScope::RepoSide {
+            let RecoveryRecordKind::Artifact(artifact) = &mut record.record else {
+                unreachable!()
+            };
+            let Some(exclude) = &mut artifact.repo_temp_exclude else {
+                unreachable!()
+            };
+            self.ignore
+                .add_entries(self.repo_root, &[exclude.path.as_str()])?;
+            failpoint::after(Failpoint::PersistentMutation(
+                PersistentMutation::RepoTempExclude,
+            ))?;
+            if !self
+                .ignore
+                .has_entry(self.repo_root, exclude.path.as_str())?
+            {
+                return Err(AppError::Internal(
+                    "managed temporary exclude was not persisted".into(),
+                ));
+            }
+            exclude.verified = true;
+            operation_record_store::update(self.store_root, &record)?;
+        }
+
+        self.artifacts.insert(
+            token,
+            ActiveArtifact {
+                record,
+                path: temp_path,
+                native_identity: None,
+            },
+        );
+        Ok(ArtifactLease::from_journal(scope, token))
+    }
+
+    fn authorize(&mut self, lease: ArtifactLease) -> Result<WritableArtifactLease> {
+        let token = lease.token();
+        let active = self
+            .artifacts
+            .get_mut(&token)
+            .ok_or_else(|| AppError::Internal("unknown artifact lease".into()))?;
+        if active.native_identity.is_some() {
+            return Err(AppError::Internal(
+                "artifact lease was already authorized".into(),
+            ));
+        }
+        let native_identity = secure_transfer::create_empty_private_temp_at(&active.path)?;
+        failpoint::after(Failpoint::PersistentMutation(
+            PersistentMutation::EmptyTempCreation,
+        ))?;
+        let durable_identity = operation_record_store::identity_from_path(&active.path)?;
+        let RecoveryRecordKind::Artifact(artifact) = &mut active.record.record else {
+            unreachable!()
+        };
+        artifact.state = ArtifactState::Created {
+            identity: durable_identity,
+            plaintext_authorized: true,
+        };
+        operation_record_store::update(self.store_root, &active.record)?;
+        failpoint::after(Failpoint::PersistentMutation(
+            PersistentMutation::TempIdentityRecord,
+        ))?;
+        active.native_identity = Some(native_identity);
+        Ok(WritableArtifactLease::from_authorized_temp(
+            token,
+            active.path.clone(),
+            native_identity,
+        ))
+    }
+
+    fn validate_commit_preconditions(&self, guard: &WritePreconditionGuard) -> Result<()> {
+        secure_transfer::validate_parent_path(self.repo_root, &self.repo_destination)?;
+        secure_transfer::validate_parent_path(self.store_root, &self.store_destination)?;
+        if git::is_tracked(self.repo_root, &self.repo_destination)? {
+            return Err(AppError::PathIsTracked {
+                path: self.repo_destination.clone(),
+            });
+        }
+        if !self
+            .ignore
+            .has_entry(self.repo_root, self.target_exclude.as_str())?
+        {
+            return Err(AppError::Internal(
+                "managed repair exclude was removed before commit authorization".into(),
+            ));
+        }
+        for active in self.artifacts.values() {
+            let RecoveryRecordKind::Artifact(artifact) = &active.record.record else {
+                unreachable!()
+            };
+            if let Some(exclude) = &artifact.repo_temp_exclude {
+                if exclude.added_by_operation
+                    && exclude.verified
+                    && !self
+                        .ignore
+                        .has_entry(self.repo_root, exclude.path.as_str())?
+                {
+                    return Err(AppError::Internal(
+                        "managed temporary exclude was removed before commit authorization".into(),
+                    ));
+                }
+            }
+        }
+        let token = guard.commit_context().artifact_token();
+        if token != 0 {
+            let active = self.artifacts.get(&token).ok_or_else(|| {
+                AppError::Internal("commit guard references an unknown artifact lease".into())
+            })?;
+            let RecoveryRecordKind::Artifact(artifact) = &active.record.record else {
+                unreachable!()
+            };
+            if !matches!(
+                artifact.state,
+                ArtifactState::Created {
+                    plaintext_authorized: true,
+                    ..
+                }
+            ) || active.native_identity.is_none()
+            {
+                return Err(AppError::Internal(
+                    "commit guard references an artifact without durable plaintext authorization"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_token(&mut self, token: u64) -> Result<()> {
+        let Some(active) = self.artifacts.remove(&token) else {
+            return Ok(());
+        };
+        let RecoveryRecordKind::Artifact(artifact) = &active.record.record else {
+            unreachable!()
+        };
+        operation_record_store::cleanup_artifact(
+            self.store_root,
+            self.repo_root,
+            &active.record.record_id,
+            artifact,
+        )?;
+        if let Some(exclude) = &artifact.repo_temp_exclude {
+            if exclude.added_by_operation && exclude.verified {
+                self.ignore
+                    .remove_entries(self.repo_root, &[exclude.path.as_str()])?;
+            }
+        }
+        operation_record_store::remove(self.store_root, &active.record.record_id)?;
+        failpoint::after(Failpoint::PersistentMutation(
+            PersistentMutation::ArtifactRecordDelete,
+        ))
+    }
+}
+
+impl MutationJournal for RepairMutationJournal<'_> {
+    fn acquire_artifact_lease(&mut self, scope: ArtifactScope) -> Result<ArtifactLease> {
+        self.reserve_artifact(scope)
+    }
+
+    fn authorize_plaintext_write(&mut self, lease: ArtifactLease) -> Result<WritableArtifactLease> {
+        self.authorize(lease)
+    }
+
+    fn record_phase(&mut self, _phase: DurableOperationPhase) -> Result<()> {
+        Ok(())
+    }
+
+    fn issue_commit_permit(&mut self, guard: WritePreconditionGuard) -> Result<CommitPermit> {
+        let _ = guard.required_checks();
+        self.validate_commit_preconditions(&guard)?;
+        Ok(CommitPermit::from_guard(guard))
     }
 
     fn cleanup_prepared_artifact(&mut self, context: CommitContext) -> Result<()> {

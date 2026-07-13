@@ -127,6 +127,32 @@ impl GitInfoExclude {
         }
     }
 
+    /// Parses the shelfbox-managed block only when its delimiter structure is
+    /// unambiguous.  Mutating an exclude file with a half-written or duplicate
+    /// managed block could silently discard user-managed paths, so callers
+    /// must fail closed instead of treating it as an ordinary no-block file.
+    fn parse_checked(contents: &str) -> Result<(String, Vec<String>, String)> {
+        let begins = contents.match_indices(BLOCK_BEGIN).count();
+        let ends = contents.match_indices(BLOCK_END).count();
+        match (begins, ends) {
+            (0, 0) => Ok(Self::parse(contents)),
+            (1, 1) => {
+                let begin = contents.find(BLOCK_BEGIN).expect("count checked");
+                let end = contents.find(BLOCK_END).expect("count checked");
+                if begin < end {
+                    Ok(Self::parse(contents))
+                } else {
+                    Err(AppError::Internal(
+                        "shelfbox managed exclude block has inverted delimiters".into(),
+                    ))
+                }
+            }
+            _ => Err(AppError::Internal(
+                "shelfbox managed exclude block is malformed".into(),
+            )),
+        }
+    }
+
     /// Serialises `before`, `managed`, `after` back to a file string.
     ///
     /// If `managed` is empty the block markers are omitted entirely so we
@@ -175,15 +201,24 @@ impl GitInfoExclude {
     /// `new_entries`, ignoring order and duplicates.
     pub fn entries_match(&self, repo_root: &Path, new_entries: Vec<String>) -> Result<bool> {
         let contents = Self::read(repo_root)?;
-        let (_, managed, _) = Self::parse(&contents);
+        let (_, managed, _) = Self::parse_checked(&contents)?;
 
         Ok(Self::sorted_entries(managed) == Self::sorted_entries(new_entries))
+    }
+
+    /// Returns the exact current shelfbox-managed entries after validating the
+    /// block shape.  Repo repair uses this observation to preserve the one
+    /// detached/missing case that was already explicitly excluded by users.
+    pub fn managed_entries(&self, repo_root: &Path) -> Result<Vec<String>> {
+        let contents = Self::read(repo_root)?;
+        let (_, entries, _) = Self::parse_checked(&contents)?;
+        Ok(Self::sorted_entries(entries))
     }
 
     /// Updates the managed block with `new_entries` (fully replaces current entries).
     pub fn update_entries(&self, repo_root: &Path, new_entries: Vec<String>) -> Result<()> {
         let contents = Self::read(repo_root)?;
-        let (before, _, after) = Self::parse(&contents);
+        let (before, _, after) = Self::parse_checked(&contents)?;
 
         // Sort for deterministic output (easier to review diffs).
         let sorted = Self::sorted_entries(new_entries);
@@ -196,7 +231,7 @@ impl GitInfoExclude {
 impl IgnoreBackend for GitInfoExclude {
     fn add_entries(&self, repo_root: &Path, entries: &[&str]) -> Result<()> {
         let contents = Self::read(repo_root)?;
-        let (before, mut managed, after) = Self::parse(&contents);
+        let (before, mut managed, after) = Self::parse_checked(&contents)?;
 
         for entry in entries {
             let e = entry.to_string();
@@ -212,7 +247,7 @@ impl IgnoreBackend for GitInfoExclude {
 
     fn remove_entries(&self, repo_root: &Path, entries: &[&str]) -> Result<()> {
         let contents = Self::read(repo_root)?;
-        let (before, mut managed, after) = Self::parse(&contents);
+        let (before, mut managed, after) = Self::parse_checked(&contents)?;
 
         managed.retain(|e| !entries.contains(&e.as_str()));
 
@@ -222,7 +257,7 @@ impl IgnoreBackend for GitInfoExclude {
 
     fn has_entry(&self, repo_root: &Path, entry: &str) -> Result<bool> {
         let contents = Self::read(repo_root)?;
-        let (_, managed, _) = Self::parse(&contents);
+        let (_, managed, _) = Self::parse_checked(&contents)?;
         Ok(managed.iter().any(|e| e == entry))
     }
 }
@@ -432,5 +467,20 @@ mod tests {
             contents.ends_with("# END shelfbox\n"),
             "trailing newlines accumulated; file contents: {contents:?}"
         );
+    }
+
+    #[test]
+    fn malformed_managed_block_is_never_rewritten() {
+        let dir = TempDir::new().unwrap();
+        setup_git_dir(dir.path());
+        let path = GitInfoExclude::exclude_path(dir.path());
+        let malformed = "# BEGIN shelfbox\nsecret.env\n";
+        std::fs::write(&path, malformed).unwrap();
+
+        assert!(backend().add_entries(dir.path(), &["other.env"]).is_err());
+        assert!(backend()
+            .update_entries(dir.path(), vec!["other.env".into()])
+            .is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), malformed);
     }
 }

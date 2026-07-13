@@ -20,7 +20,7 @@ pub use crate::{
         item_relink::{ItemRelinkPlan, ItemRelinkReport},
         item_repair::{ItemRepairReport, RepairOutcome},
         item_restore::{ItemRestoreAction, ItemRestorePlan, ItemRestoreReport},
-        repo_repair::RepoRepairSymlinkAction,
+        repo_repair::{RepoRepairAction, RepoRepairSymlinkAction},
     },
     store::manifest::Item,
 };
