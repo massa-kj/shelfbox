@@ -392,6 +392,72 @@ impl MutationJournal for AddMutationJournal<'_> {
     }
 }
 
+/// Durable operation journal for explicit content synchronization.
+///
+/// Sync shares the D5 artifact protocol and Git/exclude authorization checks
+/// with add, but its enclosing operation record has a different recovery
+/// truth table.  This small wrapper deliberately exposes only the checkpoints
+/// that make sense for a one-direction content replacement.
+pub(crate) struct SyncMutationJournal<'a> {
+    inner: AddMutationJournal<'a>,
+}
+
+impl<'a> SyncMutationJournal<'a> {
+    pub(crate) fn new(
+        store_root: &'a Path,
+        repo_root: &'a Path,
+        ignore: &'a dyn IgnoreBackend,
+        operation: &'a mut RecoveryRecord,
+        repo_destination: PathBuf,
+        store_destination: PathBuf,
+    ) -> Self {
+        Self {
+            inner: AddMutationJournal::new(
+                store_root,
+                repo_root,
+                ignore,
+                operation,
+                repo_destination,
+                store_destination,
+            ),
+        }
+    }
+
+    pub(crate) fn advance_content_synchronized(&mut self) -> Result<()> {
+        self.inner.advance(OperationPhase::ContentSynchronized)
+    }
+
+    pub(crate) fn advance_post_commit_validated(&mut self) -> Result<()> {
+        self.inner.advance(OperationPhase::PostCommitValidated)
+    }
+
+    pub(crate) fn cleanup_all(&mut self) -> Result<()> {
+        self.inner.cleanup_all()
+    }
+}
+
+impl MutationJournal for SyncMutationJournal<'_> {
+    fn acquire_artifact_lease(&mut self, scope: ArtifactScope) -> Result<ArtifactLease> {
+        self.inner.acquire_artifact_lease(scope)
+    }
+
+    fn authorize_plaintext_write(&mut self, lease: ArtifactLease) -> Result<WritableArtifactLease> {
+        self.inner.authorize_plaintext_write(lease)
+    }
+
+    fn record_phase(&mut self, phase: DurableOperationPhase) -> Result<()> {
+        self.inner.record_phase(phase)
+    }
+
+    fn issue_commit_permit(&mut self, guard: WritePreconditionGuard) -> Result<CommitPermit> {
+        self.inner.issue_commit_permit(guard)
+    }
+
+    fn cleanup_prepared_artifact(&mut self, context: CommitContext) -> Result<()> {
+        self.inner.cleanup_prepared_artifact(context)
+    }
+}
+
 /// Artifact-only journal for repair operations.
 ///
 /// Repair deliberately has no high-level ownership transaction: it either

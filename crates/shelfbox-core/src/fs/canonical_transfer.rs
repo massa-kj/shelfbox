@@ -76,6 +76,15 @@ pub(crate) enum CanonicalTransferAction {
         expected_source: ExpectedCanonicalEntry,
         expected_destination: ExpectedCanonicalEntry,
     },
+    /// Copies repo content to the canonical store while preserving the source
+    /// materialization. This is intentionally distinct from `ReplaceFromRepo`,
+    /// whose add workflow consumes its repo source.
+    CopyFromRepo {
+        source: RepoRelativePath,
+        destination: StoreRelativePath,
+        expected_source: ExpectedCanonicalEntry,
+        expected_destination: ExpectedCanonicalEntry,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +270,11 @@ impl DefaultCanonicalTransfer {
                 source,
                 destination,
                 ..
+            }
+            | CanonicalTransferAction::CopyFromRepo {
+                source,
+                destination,
+                ..
             } => {
                 let source_path = self.repo_root.join(source.as_str());
                 let destination_path = self.store_root.join(destination.as_str());
@@ -390,6 +404,40 @@ impl CanonicalTransfer for DefaultCanonicalTransfer {
                     temp.path(),
                     temp.identity(),
                     secure_transfer::PermissionMode::FromSource,
+                    None,
+                )?;
+                let (context, _) = writable.into_parts();
+                Ok(PreparedCanonicalTransfer {
+                    context,
+                    action: Some(action),
+                    temp: Some(temp),
+                    direct_rename: false,
+                })
+            }
+            CanonicalTransferAction::CopyFromRepo {
+                expected_source,
+                expected_destination,
+                ..
+            } => {
+                let (source, destination, _, _) = self.paths(&action);
+                Self::ensure_expected(&source, expected_source)?;
+                Self::ensure_expected(&destination, expected_destination)?;
+                if expected_destination.kind != CanonicalEntryKind::RegularFile {
+                    return Err(AppError::UnsafeFilesystemEntry {
+                        path: destination,
+                        reason: "sync destination is not an isolated regular file",
+                    });
+                }
+                let lease = journal.acquire_artifact_lease(ArtifactScope::StoreSide)?;
+                let writable = journal.authorize_plaintext_write(lease)?;
+                let temp = writable.authorized_temp()?.clone();
+                secure_transfer::populate_authorized_temp(
+                    &self.repo_root,
+                    &source,
+                    temp.path(),
+                    temp.identity(),
+                    secure_transfer::PermissionMode::PreserveDestination,
+                    Some(&destination),
                 )?;
                 let (context, _) = writable.into_parts();
                 Ok(PreparedCanonicalTransfer {
@@ -445,6 +493,33 @@ impl CanonicalTransfer for DefaultCanonicalTransfer {
                     Self::ensure_expected(&source, &expected_source)?;
                     std::fs::remove_file(&source).map_err(|error| AppError::io(&source, error))?;
                 }
+                failpoint::after(Failpoint::PersistentMutation(
+                    crate::domain::copy_safety::PersistentMutation::DestinationReplacement,
+                ))?;
+                Ok(CanonicalTransferCommitOutcome::Applied)
+            }
+            CanonicalTransferAction::CopyFromRepo {
+                source,
+                destination,
+                expected_source,
+                expected_destination,
+            } => {
+                let source = self.repo_root.join(source.as_str());
+                let destination = self.store_root.join(destination.as_str());
+                Self::ensure_expected(&source, &expected_source)?;
+                Self::ensure_expected(&destination, &expected_destination)?;
+                let temp = prepared.temp.ok_or_else(|| {
+                    AppError::Internal("missing prepared canonical sync temp".into())
+                })?;
+                secure_transfer::commit_authorized_temp(
+                    &self.store_root,
+                    temp.path(),
+                    temp.identity(),
+                    &destination,
+                )?;
+                // Recheck the source after replacement: it must remain the
+                // durable repo-side observation recorded for this direction.
+                Self::ensure_expected(&source, &expected_source)?;
                 failpoint::after(Failpoint::PersistentMutation(
                     crate::domain::copy_safety::PersistentMutation::DestinationReplacement,
                 ))?;

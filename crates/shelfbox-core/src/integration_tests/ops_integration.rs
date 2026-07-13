@@ -253,6 +253,453 @@ fn add_copy_creates_independent_regular_materialization() {
     );
 }
 
+// ── explicit item sync ──────────────────────────────────────────────────────
+
+fn copy_sync_request(
+    direction: crate::plan::item_sync::SyncDirection,
+    dry_run: bool,
+    confirmed: bool,
+) -> crate::plan::item_sync::ItemSyncRequest {
+    crate::plan::item_sync::ItemSyncRequest {
+        direction,
+        dry_run,
+        confirmed,
+    }
+}
+
+fn add_copy_for_sync(
+    repo_dir: &TempDir,
+    store_dir: &TempDir,
+    name: &str,
+    contents: &str,
+) -> (context::RepoContext, std::path::PathBuf, std::path::PathBuf) {
+    let path = repo_dir.path().join(name);
+    std::fs::write(&path, contents).unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ctx.config.materialization = MaterializationStrategy::Copy;
+    ops::add::add_report(
+        &mut ctx,
+        &path,
+        false,
+        &DefaultLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
+    let store = ctx.repo_store.join("items").join(name);
+    (ctx, path, store)
+}
+
+#[test]
+fn sync_both_directions_are_noop_when_regular_copy_is_equal() {
+    use crate::plan::item_sync::{SyncDirection, SyncOutcome};
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "equal.txt", "equal");
+
+    for direction in [SyncDirection::FromStore, SyncDirection::FromRepo] {
+        let report = ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(direction, false, false),
+            &GitInfoExclude,
+        )
+        .unwrap();
+        assert_eq!(report.outcome, SyncOutcome::AlreadySynchronized);
+    }
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn sync_from_store_overwrites_only_the_diverged_regular_copy() {
+    use crate::plan::item_sync::{SyncDirection, SyncOutcome};
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, store) =
+        add_copy_for_sync(&repo_dir, &store_dir, "from-store.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+
+    let report = ops::sync::sync_report(
+        &mut ctx,
+        &path,
+        copy_sync_request(SyncDirection::FromStore, false, false),
+        &GitInfoExclude,
+    )
+    .unwrap();
+    assert_eq!(report.outcome, SyncOutcome::SynchronizedFromStore);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "store");
+    assert_eq!(std::fs::read_to_string(&store).unwrap(), "store");
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn sync_from_repo_requires_confirmation_and_preserves_store_permissions() {
+    use crate::plan::item_sync::{SyncDirection, SyncOutcome};
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, store) = add_copy_for_sync(&repo_dir, &store_dir, "from-repo.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o640)).unwrap();
+    }
+
+    assert!(matches!(
+        ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(SyncDirection::FromRepo, false, false),
+            &GitInfoExclude,
+        ),
+        Err(AppError::SyncConfirmationRequired)
+    ));
+    assert_eq!(std::fs::read_to_string(&store).unwrap(), "store");
+
+    let report = ops::sync::sync_report(
+        &mut ctx,
+        &path,
+        copy_sync_request(SyncDirection::FromRepo, false, true),
+        &GitInfoExclude,
+    )
+    .unwrap();
+    assert_eq!(report.outcome, SyncOutcome::SynchronizedFromRepo);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "repo edit");
+    assert_eq!(std::fs::read_to_string(&store).unwrap(), "repo edit");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&store).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+}
+
+#[test]
+fn sync_missing_materialization_directs_user_to_repair() {
+    use crate::plan::item_sync::SyncDirection;
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "missing.txt", "store");
+    std::fs::remove_file(&path).unwrap();
+
+    assert!(matches!(
+        ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(SyncDirection::FromStore, false, false),
+            &GitInfoExclude,
+        ),
+        Err(AppError::SyncMaterializationMissing { .. })
+    ));
+}
+
+#[test]
+fn sync_from_repo_requires_an_attached_regular_copy() {
+    use crate::{plan::item_sync::SyncDirection, store::manifest::OwnershipState};
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "detached.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    let now = context::now_iso8601();
+    ctx.manifest
+        .set_ownership_state("detached.txt", OwnershipState::Detached, &now);
+
+    assert!(matches!(
+        ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(SyncDirection::FromRepo, false, true),
+            &GitInfoExclude,
+        ),
+        Err(AppError::SyncRequiresRegularCopy { .. })
+    ));
+}
+
+#[test]
+fn sync_dry_run_is_snapshot_invariant() {
+    use crate::plan::item_sync::{SyncDirection, SyncOutcome};
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "dry-run.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    let repo_before = common::snapshot_tree(repo_dir.path());
+    let store_before = common::snapshot_tree(store_dir.path());
+
+    let report = ops::sync::sync_report(
+        &mut ctx,
+        &path,
+        copy_sync_request(SyncDirection::FromStore, true, false),
+        &GitInfoExclude,
+    )
+    .unwrap();
+    assert_eq!(report.outcome, SyncOutcome::WouldSynchronizeFromStore);
+    assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
+    assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
+}
+
+#[test]
+fn sync_commit_permit_rechecks_exclude_and_identity_races() {
+    use crate::plan::item_sync::SyncDirection;
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "race.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    let repo_root = repo_dir.path().to_path_buf();
+    let hook = failpoint::install_test_hook(move |point| {
+        if *point == Failpoint::WritePreconditionsValidated {
+            GitInfoExclude.remove_entries(&repo_root, &["race.txt"])?;
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(SyncDirection::FromStore, false, false),
+            &GitInfoExclude,
+        ),
+        Err(AppError::Internal(message)) if message.contains("exclude was removed before commit authorization")
+    ));
+    drop(hook);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "repo edit");
+    assert!(!operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn sync_commit_permit_rechecks_newly_tracked_target() {
+    use crate::plan::item_sync::SyncDirection;
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "tracked-race.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    let repo_root = repo_dir.path().to_path_buf();
+    let hook = failpoint::install_test_hook(move |point| {
+        if *point == Failpoint::WritePreconditionsValidated {
+            common::run_git(&repo_root, &["add", "-f", "tracked-race.txt"]);
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(SyncDirection::FromStore, false, false),
+            &GitInfoExclude,
+        ),
+        Err(AppError::PathIsTracked { .. })
+    ));
+    drop(hook);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "repo edit");
+}
+
+#[test]
+fn sync_rejects_destination_identity_change_before_commit() {
+    use crate::plan::item_sync::SyncDirection;
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "identity-race.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    let replacement_path = path.clone();
+    let hook = failpoint::install_test_hook(move |point| {
+        if *point == Failpoint::WritePreconditionsValidated {
+            let replacement = replacement_path.with_extension("replacement");
+            std::fs::write(&replacement, "external replacement")
+                .map_err(|error| AppError::io(&replacement, error))?;
+            std::fs::rename(&replacement, &replacement_path)
+                .map_err(|error| AppError::io(&replacement_path, error))?;
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(SyncDirection::FromStore, false, false),
+            &GitInfoExclude,
+        ),
+        Err(AppError::FilesystemEntryChanged { .. })
+    ));
+    drop(hook);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "external replacement"
+    );
+}
+
+#[test]
+fn sync_repo_temp_is_never_visible_to_git_across_artifact_boundaries() {
+    use crate::plan::item_sync::SyncDirection;
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "temp-visible.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    let root = repo_dir.path().to_path_buf();
+    let visible = Rc::new(Cell::new(false));
+    let observed = visible.clone();
+    let hook = failpoint::install_test_hook(move |point| {
+        if matches!(
+            point,
+            Failpoint::ArtifactPathRecorded
+                | Failpoint::TempIdentityRecorded
+                | Failpoint::PersistentMutation(_)
+        ) {
+            let output = std::process::Command::new("git")
+                .args(["status", "--porcelain"])
+                .current_dir(&root)
+                .output()
+                .map_err(|error| AppError::io(&root, error))?;
+            if !output.status.success() || !output.stdout.is_empty() {
+                observed.set(true);
+            }
+        }
+        Ok(())
+    });
+    ops::sync::sync_report(
+        &mut ctx,
+        &path,
+        copy_sync_request(SyncDirection::FromStore, false, false),
+        &GitInfoExclude,
+    )
+    .unwrap();
+    drop(hook);
+    assert!(
+        !visible.get(),
+        "a repo-side sync temp became visible to Git"
+    );
+}
+
+#[test]
+fn sync_store_temp_cleanup_never_deletes_a_replaced_artifact() {
+    use crate::{
+        domain::operation_record::{ArtifactLocation, RecoveryRecordKind},
+        plan::item_sync::SyncDirection,
+    };
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (mut ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "store-temp.txt", "store");
+    std::fs::write(&path, "repo edit").unwrap();
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::TempIdentityRecorded {
+            return Err(AppError::Internal("test interruption".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(
+        ops::sync::sync_report(
+            &mut ctx,
+            &path,
+            copy_sync_request(SyncDirection::FromRepo, false, true),
+            &GitInfoExclude,
+        ),
+        Err(AppError::Internal(_))
+    ));
+    drop(hook);
+
+    let temp = operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .into_iter()
+        .find_map(|record| match record.record {
+            RecoveryRecordKind::Artifact(artifact) => match artifact.location {
+                ArtifactLocation::Store { path } => Some(store_dir.path().join(path.as_str())),
+                ArtifactLocation::Repo { .. } => None,
+            },
+            RecoveryRecordKind::Operation(_) => None,
+        })
+        .expect("interrupted store sync must retain its artifact record");
+    let unrelated = temp.with_extension("unrelated");
+    std::fs::write(&unrelated, "unrelated replacement").unwrap();
+    std::fs::remove_file(&temp).unwrap();
+    std::fs::rename(&unrelated, &temp).unwrap();
+    drop(ctx);
+
+    assert!(matches!(
+        context::build_create_or_load(repo_dir.path(), Some(store_dir.path())),
+        Err(AppError::RecoveryArtifactConflict { .. })
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&temp).unwrap(),
+        "unrelated replacement"
+    );
+}
+
+#[test]
+fn sync_recovery_is_retry_safe_before_and_after_replacement() {
+    use crate::plan::item_sync::SyncDirection;
+
+    for (name, direction, confirmed, interruption) in [
+        (
+            "before-replacement.txt",
+            SyncDirection::FromStore,
+            false,
+            Failpoint::WritePreconditionsValidated,
+        ),
+        (
+            "after-replacement.txt",
+            SyncDirection::FromRepo,
+            true,
+            Failpoint::PersistentMutation(
+                crate::domain::copy_safety::PersistentMutation::DestinationReplacement,
+            ),
+        ),
+    ] {
+        let repo_dir = common::init_git_repo();
+        let store_dir = TempDir::new().unwrap();
+        let (mut ctx, path, store) = add_copy_for_sync(&repo_dir, &store_dir, name, "store");
+        std::fs::write(&path, "repo edit").unwrap();
+        let hook = failpoint::install_test_hook(move |point| {
+            if *point == interruption {
+                return Err(AppError::Internal("test interruption".into()));
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            ops::sync::sync_report(
+                &mut ctx,
+                &path,
+                copy_sync_request(direction, false, confirmed),
+                &GitInfoExclude,
+            ),
+            Err(AppError::Internal(_))
+        ));
+        drop(hook);
+        drop(ctx);
+
+        let _recovered =
+            context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+        match direction {
+            SyncDirection::FromStore => {
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), "repo edit");
+                assert_eq!(std::fs::read_to_string(&store).unwrap(), "store");
+            }
+            SyncDirection::FromRepo => {
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), "repo edit");
+                assert_eq!(std::fs::read_to_string(&store).unwrap(), "repo edit");
+            }
+        }
+        assert!(operation_record_store::load_all(store_dir.path())
+            .unwrap()
+            .is_empty());
+    }
+}
+
 #[test]
 fn add_commit_authorization_rechecks_exclude_after_operation_validation() {
     let repo_dir = common::init_git_repo();

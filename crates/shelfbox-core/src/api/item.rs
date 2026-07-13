@@ -20,6 +20,10 @@ pub use crate::{
         item_relink::{ItemRelinkPlan, ItemRelinkReport},
         item_repair::{ItemRepairReport, RepairOutcome},
         item_restore::{ItemRestoreAction, ItemRestorePlan, ItemRestoreReport},
+        item_sync::{
+            ItemSyncAction, ItemSyncPlan, ItemSyncReport, ItemSyncRequest, SyncDirection,
+            SyncOutcome,
+        },
         repo_repair::{RepoRepairAction, RepoRepairSymlinkAction},
     },
     store::manifest::Item,
@@ -33,6 +37,7 @@ use crate::{
     ops::{
         add, info as info_ops, list as list_ops, move_item as move_item_ops, path as path_ops,
         relink as relink_ops, repair as repair_ops, restore, status as status_ops,
+        sync as sync_ops,
     },
 };
 
@@ -131,6 +136,18 @@ pub fn repair(
 ) -> Result<ItemRepairReport> {
     let link = DefaultLinkStrategy;
     repair_ops::repair_report(ctx, abs_path, &link, dry_run, force)
+}
+
+/// Explicitly synchronizes one attached regular Copy in the requested
+/// direction. Repository-to-store replacement requires `confirmed` unless
+/// the request is a dry run or content is already equal.
+pub fn sync(
+    ctx: &mut RepoContext,
+    abs_path: &Path,
+    request: ItemSyncRequest,
+) -> Result<ItemSyncReport> {
+    let ignore = GitInfoExclude;
+    sync_ops::sync_report(ctx, abs_path, request, &ignore)
 }
 
 pub fn relink(ctx: &mut RepoContext, abs_path: &Path, dry_run: bool) -> Result<ItemRelinkReport> {

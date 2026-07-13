@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use shelfbox_core::api::item;
 
 use crate::commands::format::OutputFormat;
@@ -57,6 +57,25 @@ pub enum ItemCommand {
         /// to avoid silently masking stale links from reclones or copied repos.
         #[arg(long)]
         force: bool,
+    },
+
+    /// Synchronize a diverged regular copy in one explicit direction.
+    Sync {
+        /// Files to synchronize (relative to repo root).
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+
+        /// Select the only source of truth for this invocation.
+        #[arg(long, value_enum)]
+        from: SyncFrom,
+
+        /// Print the approved action without writing either endpoint.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Required before repository content may replace canonical store content.
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Re-attach a detached item by recreating its symlink.
@@ -155,6 +174,15 @@ pub fn run_item(
             cmd_repair(cwd, store_override, &paths, dry_run, force)?;
             Ok(ExitCode::SUCCESS)
         }
+        ItemCommand::Sync {
+            paths,
+            from,
+            dry_run,
+            yes,
+        } => {
+            cmd_sync(cwd, store_override, &paths, from, dry_run, yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
         ItemCommand::Relink { paths, dry_run } => {
             cmd_relink(cwd, store_override, &paths, dry_run)?;
             Ok(ExitCode::SUCCESS)
@@ -175,6 +203,22 @@ pub fn run_item(
         ItemCommand::Info { path, format } => {
             cmd_info(cwd, store_override, &path, format)?;
             Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// CLI spelling for the core's single explicit synchronization direction.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SyncFrom {
+    Store,
+    Repo,
+}
+
+impl From<SyncFrom> for item::SyncDirection {
+    fn from(value: SyncFrom) -> Self {
+        match value {
+            SyncFrom::Store => Self::FromStore,
+            SyncFrom::Repo => Self::FromRepo,
         }
     }
 }
@@ -567,6 +611,89 @@ fn cmd_repair(
         }
     }
     Ok(())
+}
+
+fn cmd_sync(
+    cwd: &Path,
+    store_override: Option<&Path>,
+    paths: &[PathBuf],
+    from: SyncFrom,
+    dry_run: bool,
+    yes: bool,
+) -> Result<()> {
+    let mut ctx = build_item_context(cwd, store_override, dry_run)?;
+    let direction = item::SyncDirection::from(from);
+
+    for path in paths {
+        let abs = resolve_path(cwd, path);
+        let report = item::sync(
+            &mut ctx,
+            &abs,
+            item::ItemSyncRequest {
+                direction,
+                dry_run,
+                confirmed: yes,
+            },
+        )
+        .with_context(|| format!("sync '{}' failed", path.display()))?;
+        if dry_run {
+            print_sync_report(&report);
+            continue;
+        }
+        match report.outcome {
+            item::SyncOutcome::SynchronizedFromStore => {
+                println!("synchronized from store: {}", path.display());
+            }
+            item::SyncOutcome::SynchronizedFromRepo => {
+                println!("synchronized from repo: {}", path.display());
+            }
+            item::SyncOutcome::AlreadySynchronized => {
+                println!("ok (already synchronized): {}", path.display());
+            }
+            item::SyncOutcome::ManagedSymlinkNoOp => {
+                println!(
+                    "ok (managed symlink already reads the store): {}",
+                    path.display()
+                );
+            }
+            item::SyncOutcome::WouldSynchronizeFromStore
+            | item::SyncOutcome::WouldSynchronizeFromRepo => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+fn print_sync_report(report: &item::ItemSyncReport) {
+    let plan = &report.plan;
+    match report.outcome {
+        item::SyncOutcome::WouldSynchronizeFromStore => {
+            println!("[dry-run] sync '{}' from store", plan.path);
+            println!(
+                "  replace {} ← {}",
+                plan.abs_path.display(),
+                plan.store_path.display()
+            );
+        }
+        item::SyncOutcome::WouldSynchronizeFromRepo => {
+            println!("[dry-run] sync '{}' from repo", plan.path);
+            println!(
+                "  replace {} ← {}",
+                plan.store_path.display(),
+                plan.abs_path.display()
+            );
+            println!("  preserve store permissions");
+        }
+        item::SyncOutcome::AlreadySynchronized => {
+            println!("[dry-run] sync '{}' — already synchronized", plan.path);
+        }
+        item::SyncOutcome::ManagedSymlinkNoOp => {
+            println!(
+                "[dry-run] sync '{}' — managed symlink is already canonical",
+                plan.path
+            );
+        }
+        item::SyncOutcome::SynchronizedFromStore | item::SyncOutcome::SynchronizedFromRepo => {}
+    }
 }
 
 fn print_repair_report(report: &item::ItemRepairReport) {

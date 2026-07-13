@@ -23,7 +23,6 @@ const BUFFER_SIZE: usize = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermissionMode {
     FromSource,
-    #[cfg(all(test, unix))]
     PreserveDestination,
 }
 
@@ -159,7 +158,6 @@ pub(crate) fn copy_replace(
                     .permissions(),
             )
             .map_err(|e| AppError::io(temp.path(), e))?,
-        #[cfg(all(test, unix))]
         PermissionMode::PreserveDestination => {
             if let Ok(metadata) = fs::metadata(destination) {
                 temp.file_mut()
@@ -203,6 +201,7 @@ pub(crate) fn populate_authorized_temp(
     temp: &Path,
     expected_temp_identity: platform::FileIdentity,
     permissions: PermissionMode,
+    permission_destination: Option<&Path>,
 ) -> Result<()> {
     validate_parent_path(source_root, source)?;
     let source_state = file_identity::require_isolated(source)?;
@@ -232,8 +231,22 @@ pub(crate) fn populate_authorized_temp(
                     .permissions(),
             )
             .map_err(|e| AppError::io(temp, e))?,
-        #[cfg(all(test, unix))]
-        PermissionMode::PreserveDestination => {}
+        PermissionMode::PreserveDestination => {
+            let destination = permission_destination.ok_or_else(|| {
+                AppError::Internal(
+                    "preserve-destination transfer is missing its destination path".into(),
+                )
+            })?;
+            let (destination_file, _) = platform::open_regular_no_follow(destination)?;
+            output
+                .set_permissions(
+                    destination_file
+                        .metadata()
+                        .map_err(|e| AppError::io(destination, e))?
+                        .permissions(),
+                )
+                .map_err(|e| AppError::io(temp, e))?;
+        }
     }
     output.sync_all().map_err(|e| AppError::io(temp, e))?;
     file_identity::revalidate(source, source_state)?;

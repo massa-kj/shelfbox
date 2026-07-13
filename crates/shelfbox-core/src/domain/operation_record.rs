@@ -283,6 +283,30 @@ impl OperationRecord {
             validate_record_id(&backup.artifact_record_id)?;
             backup.location.validate()?;
         }
+        if self.operation == OperationKind::Sync {
+            if self.direction.is_none() {
+                return Err("sync operation requires an explicit direction".into());
+            }
+            if self.pre_state.repo_path.is_none() || self.pre_state.store_path.is_none() {
+                return Err("sync operation requires repository and store paths".into());
+            }
+            let (Some(repo), Some(store)) = (
+                self.pre_state.repo_fingerprint.as_ref(),
+                self.pre_state.store_fingerprint.as_ref(),
+            ) else {
+                return Err("sync operation requires both endpoint fingerprints".into());
+            };
+            if repo == store {
+                return Err("sync operation cannot record equal endpoint fingerprints".into());
+            }
+            if self.pre_state.manifest_contains_item != Some(true)
+                || self.pre_state.exclude_owned != Some(true)
+            {
+                return Err(
+                    "sync operation requires attached manifest and exclude observations".into(),
+                );
+            }
+        }
         Ok(())
     }
 }

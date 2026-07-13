@@ -18,7 +18,7 @@ use crate::domain::operation_record::{OperationDirection, OperationKind, Operati
 pub(crate) struct RecoveryPolicyInput {
     pub operation: OperationKind,
     pub phase: OperationPhase,
-    /// Direction is required only for durable directional relink.
+    /// Direction is required for every durable directional operation.
     pub direction: Option<OperationDirection>,
     pub facts: RecoveryFacts,
 }
@@ -30,9 +30,26 @@ pub(crate) struct RecoveryPolicyInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryFacts {
     Add(AddRecoveryFacts),
+    Sync(SyncRecoveryFacts),
     Restore(RestoreRecoveryFacts),
     Move(MoveRecoveryFacts),
     DirectionalRelink(DirectionalRelinkRecoveryFacts),
+}
+
+/// Sync has one content replacement boundary.  The operation collector
+/// classifies both endpoints against the recorded direction-specific
+/// fingerprints and checks manifest/exclude/Git integration before it emits
+/// either approved state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SyncRecoveryFacts {
+    pub content: SyncContentFact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncContentFact {
+    BeforeReplacement,
+    Synchronized,
+    Unexpected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,7 +241,9 @@ impl RecoveryConflict {
             Self::FactCollectionUnavailable => {
                 "operation has not yet persisted the observations required by its recovery table"
             }
-            Self::DirectionRequired => "durable relink recovery requires an explicit direction",
+            Self::DirectionRequired => {
+                "durable directional recovery requires an explicit direction"
+            }
             Self::UnsupportedPhase => "phase is not valid for this operation's recovery table",
             Self::UnexpectedPhysicalState => {
                 "physical state differs from the current or exactly-next recovery checkpoint"
@@ -242,6 +261,13 @@ impl RecoveryConflict {
 pub(crate) fn decide(input: RecoveryPolicyInput) -> RecoveryDecision {
     match (input.operation, input.facts) {
         (OperationKind::Add, RecoveryFacts::Add(facts)) => decide_add(input.phase, facts),
+        (OperationKind::Sync, RecoveryFacts::Sync(facts)) => {
+            if input.direction.is_none() {
+                RecoveryDecision::Conflict(RecoveryConflict::DirectionRequired)
+            } else {
+                decide_sync(input.phase, facts)
+            }
+        }
         (OperationKind::Restore, RecoveryFacts::Restore(facts)) => {
             decide_restore(input.phase, facts)
         }
@@ -260,7 +286,10 @@ pub(crate) fn decide(input: RecoveryPolicyInput) -> RecoveryDecision {
             | OperationKind::Relink,
             _,
         ) => RecoveryDecision::Conflict(RecoveryConflict::FactsDoNotMatchOperation),
-        (OperationKind::Sync | OperationKind::Repair, _) => {
+        (OperationKind::Sync, _) => {
+            RecoveryDecision::Conflict(RecoveryConflict::FactsDoNotMatchOperation)
+        }
+        (OperationKind::Repair, _) => {
             RecoveryDecision::Conflict(RecoveryConflict::UnsupportedOperation)
         }
     }
@@ -285,6 +314,9 @@ pub(crate) fn decision_without_observations(
             manifest: AddManifestFact::Unexpected,
             exclude: AddExcludeFact::Unexpected,
         }),
+        OperationKind::Sync => RecoveryFacts::Sync(SyncRecoveryFacts {
+            content: SyncContentFact::Unexpected,
+        }),
         OperationKind::Restore => RecoveryFacts::Restore(RestoreRecoveryFacts {
             repo: RestoreRepoFact::Unexpected,
             store: RestoreStoreFact::Unexpected,
@@ -302,8 +334,8 @@ pub(crate) fn decision_without_observations(
             manifest: DirectionalRelinkManifestFact::Unexpected,
             exclude: DirectionalRelinkExcludeFact::Unexpected,
         }),
-        // These operations intentionally have no durable operation table.
-        OperationKind::Sync | OperationKind::Repair => RecoveryFacts::Add(AddRecoveryFacts {
+        // Repair intentionally has no durable operation table.
+        OperationKind::Repair => RecoveryFacts::Add(AddRecoveryFacts {
             repo: AddRepoFact::Unexpected,
             store: AddStoreFact::Unexpected,
             manifest: AddManifestFact::Unexpected,
@@ -420,6 +452,31 @@ fn decide_add(phase: OperationPhase, facts: AddRecoveryFacts) -> RecoveryDecisio
                     store: AddStoreFact::Source,
                     manifest: AddManifestFact::Present,
                     exclude: AddExcludeFact::Present,
+                },
+                action: RecoveryRowAction::Forward(
+                    RecoveryForward::VerifyPostconditionsAndComplete,
+                ),
+            },
+        ],
+    )
+}
+
+fn decide_sync(phase: OperationPhase, facts: SyncRecoveryFacts) -> RecoveryDecision {
+    decide_table(
+        phase,
+        facts,
+        &[
+            RecoveryRow {
+                phase: OperationPhase::RecordCreated,
+                expected: SyncRecoveryFacts {
+                    content: SyncContentFact::BeforeReplacement,
+                },
+                action: RecoveryRowAction::Rollback(RecoveryRollback::DeleteRecordOnly),
+            },
+            RecoveryRow {
+                phase: OperationPhase::ContentSynchronized,
+                expected: SyncRecoveryFacts {
+                    content: SyncContentFact::Synchronized,
                 },
                 action: RecoveryRowAction::Forward(
                     RecoveryForward::VerifyPostconditionsAndComplete,
@@ -664,6 +721,23 @@ mod tests {
         ),
     ];
 
+    const SYNC_ROWS: &[(OperationPhase, SyncRecoveryFacts, RecoveryDecision)] = &[
+        (
+            OperationPhase::RecordCreated,
+            SyncRecoveryFacts {
+                content: SyncContentFact::BeforeReplacement,
+            },
+            RecoveryDecision::Rollback(RecoveryRollback::DeleteRecordOnly),
+        ),
+        (
+            OperationPhase::ContentSynchronized,
+            SyncRecoveryFacts {
+                content: SyncContentFact::Synchronized,
+            },
+            RecoveryDecision::Forward(RecoveryForward::VerifyPostconditionsAndComplete),
+        ),
+    ];
+
     const RESTORE_ROWS: &[(OperationPhase, RestoreRecoveryFacts, RecoveryDecision)] = &[
         (
             OperationPhase::RecordCreated,
@@ -847,6 +921,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_sync_row_is_directional_and_exactly_next_state_advances() {
+        for direction in [OperationDirection::FromStore, OperationDirection::FromRepo] {
+            for (index, (phase, facts, expected)) in SYNC_ROWS.iter().enumerate() {
+                assert_eq!(
+                    decide(RecoveryPolicyInput {
+                        operation: OperationKind::Sync,
+                        phase: *phase,
+                        direction: Some(direction),
+                        facts: RecoveryFacts::Sync(*facts),
+                    }),
+                    *expected
+                );
+                if let Some((next_phase, next_facts, _)) = SYNC_ROWS.get(index + 1) {
+                    assert_eq!(
+                        decide(RecoveryPolicyInput {
+                            operation: OperationKind::Sync,
+                            phase: *phase,
+                            direction: Some(direction),
+                            facts: RecoveryFacts::Sync(*next_facts),
+                        }),
+                        RecoveryDecision::AdvanceRecord { to: *next_phase }
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            decide(RecoveryPolicyInput {
+                operation: OperationKind::Sync,
+                phase: OperationPhase::RecordCreated,
+                direction: None,
+                facts: RecoveryFacts::Sync(SYNC_ROWS[0].1),
+            }),
+            RecoveryDecision::Conflict(RecoveryConflict::DirectionRequired)
+        );
     }
 
     #[test]
@@ -1078,7 +1189,7 @@ mod tests {
                 direction: Some(OperationDirection::FromStore),
                 facts: RecoveryFacts::Add(ADD_ROWS[0].1),
             }),
-            RecoveryDecision::Conflict(RecoveryConflict::UnsupportedOperation)
+            RecoveryDecision::Conflict(RecoveryConflict::FactsDoNotMatchOperation)
         );
     }
 }

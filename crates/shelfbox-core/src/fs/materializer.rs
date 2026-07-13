@@ -866,6 +866,7 @@ impl<L: LinkStrategy> DefaultMaterializer<L> {
             temp.path(),
             temp.identity(),
             secure_transfer::PermissionMode::FromSource,
+            None,
         )?;
         let (context, _) = writable.into_parts();
         Ok(PreparedMaterialization {

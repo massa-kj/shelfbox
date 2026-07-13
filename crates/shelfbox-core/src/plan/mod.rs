@@ -9,6 +9,7 @@ pub mod item_move;
 pub mod item_relink;
 pub mod item_repair;
 pub mod item_restore;
+pub mod item_sync;
 pub mod manifest_migration;
 pub mod repo_reclaim;
 pub mod repo_repair;

@@ -156,6 +156,22 @@ pub enum AppError {
     )]
     RelinkNotDetached { path: PathBuf, actual_state: String },
 
+    // ── item sync ─────────────────────────────────────────────────────────────
+    /// Explicit synchronization cannot create a missing materialization,
+    /// because that would silently choose a strategy. Repair it first.
+    #[error("'{path}' is missing its materialization; run 'shelfbox item repair {path}' first")]
+    SyncMaterializationMissing { path: PathBuf },
+
+    /// Repository-to-store sync is deliberately an explicit destructive
+    /// operation even though it uses an atomic replacement primitive.
+    #[error("syncing repository content into the canonical store requires --yes")]
+    SyncConfirmationRequired,
+
+    /// The requested direction requires a currently attached isolated regular
+    /// copy, not a managed symlink or another filesystem entry.
+    #[error("'{path}' must be an attached isolated regular copy for this sync direction")]
+    SyncRequiresRegularCopy { path: PathBuf },
+
     // ── Store format ─────────────────────────────────────────────────────────
     /// The manifest file uses an incompatible format version and cannot be
     /// loaded.  The store was written by a different version of shelfbox.
