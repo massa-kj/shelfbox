@@ -199,6 +199,66 @@ fn store_gc_dry_run_reports_orphaned_items_without_writing() {
 }
 
 #[test]
+fn store_verify_exit_contract_keeps_warning_and_error_labels_distinct() {
+    if !common::require_symlink_support() {
+        return;
+    }
+
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("secret.txt"), "secret").unwrap();
+    fixture
+        .run(
+            repo.path(),
+            store_args(store.path(), ["item", "add", "secret.txt"]),
+        )
+        .assert_success();
+
+    let before_healthy_verify = snapshot_tree(store.path());
+    let healthy = fixture.run(repo.path(), store_args(store.path(), ["store", "verify"]));
+    healthy.assert_code(0);
+    assert_eq!(healthy.stdout, "OK — no issues found.\n");
+    assert_eq!(healthy.stderr, "");
+    assert_eq!(snapshot_tree(store.path()), before_healthy_verify);
+
+    let index_path = store.path().join("index.json");
+    let mut index: Value = serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap())
+        .expect("index should remain valid JSON");
+    let repo_id = single_repo_id(store.path());
+    index["repos"][&repo_id]["root"] = Value::String(
+        store
+            .path()
+            .join("unavailable-local-repo")
+            .display()
+            .to_string(),
+    );
+    std::fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
+    let before_warning_verify = snapshot_tree(store.path());
+
+    let warning = fixture.run(repo.path(), store_args(store.path(), ["store", "verify"]));
+    warning.assert_code(2);
+    assert_eq!(
+        warning.stdout,
+        "1 issue(s) found. Run `shelfbox repo repair` to fix.\n"
+    );
+    assert!(warning.stderr.contains("WARNING "));
+    assert!(!warning.stderr.contains("ERROR "));
+    assert_eq!(snapshot_tree(store.path()), before_warning_verify);
+
+    let canonical_item = store
+        .path()
+        .join("repos")
+        .join(single_repo_store_dir(store.path()))
+        .join("items/secret.txt");
+    std::fs::remove_file(&canonical_item).unwrap();
+    let both_labels = fixture.run(repo.path(), store_args(store.path(), ["store", "verify"]));
+    both_labels.assert_code(2);
+    assert!(both_labels.stderr.contains("WARNING "));
+    assert!(both_labels.stderr.contains("ERROR "));
+}
+
+#[test]
 fn item_add_dry_run_does_not_initialize_store() {
     let fixture = CliFixture::new();
     let repo = common::init_git_repo();

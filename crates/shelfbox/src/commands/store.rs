@@ -150,49 +150,35 @@ fn cmd_store_info(store_override: Option<&Path>) -> Result<()> {
 
 fn cmd_store_verify(store_override: Option<&Path>) -> Result<ExitCode> {
     let cfg = api::store::load_config(store_override)?;
-    let idx = api::store::load_index(&cfg.store)?;
+    let report = api::store::verify(&cfg.store)?;
 
-    let mut issues: usize = 0;
-
-    for (_id, entry) in idx.iter() {
-        let repo_store = cfg.store.join("repos").join(&entry.repo_store_dir);
-        let mf = match api::store::load_manifest(&repo_store) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!(
-                    "WARN  repos/{} — cannot read manifest: {e}",
-                    entry.repo_store_dir
-                );
-                issues += 1;
-                continue;
-            }
-        };
-
-        for item in &mf.items {
-            if let Some(root) = &entry.root {
-                // Check that the symlink target exists when this index entry
-                // is associated with a local clone.
-                let link_path = root.join(&item.path);
-                if !link_path.exists() {
-                    eprintln!("MISS  symlink not found: {}", link_path.display());
-                    issues += 1;
-                }
-            }
-
-            // Check that the store file exists.
-            let store_file = repo_store.join(&item.store_path);
-            if !store_file.exists() {
-                eprintln!("MISS  store file not found: {}", store_file.display());
-                issues += 1;
-            }
-        }
-    }
-
-    if issues == 0 {
+    if report.is_healthy() {
         println!("OK — no issues found.");
         Ok(ExitCode::SUCCESS)
     } else {
-        println!("{issues} issue(s) found. Run `shelfbox repo repair` to fix.");
+        for issue in &report.issues {
+            let location = issue
+                .filesystem_path
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .or_else(|| {
+                    issue
+                        .repo_store_dir
+                        .as_ref()
+                        .map(|dir| format!("repos/{dir}"))
+                })
+                .unwrap_or_else(|| "store".into());
+            eprintln!(
+                "{} {} — {}",
+                issue.severity.label(),
+                location,
+                issue.message
+            );
+        }
+        println!(
+            "{} issue(s) found. Run `shelfbox repo repair` to fix.",
+            report.issues.len()
+        );
         Ok(ExitCode::from(2))
     }
 }

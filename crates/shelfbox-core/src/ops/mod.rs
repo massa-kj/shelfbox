@@ -16,6 +16,7 @@ pub mod relink;
 pub mod repair;
 pub mod restore;
 pub mod status;
+pub mod store_verify;
 pub mod sync;
 
 #[cfg(test)]

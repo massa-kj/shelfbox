@@ -253,6 +253,33 @@ fn add_copy_creates_independent_regular_materialization() {
     );
 }
 
+#[test]
+fn store_verify_checks_associated_regular_copy_for_divergence() {
+    use crate::{
+        ops::status::StatusIssueCode,
+        ops::store_verify::{StoreVerifyIssueCode, StoreVerifySeverity},
+    };
+
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let (ctx, path, _) = add_copy_for_sync(&repo_dir, &store_dir, "verify-copy.txt", "canonical");
+    drop(ctx);
+
+    let healthy = ops::store_verify::verify(store_dir.path()).unwrap();
+    assert!(
+        healthy.is_healthy(),
+        "an isolated equal regular copy must be healthy: {:#?}",
+        healthy.issues
+    );
+
+    std::fs::write(&path, "locally changed").unwrap();
+    let report = ops::store_verify::verify(store_dir.path()).unwrap();
+    assert!(report.issues.iter().any(|issue| {
+        issue.code == StoreVerifyIssueCode::LocalMaterialization(StatusIssueCode::ContentDiverged)
+            && issue.severity == StoreVerifySeverity::Error
+    }));
+}
+
 // ── explicit item sync ──────────────────────────────────────────────────────
 
 fn copy_sync_request(

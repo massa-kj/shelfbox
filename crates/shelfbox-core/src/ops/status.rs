@@ -151,13 +151,26 @@ pub fn status_v2(
         ctx.repo_store.clone(),
         link,
     );
+    status_v2_with_materializer(ctx, &materializer, ignore, options)
+}
+
+/// Evaluates schema-v2 status with an operation-facing materializer port.
+///
+/// New Copy-aware operations use this variant so they do not need to depend on
+/// the legacy symlink strategy adapter merely to perform read-only inspection.
+pub(crate) fn status_v2_with_materializer(
+    ctx: &RepoContext,
+    materializer: &dyn Materializer,
+    ignore: &dyn IgnoreBackend,
+    options: StatusOptions,
+) -> Result<Vec<ItemStatusV2>> {
     let mut statuses: Vec<ItemStatusV2> = match options.schema_version {
         StatusSchemaVersion::V2 => ctx
             .manifest
             .items
             .iter()
             .map(|item| {
-                check_item_facts(ctx, item, &materializer, ignore).map(|facts| facts.to_v2())
+                check_item_facts(ctx, item, materializer, ignore).map(|facts| facts.to_v2())
             })
             .collect::<Result<Vec<_>>>(),
     }?;

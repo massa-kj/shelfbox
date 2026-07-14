@@ -8,6 +8,12 @@ pub(crate) enum GcProtection {
     Unreachable,
 }
 
+/// Classifies only durable manifest ownership.
+///
+/// GC deliberately does not consult local materialization strategy, Copy
+/// presence, or Copy divergence: those are observational integrity facts, not
+/// proof that canonical store data is disposable.  An explicit orphaned
+/// manifest state remains the sole collection authority.
 pub(crate) fn classify_ownership(state: OwnershipState) -> GcProtection {
     match state {
         OwnershipState::Orphaned => GcProtection::Collectible,

@@ -363,13 +363,14 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_recovery_record_protects_named_store_path_from_gc() {
+    fn unfinished_recovery_record_protects_pre_post_and_backup_store_paths_from_gc() {
         use crate::{
             domain::{
                 materialization::MaterializationStrategy,
                 operation_record::{
-                    OperationKind, OperationPhase, OperationPreState, OperationRecord,
-                    RecoveryAbsolutePath, RecoveryRecord, RecoveryRecordKind,
+                    ArtifactLocation, OperationKind, OperationPhase, OperationPostState,
+                    OperationPreState, OperationRecord, RecoveryAbsolutePath,
+                    RecoveryBackupMetadata, RecoveryRecord, RecoveryRecordKind,
                     OPERATION_RECORD_SCHEMA_VERSION,
                 },
             },
@@ -381,7 +382,11 @@ mod tests {
             store.path(),
             "project",
             "repo-1",
-            vec![item("old.env", OwnershipState::Orphaned)],
+            vec![
+                item("pre.env", OwnershipState::Orphaned),
+                item("post.env", OwnershipState::Orphaned),
+                item("backup.env", OwnershipState::Orphaned),
+            ],
         );
         let repo_root = tempfile::tempdir().unwrap();
         let record = RecoveryRecord {
@@ -397,19 +402,31 @@ mod tests {
                 strategy: MaterializationStrategy::Copy,
                 direction: None,
                 pre_state: OperationPreState {
-                    store_path: Some("repos/project/items/old.env".parse().unwrap()),
+                    store_path: Some("repos/project/items/pre.env".parse().unwrap()),
                     ..OperationPreState::default()
                 },
-                post_state: None,
+                post_state: Some(OperationPostState {
+                    store_path: Some("repos/project/items/post.env".parse().unwrap()),
+                    ..OperationPostState::default()
+                }),
                 artifact_record_ids: Vec::new(),
-                backup: None,
+                backup: Some(RecoveryBackupMetadata {
+                    artifact_record_id: ulid::Ulid::new().to_string(),
+                    location: ArtifactLocation::Store {
+                        path: "repos/project/items/backup.env".parse().unwrap(),
+                    },
+                    expected_identity: None,
+                    fingerprint: None,
+                }),
             }),
         };
         operation_record_store::create(store.path(), &record).unwrap();
 
         let plan = plan(store.path()).unwrap();
         assert!(plan.candidates.is_empty());
-        assert!(repo_store.join("items/old.env").exists());
+        for path in ["pre.env", "post.env", "backup.env"] {
+            assert!(repo_store.join("items").join(path).exists());
+        }
     }
 
     #[test]

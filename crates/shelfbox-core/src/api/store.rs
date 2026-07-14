@@ -9,6 +9,9 @@ pub use crate::{
     },
 };
 
+pub use crate::ops::store_verify::{
+    StoreVerifyIssue, StoreVerifyIssueCode, StoreVerifyReport, StoreVerifySeverity,
+};
 pub use crate::plan::{
     manifest_migration::{MigrationReport, MigrationSkip},
     store_gc::{GcCandidate, GcPlan, GcReport},
@@ -18,7 +21,7 @@ pub use crate::plan::{
 use crate::{
     context,
     error::Result,
-    ops::{gc, migrate_manifest, rebuild_index},
+    ops::{gc, migrate_manifest, rebuild_index, store_verify},
     store::{index, manifest, meta},
 };
 
@@ -36,6 +39,11 @@ pub fn load_manifest(repo_store: &Path) -> Result<Manifest> {
 
 pub fn load_store_meta(store_root: &Path) -> Result<Option<StoreMeta>> {
     meta::load_store_meta(store_root)
+}
+
+/// Runs store-wide, read-only integrity verification.
+pub fn verify(store_root: &Path) -> Result<StoreVerifyReport> {
+    store_verify::verify(store_root)
 }
 
 pub fn gc_plan(store_root: &Path) -> Result<GcPlan> {
