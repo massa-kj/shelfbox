@@ -259,10 +259,9 @@ fn item_restore_keep_store_dry_run_reports_plan_without_writing() {
     assert_eq!(
         output.stdout,
         concat!(
-            "[dry-run] restore --keep-store 'secret.txt'\n",
+            "[dry-run] detach managed item 'secret.txt'\n",
             "  ownership_state: attached -> detached\n",
-            "  (symlink and store item left in place)\n",
-            "  remove from exclude: secret.txt\n"
+            "  (observed materialization, store item, manifest, and exclude are retained)\n"
         )
     );
     assert_eq!(snapshot_tree(repo.path()), repo_before);

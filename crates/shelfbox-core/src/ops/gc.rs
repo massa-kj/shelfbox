@@ -393,12 +393,14 @@ mod tests {
                 phase: OperationPhase::StoreTransferred,
                 repo_id: "repo-1".into(),
                 repo_root: RecoveryAbsolutePath::new(repo_root.path()).unwrap(),
+                repo_store_path: None,
                 strategy: MaterializationStrategy::Copy,
                 direction: None,
                 pre_state: OperationPreState {
                     store_path: Some("repos/project/items/old.env".parse().unwrap()),
                     ..OperationPreState::default()
                 },
+                post_state: None,
                 artifact_record_ids: Vec::new(),
                 backup: None,
             }),

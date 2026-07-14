@@ -108,6 +108,28 @@ impl<'a> AddMutationJournal<'a> {
         secure_transfer::validate_parent_path(self.store_root, &self.store_destination)
     }
 
+    /// Records the identity and fingerprint of a long-lived operation backup
+    /// after its transfer completed.  Unlike ordinary artifacts, this backup
+    /// intentionally survives until manifest/exclude finalization, but it is
+    /// still deleted only through identity-safe recovery cleanup.
+    pub(crate) fn record_backup_from_path(
+        &mut self,
+        path: &Path,
+    ) -> Result<crate::domain::operation_record::RecoveryBackupMetadata> {
+        let identity = operation_record_store::identity_from_path(path)?;
+        let fingerprint =
+            crate::domain::recovery_fingerprint::RecoveryFingerprint::from_file(path)?;
+        let operation = self.operation_mut()?;
+        let backup = operation.backup.as_mut().ok_or_else(|| {
+            AppError::Internal("operation has no recovery backup to record".into())
+        })?;
+        backup.expected_identity = Some(identity);
+        backup.fingerprint = Some(fingerprint);
+        let recorded = backup.clone();
+        operation_record_store::update(self.store_root, self.operation)?;
+        Ok(recorded)
+    }
+
     fn operation_mut(&mut self) -> Result<&mut crate::domain::operation_record::OperationRecord> {
         match &mut self.operation.record {
             RecoveryRecordKind::Operation(operation) => Ok(operation),
@@ -133,6 +155,7 @@ impl<'a> AddMutationJournal<'a> {
     /// the filesystem atomic-replace primitive.
     fn validate_commit_preconditions(&self, guard: &WritePreconditionGuard) -> Result<()> {
         let operation = self.operation()?;
+        permissions::ensure_parent_dir(&self.repo_destination, ParentDirMode::Default)?;
         secure_transfer::validate_parent_path(self.repo_root, &self.repo_destination)?;
         secure_transfer::validate_parent_path(self.store_root, &self.store_destination)?;
 
@@ -624,6 +647,7 @@ impl<'a> RepairMutationJournal<'a> {
     }
 
     fn validate_commit_preconditions(&self, guard: &WritePreconditionGuard) -> Result<()> {
+        permissions::ensure_parent_dir(&self.repo_destination, ParentDirMode::Default)?;
         secure_transfer::validate_parent_path(self.repo_root, &self.repo_destination)?;
         secure_transfer::validate_parent_path(self.store_root, &self.store_destination)?;
         if git::is_tracked(self.repo_root, &self.repo_destination)? {

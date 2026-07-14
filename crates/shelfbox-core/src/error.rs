@@ -172,6 +172,13 @@ pub enum AppError {
     #[error("'{path}' must be an attached isolated regular copy for this sync direction")]
     SyncRequiresRegularCopy { path: PathBuf },
 
+    /// Lifecycle commands never choose which diverged Copy wins.  The user
+    /// must select an explicit `item sync` direction first.
+    #[error(
+        "'{path}' diverges from its canonical store copy; run 'shelfbox item sync --from store' or '--from repo --yes' first"
+    )]
+    ContentDivergedRequiresSync { path: PathBuf },
+
     // ── Store format ─────────────────────────────────────────────────────────
     /// The manifest file uses an incompatible format version and cannot be
     /// loaded.  The store was written by a different version of shelfbox.

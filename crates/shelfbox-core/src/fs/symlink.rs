@@ -19,12 +19,14 @@ pub trait LinkStrategy {
     /// Removes the link at `link_path`.
     ///
     /// Only the link itself is removed; the target is not touched.
+    #[allow(dead_code)] // retained for compatibility with injected legacy strategies
     fn remove(&self, link_path: &Path) -> Result<()>;
 
     /// Returns `true` if `link_path` is a link managed by shelfbox.
     ///
     /// "Managed" means: it is a link of the expected kind whose target
     /// falls inside `store_root`.
+    #[allow(dead_code)] // status/legacy strategy surface; lifecycle uses Materializer facts
     fn is_managed_link(&self, link_path: &Path, store_root: &Path) -> bool;
 
     /// Returns `true` if `path` is a link of the kind this strategy manages

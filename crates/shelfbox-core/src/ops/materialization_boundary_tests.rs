@@ -318,6 +318,8 @@ fn operation_orchestrates_a_strategy_neutral_canonical_transfer_and_durable_phas
         source: StoreRelativePath::new("items/old.env").unwrap(),
         destination: StoreRelativePath::new("items/new.env").unwrap(),
         expected_source: expected,
+        expected_destination: CanonicalTransferFacts::for_test(CanonicalEntryKind::RegularFile)
+            .expected_destination(),
     };
 
     orchestrate_canonical_transfer(&mut transfer, &mut journal, action.clone()).unwrap();

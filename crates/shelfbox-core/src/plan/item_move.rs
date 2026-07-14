@@ -2,7 +2,15 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     context::RepoContext,
+    domain::{
+        materialization::CopyContentState,
+        path::{RepoRelativePath, StoreRelativePath},
+    },
     error::{AppError, Result},
+    fs::materializer::{
+        DefaultMaterializer, InspectionPurpose, MaterializationInspectionRequest,
+        MaterializationLocation, Materializer, RepoEntryKind,
+    },
     git,
     ops::path::{normalize_repo_relative, repo_relative_path},
 };
@@ -41,7 +49,10 @@ impl ItemMovePlan {
             });
         }
 
-        if new_abs.exists() {
+        // `Path::exists` follows symlinks and therefore misses a dangling
+        // destination.  The materializer's no-follow facts below are the
+        // authoritative destination observation.
+        if new_abs.symlink_metadata().is_ok() {
             return Err(AppError::MoveDestinationExists {
                 path: new_abs.to_path_buf(),
             });
@@ -65,11 +76,46 @@ impl ItemMovePlan {
             });
         }
 
-        match std::fs::read_link(old_abs) {
-            Ok(target) if target == old_store_path => {}
-            _ => {
+        let old_repo = RepoRelativePath::new(old_path.clone()).ok_or_else(|| {
+            AppError::UnsafeFilesystemEntry {
+                path: old_abs.to_path_buf(),
+                reason: "move source path is not normalized",
+            }
+        })?;
+        let old_store_relative = store_relative(&ctx.config.store, &old_store_path)?;
+        let materializer =
+            DefaultMaterializer::new(ctx.repo_root.clone(), ctx.config.store.clone());
+        let facts = materializer.inspect(MaterializationInspectionRequest {
+            location: MaterializationLocation::new(old_repo, old_store_relative),
+            purpose: InspectionPurpose::Planning,
+        })?;
+        if !facts.store_regular || !facts.store_hardlink_free || !facts.hardlink_free {
+            return Err(AppError::HardlinkedFile {
+                path: old_abs.to_path_buf(),
+            });
+        }
+        match facts.repo_entry_kind {
+            RepoEntryKind::ManagedSymlink => {}
+            RepoEntryKind::RegularFile if facts.copy_content == CopyContentState::Equal => {}
+            RepoEntryKind::RegularFile if facts.copy_content == CopyContentState::Diverged => {
+                return Err(AppError::ContentDivergedRequiresSync {
+                    path: old_abs.to_path_buf(),
+                });
+            }
+            RepoEntryKind::UnmanagedSymlinkOrReparsePoint => {
                 return Err(AppError::MoveSourceSymlinkMismatch {
                     path: old_abs.to_path_buf(),
+                });
+            }
+            RepoEntryKind::Missing => {
+                return Err(AppError::NotManagedLink {
+                    path: old_abs.to_path_buf(),
+                });
+            }
+            _ => {
+                return Err(AppError::UnsafeFilesystemEntry {
+                    path: old_abs.to_path_buf(),
+                    reason: "move source is not an isolated managed materialization",
                 });
             }
         }
@@ -85,6 +131,22 @@ impl ItemMovePlan {
             new_store_path_relative,
         })
     }
+}
+
+fn store_relative(store_root: &Path, absolute: &Path) -> Result<StoreRelativePath> {
+    let relative =
+        absolute
+            .strip_prefix(store_root)
+            .map_err(|_| AppError::UnsafeFilesystemEntry {
+                path: absolute.to_path_buf(),
+                reason: "move store path escapes the configured store root",
+            })?;
+    StoreRelativePath::new(relative.to_string_lossy().replace('\\', "/")).ok_or_else(|| {
+        AppError::UnsafeFilesystemEntry {
+            path: absolute.to_path_buf(),
+            reason: "move store path is not normalized",
+        }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,6 +4,7 @@ pub mod detect_transitions;
 pub mod gc;
 pub mod info;
 pub mod integrity;
+pub(crate) mod lifecycle_recovery;
 pub mod list;
 pub mod migrate_manifest;
 pub mod move_item;

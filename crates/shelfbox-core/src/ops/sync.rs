@@ -408,6 +408,7 @@ fn sync_record(
                     reason: "repository root is not a safe absolute path",
                 }
             })?,
+            repo_store_path: None,
             strategy: crate::domain::materialization::MaterializationStrategy::Copy,
             direction: Some(direction),
             pre_state: OperationPreState {
@@ -422,7 +423,9 @@ fn sync_record(
                 store_fingerprint: Some(store_fingerprint),
                 manifest_contains_item: Some(true),
                 exclude_owned: Some(true),
+                final_exclude_owned: Some(true),
             },
+            post_state: None,
             artifact_record_ids: Vec::new(),
             backup: None,
         }),

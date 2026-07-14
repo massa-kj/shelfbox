@@ -231,12 +231,14 @@ fn unfinished_record(repo_root: &std::path::Path) -> RecoveryRecord {
             phase: OperationPhase::RecordCreated,
             repo_id: "repo-1".into(),
             repo_root: RecoveryAbsolutePath::new(repo_root).unwrap(),
+            repo_store_path: None,
             strategy: MaterializationStrategy::Copy,
             direction: None,
             pre_state: OperationPreState {
                 repo_path: Some("secret.env".parse().unwrap()),
                 ..OperationPreState::default()
             },
+            post_state: None,
             artifact_record_ids: Vec::new(),
             backup: None,
         }),

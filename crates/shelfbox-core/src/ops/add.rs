@@ -188,6 +188,7 @@ fn execute_add_plan(
                     reason: "repository root is not a safe absolute path",
                 }
             })?,
+            repo_store_path: None,
             strategy,
             direction: None,
             pre_state: OperationPreState {
@@ -197,7 +198,9 @@ fn execute_add_plan(
                 store_fingerprint: None,
                 manifest_contains_item: Some(false),
                 exclude_owned: Some(exclude_was_present),
+                final_exclude_owned: Some(true),
             },
+            post_state: None,
             artifact_record_ids: Vec::new(),
             backup: None,
         }),

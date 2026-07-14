@@ -37,7 +37,8 @@ pub enum ItemCommand {
         #[arg(long)]
         keep_ignore: bool,
 
-        /// Keep the store item and mark it detached.
+        /// Legacy detach: retain the observed materialization, store item,
+        /// manifest entry, and exclude while marking ownership detached.
         #[arg(long)]
         keep_store: bool,
     },
@@ -78,7 +79,7 @@ pub enum ItemCommand {
         yes: bool,
     },
 
-    /// Re-attach a detached item by recreating its symlink.
+    /// Re-attach a detached item while preserving its observed materialization.
     ///
     /// A detached item is one whose ownership was intentionally unlinked via
     /// `item restore --keep-store`.  `relink` transitions the item from
@@ -91,6 +92,14 @@ pub enum ItemCommand {
         /// Print what would happen without making any changes.
         #[arg(long)]
         dry_run: bool,
+
+        /// Resolve a diverged detached regular copy in one explicit direction.
+        #[arg(long, value_enum)]
+        from: Option<RelinkFrom>,
+
+        /// Required with `--from repo`, which replaces canonical store content.
+        #[arg(long)]
+        yes: bool,
     },
 
     /// List all shelved files for the current repository.
@@ -183,8 +192,13 @@ pub fn run_item(
             cmd_sync(cwd, store_override, &paths, from, dry_run, yes)?;
             Ok(ExitCode::SUCCESS)
         }
-        ItemCommand::Relink { paths, dry_run } => {
-            cmd_relink(cwd, store_override, &paths, dry_run)?;
+        ItemCommand::Relink {
+            paths,
+            dry_run,
+            from,
+            yes,
+        } => {
+            cmd_relink(cwd, store_override, &paths, dry_run, from, yes)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::List { format, verbose } => {
@@ -212,6 +226,22 @@ pub fn run_item(
 pub enum SyncFrom {
     Store,
     Repo,
+}
+
+/// CLI spelling for an explicit divergent detached-copy relink direction.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum RelinkFrom {
+    Store,
+    Repo,
+}
+
+impl From<RelinkFrom> for item::RelinkDirection {
+    fn from(value: RelinkFrom) -> Self {
+        match value {
+            RelinkFrom::Store => Self::FromStore,
+            RelinkFrom::Repo => Self::FromRepo,
+        }
+    }
 }
 
 impl From<SyncFrom> for item::SyncDirection {
@@ -482,12 +512,11 @@ fn print_restore_report(report: &item::ItemRestoreReport) {
     let plan = &report.plan;
     match &plan.action {
         item::ItemRestoreAction::DetachKeepStore => {
-            println!("[dry-run] restore --keep-store '{}'", plan.path);
+            println!("[dry-run] detach managed item '{}'", plan.path);
             println!("  ownership_state: attached -> detached");
-            println!("  (symlink and store item left in place)");
-            if !plan.keep_ignore {
-                println!("  remove from exclude: {}", plan.path);
-            }
+            println!(
+                "  (observed materialization, store item, manifest, and exclude are retained)"
+            );
         }
         item::ItemRestoreAction::RestoreFile => {
             println!("[dry-run] restore '{}'", plan.path);
@@ -735,13 +764,23 @@ fn cmd_relink(
     store_override: Option<&Path>,
     paths: &[PathBuf],
     dry_run: bool,
+    from: Option<RelinkFrom>,
+    yes: bool,
 ) -> Result<()> {
     let mut ctx = build_item_context(cwd, store_override, dry_run)?;
 
     for path in paths {
         let abs = resolve_path(cwd, path);
-        let report = item::relink(&mut ctx, &abs, dry_run)
-            .with_context(|| format!("relink '{}' failed", path.display()))?;
+        let report = item::relink_with_request(
+            &mut ctx,
+            &abs,
+            item::ItemRelinkRequest {
+                direction: from.map(Into::into),
+                dry_run,
+                confirmed: yes,
+            },
+        )
+        .with_context(|| format!("relink '{}' failed", path.display()))?;
         if dry_run {
             print_relink_report(&report);
         }

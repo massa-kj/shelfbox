@@ -69,6 +69,11 @@ pub(crate) enum CanonicalTransferAction {
         source: StoreRelativePath,
         destination: StoreRelativePath,
         expected_source: ExpectedCanonicalEntry,
+        /// The destination must still be the inspected missing entry at the
+        /// commit boundary.  A store rename is never allowed to replace an
+        /// unexpected entry, even when the platform's rename primitive would
+        /// permit it.
+        expected_destination: ExpectedCanonicalEntry,
     },
     ReplaceFromRepo {
         source: RepoRelativePath,
@@ -422,22 +427,35 @@ impl CanonicalTransfer for DefaultCanonicalTransfer {
                 let (source, destination, _, _) = self.paths(&action);
                 Self::ensure_expected(&source, expected_source)?;
                 Self::ensure_expected(&destination, expected_destination)?;
-                if expected_destination.kind != CanonicalEntryKind::RegularFile {
+                if !matches!(
+                    expected_destination.kind,
+                    CanonicalEntryKind::RegularFile | CanonicalEntryKind::Missing
+                ) {
                     return Err(AppError::UnsafeFilesystemEntry {
                         path: destination,
-                        reason: "sync destination is not an isolated regular file",
+                        reason: "canonical copy destination is not a regular file or missing entry",
                     });
                 }
                 let lease = journal.acquire_artifact_lease(ArtifactScope::StoreSide)?;
                 let writable = journal.authorize_plaintext_write(lease)?;
                 let temp = writable.authorized_temp()?.clone();
+                let (permission_mode, permission_destination) = match expected_destination.kind {
+                    CanonicalEntryKind::RegularFile => (
+                        secure_transfer::PermissionMode::PreserveDestination,
+                        Some(destination.as_path()),
+                    ),
+                    CanonicalEntryKind::Missing => {
+                        (secure_transfer::PermissionMode::FromSource, None)
+                    }
+                    _ => unreachable!(),
+                };
                 secure_transfer::populate_authorized_temp(
                     &self.repo_root,
                     &source,
                     temp.path(),
                     temp.identity(),
-                    secure_transfer::PermissionMode::PreserveDestination,
-                    Some(&destination),
+                    permission_mode,
+                    permission_destination,
                 )?;
                 let (context, _) = writable.into_parts();
                 Ok(PreparedCanonicalTransfer {
@@ -447,12 +465,61 @@ impl CanonicalTransfer for DefaultCanonicalTransfer {
                     direct_rename: false,
                 })
             }
-            CanonicalTransferAction::Move { .. } => Ok(PreparedCanonicalTransfer {
-                context: CommitContext::for_non_artifact(),
-                action: Some(action),
-                temp: None,
-                direct_rename: false,
-            }),
+            CanonicalTransferAction::Move {
+                expected_source,
+                expected_destination,
+                ..
+            } => {
+                let (source, destination, _, _) = self.paths(&action);
+                Self::ensure_expected(&source, expected_source)?;
+                Self::ensure_expected(&destination, expected_destination)?;
+                if expected_destination.kind != CanonicalEntryKind::Missing {
+                    return Err(AppError::FilesystemEntryChanged { path: destination });
+                }
+                let destination_parent =
+                    destination
+                        .parent()
+                        .ok_or_else(|| AppError::UnsafeFilesystemEntry {
+                            path: destination.clone(),
+                            reason: "canonical move destination has no parent",
+                        })?;
+                if platform::inspect_no_follow(&source)?.identity.volume
+                    == platform::inspect_no_follow(destination_parent)?
+                        .identity
+                        .volume
+                {
+                    return Ok(PreparedCanonicalTransfer {
+                        context: CommitContext::for_non_artifact(),
+                        action: Some(action),
+                        temp: None,
+                        direct_rename: true,
+                    });
+                }
+
+                // Cross-device movement is a copy-sync-install-remove
+                // transaction.  The journal owns the private store artifact,
+                // so an interruption before source deletion leaves a durable,
+                // identity-safe recovery target rather than an untracked
+                // plaintext temp.
+                let lease = journal.acquire_artifact_lease(ArtifactScope::StoreSide)?;
+                let writable = journal.authorize_plaintext_write(lease)?;
+                let temp = writable.authorized_temp()?.clone();
+                secure_transfer::populate_authorized_temp(
+                    &self.store_root,
+                    &source,
+                    temp.path(),
+                    temp.identity(),
+                    secure_transfer::PermissionMode::FromSource,
+                    None,
+                )?;
+                let (context, _) = writable.into_parts();
+                Ok(PreparedCanonicalTransfer {
+                    context,
+                    action: Some(action),
+                    temp: Some(temp),
+                    direct_rename: false,
+                })
+            }
         }
     }
 
@@ -529,12 +596,34 @@ impl CanonicalTransfer for DefaultCanonicalTransfer {
                 source,
                 destination,
                 expected_source,
+                expected_destination,
             } => {
                 let source = self.store_root.join(source.as_str());
                 let destination = self.store_root.join(destination.as_str());
                 Self::ensure_expected(&source, &expected_source)?;
-                std::fs::rename(&source, &destination)
-                    .map_err(|error| AppError::io(&source, error))?;
+                Self::ensure_expected(&destination, &expected_destination)?;
+                if prepared.direct_rename {
+                    std::fs::rename(&source, &destination)
+                        .map_err(|error| AppError::io(&source, error))?;
+                } else {
+                    let temp = prepared.temp.ok_or_else(|| {
+                        AppError::Internal("missing prepared canonical move temp".into())
+                    })?;
+                    secure_transfer::commit_authorized_temp(
+                        &self.store_root,
+                        temp.path(),
+                        temp.identity(),
+                        &destination,
+                    )?;
+                    // The old canonical identity is still required before
+                    // removal; a same-path replacement race must preserve
+                    // both copies and leave the durable record for recovery.
+                    Self::ensure_expected(&source, &expected_source)?;
+                    std::fs::remove_file(&source).map_err(|error| AppError::io(&source, error))?;
+                }
+                failpoint::after(Failpoint::PersistentMutation(
+                    crate::domain::copy_safety::PersistentMutation::DestinationReplacement,
+                ))?;
                 Ok(CanonicalTransferCommitOutcome::Applied)
             }
         }
@@ -579,6 +668,7 @@ mod tests {
             source: "items/old.env".parse().unwrap(),
             destination: "items/new.env".parse().unwrap(),
             expected_source: facts.expected_source(),
+            expected_destination: facts.expected_destination(),
         };
 
         assert!(format!("{action:?}").contains("snapshot: \"opaque\""));

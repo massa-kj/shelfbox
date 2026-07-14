@@ -15,8 +15,9 @@ use serde::Deserialize;
 
 use crate::{
     domain::operation_record::{
-        validate_record_id, ArtifactLocation, ArtifactRecord, ArtifactState, RecoveryFileIdentity,
-        RecoveryRecord, RecoveryRecordKind, OPERATION_RECORD_SCHEMA_VERSION,
+        validate_record_id, ArtifactLocation, ArtifactRecord, ArtifactState,
+        RecoveryBackupMetadata, RecoveryFileIdentity, RecoveryRecord, RecoveryRecordKind,
+        OPERATION_RECORD_SCHEMA_VERSION,
     },
     error::{AppError, Result},
     failpoint::{self, Failpoint},
@@ -183,6 +184,11 @@ pub(crate) fn protected_store_paths(store_root: &Path) -> Result<BTreeSet<PathBu
                 if let Some(path) = operation.pre_state.store_path {
                     paths.insert(store_root.join(path.as_str()));
                 }
+                if let Some(post_state) = operation.post_state {
+                    if let Some(path) = post_state.store_path {
+                        paths.insert(store_root.join(path.as_str()));
+                    }
+                }
                 if let Some(backup) = operation.backup {
                     if let ArtifactLocation::Store { path } = backup.location {
                         paths.insert(store_root.join(path.as_str()));
@@ -245,6 +251,50 @@ pub(crate) fn cleanup_artifact(
             record_id: record_id.into(),
             path: path.clone(),
             reason: "artifact has no parent directory".into(),
+        })?;
+    platform::sync_directory(parent)?;
+    Ok(ArtifactCleanup::Removed)
+}
+
+/// Removes an operation-owned recovery backup only when the durable record
+/// still names the exact file identity.  Lifecycle recovery uses this instead
+/// of a path-based `remove_file`, so a user-created replacement is preserved
+/// and reported as a conflict.
+pub(crate) fn cleanup_backup(
+    store_root: &Path,
+    current_repo_root: &Path,
+    record_id: &str,
+    backup: &RecoveryBackupMetadata,
+) -> Result<ArtifactCleanup> {
+    let path = artifact_path(store_root, current_repo_root, record_id, &backup.location)?;
+    let entry = match platform::inspect_no_follow(&path) {
+        Ok(entry) => entry,
+        Err(AppError::Io { source, .. }) if source.kind() == ErrorKind::NotFound => {
+            return Ok(ArtifactCleanup::AlreadyAbsent);
+        }
+        Err(error) => return Err(error),
+    };
+    let Some(identity) = &backup.expected_identity else {
+        return Err(AppError::RecoveryArtifactConflict {
+            record_id: record_id.into(),
+            path,
+            reason: "recovery backup exists without a durable identity".into(),
+        });
+    };
+    if !identity_matches(identity, entry.identity.volume, entry.identity.file) {
+        return Err(AppError::RecoveryArtifactConflict {
+            record_id: record_id.into(),
+            path,
+            reason: "recovery backup identity no longer matches the durable record".into(),
+        });
+    }
+    fs::remove_file(&path).map_err(|error| AppError::io(&path, error))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::RecoveryArtifactConflict {
+            record_id: record_id.into(),
+            path: path.clone(),
+            reason: "recovery backup has no parent directory".into(),
         })?;
     platform::sync_directory(parent)?;
     Ok(ArtifactCleanup::Removed)
@@ -368,12 +418,14 @@ mod tests {
                 phase: OperationPhase::RecordCreated,
                 repo_id: "repo-1".into(),
                 repo_root: repo_root(root),
+                repo_store_path: None,
                 strategy: MaterializationStrategy::Copy,
                 direction: None,
                 pre_state: OperationPreState {
                     store_path: Some("repos/project/items/secret.env".parse().unwrap()),
                     ..OperationPreState::default()
                 },
+                post_state: None,
                 artifact_record_ids: Vec::new(),
                 backup: None,
             }),

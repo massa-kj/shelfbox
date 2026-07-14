@@ -50,6 +50,10 @@ pub(crate) fn recover_before_mutation(
         if super::add_recovery::recover_if_owned(store_root, current_repo_root, &mut record)? {
             continue;
         }
+        if super::lifecycle_recovery::recover_if_owned(store_root, current_repo_root, &mut record)?
+        {
+            continue;
+        }
         match &record.record {
             RecoveryRecordKind::Artifact(artifact) => {
                 let cleanup = operation_record_store::cleanup_artifact(
@@ -246,12 +250,14 @@ mod tests {
                 phase,
                 repo_id: "repo-1".into(),
                 repo_root: root(root_path),
+                repo_store_path: None,
                 strategy: MaterializationStrategy::Copy,
                 direction: None,
                 pre_state: OperationPreState {
                     repo_path: Some("secret.env".parse().unwrap()),
                     ..OperationPreState::default()
                 },
+                post_state: None,
                 artifact_record_ids: Vec::new(),
                 backup: None,
             }),

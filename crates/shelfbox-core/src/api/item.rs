@@ -6,7 +6,7 @@ pub use crate::{
     ops::{
         add::{DirItemOutcome, DirectoryAddResult, SkipReason},
         info::ItemInfo,
-        relink::RelinkOutcome,
+        relink::{ItemRelinkRequest, RelinkDirection, RelinkOutcome},
         restore::{NamespaceRestoreResult, NsRestoreItemOutcome},
         status::{
             CopyContentState, ItemStatus, ItemStatusV2, MaterializationStrategy,
@@ -153,6 +153,17 @@ pub fn sync(
 pub fn relink(ctx: &mut RepoContext, abs_path: &Path, dry_run: bool) -> Result<ItemRelinkReport> {
     let link = DefaultLinkStrategy;
     relink_ops::relink_report(ctx, abs_path, dry_run, &link)
+}
+
+/// Re-attaches a detached item, optionally resolving a diverged regular Copy
+/// in one explicit durable direction.
+pub fn relink_with_request(
+    ctx: &mut RepoContext,
+    abs_path: &Path,
+    request: ItemRelinkRequest,
+) -> Result<ItemRelinkReport> {
+    let ignore = GitInfoExclude;
+    relink_ops::relink_report_with_request(ctx, abs_path, request, &ignore)
 }
 
 pub fn move_item(

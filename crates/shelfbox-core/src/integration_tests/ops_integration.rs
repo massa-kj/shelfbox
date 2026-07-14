@@ -1344,6 +1344,76 @@ fn restore_keep_store_leaves_symlink_and_store_item() {
 }
 
 #[test]
+fn restore_retains_an_equal_regular_copy_without_replacing_it() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("copy-restore.txt");
+    std::fs::write(&file_path, "canonical").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    let store_path = ctx.repo_store.join("items/copy-restore.txt");
+    std::fs::remove_file(&file_path).unwrap();
+    std::fs::copy(&store_path, &file_path).unwrap();
+
+    ops::restore::restore(&mut ctx, &file_path, false, false, false, &link, &ignore).unwrap();
+
+    assert!(!file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "canonical");
+    assert!(!store_path.exists());
+    assert!(!ctx.manifest.contains("copy-restore.txt"));
+    assert!(!ignore
+        .has_entry(repo_dir.path(), "copy-restore.txt")
+        .unwrap());
+}
+
+#[test]
+fn restore_recovery_completes_from_the_staged_canonical_backup() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("recover-restore.txt");
+    std::fs::write(&file_path, "canonical").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::OperationPhaseUpdated(OperationPhase::StoreStaged) {
+            return Err(AppError::Internal("interrupt after store staging".into()));
+        }
+        Ok(())
+    });
+    assert!(
+        ops::restore::restore(&mut ctx, &file_path, false, false, false, &link, &ignore).is_err()
+    );
+    drop(hook);
+    drop(ctx);
+
+    let recovered = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert!(!file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "canonical");
+    assert!(!recovered.manifest.contains("recover-restore.txt"));
+    assert!(operation_record_store::load_all(&recovered.config.store)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn keep_store_failpoint_leaves_a_durable_detached_state() {
     if !require_symlink_support() {
         return;
@@ -1458,6 +1528,115 @@ fn relink_dry_run_makes_no_changes() {
     );
     assert_eq!(common::snapshot_tree(repo_dir.path()), repo_before);
     assert_eq!(common::snapshot_tree(store_dir.path()), store_before);
+}
+
+#[test]
+fn directional_relink_resolves_detached_diverged_copy_in_both_explicit_directions() {
+    if !require_symlink_support() {
+        return;
+    }
+    for (name, direction, expected) in [
+        (
+            "relink-store.txt",
+            ops::relink::RelinkDirection::FromStore,
+            "canonical",
+        ),
+        (
+            "relink-repo.txt",
+            ops::relink::RelinkDirection::FromRepo,
+            "repo",
+        ),
+    ] {
+        let repo_dir = common::init_git_repo();
+        let store_dir = TempDir::new().unwrap();
+        let file_path = repo_dir.path().join(name);
+        std::fs::write(&file_path, "canonical").unwrap();
+        let mut ctx =
+            context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+        let link = DefaultLinkStrategy;
+        let ignore = GitInfoExclude;
+        ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+        ops::restore::restore(&mut ctx, &file_path, false, false, true, &link, &ignore).unwrap();
+        let store_path = ctx.repo_store.join(format!("items/{name}"));
+        std::fs::remove_file(&file_path).unwrap();
+        std::fs::copy(&store_path, &file_path).unwrap();
+        std::fs::write(&file_path, "repo").unwrap();
+
+        crate::api::item::relink_with_request(
+            &mut ctx,
+            &file_path,
+            crate::api::item::ItemRelinkRequest {
+                direction: Some(direction),
+                dry_run: false,
+                confirmed: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), expected);
+        assert_eq!(std::fs::read_to_string(&store_path).unwrap(), expected);
+        assert_eq!(
+            ctx.manifest.get(name).unwrap().ownership_state,
+            store::manifest::OwnershipState::Attached
+        );
+        assert!(operation_record_store::load_all(&ctx.config.store)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn directional_relink_recovery_keeps_backup_until_attachment_is_durable() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("recover-relink.txt");
+    std::fs::write(&file_path, "canonical").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add_report(&mut ctx, &file_path, false, &link, &ignore).unwrap();
+    ops::restore::restore(&mut ctx, &file_path, false, false, true, &link, &ignore).unwrap();
+    let store_path = ctx.repo_store.join("items/recover-relink.txt");
+    std::fs::remove_file(&file_path).unwrap();
+    std::fs::copy(&store_path, &file_path).unwrap();
+    std::fs::write(&file_path, "repo").unwrap();
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::OperationPhaseUpdated(OperationPhase::ContentSynchronized) {
+            return Err(AppError::Internal(
+                "interrupt after directional sync".into(),
+            ));
+        }
+        Ok(())
+    });
+    assert!(crate::api::item::relink_with_request(
+        &mut ctx,
+        &file_path,
+        crate::api::item::ItemRelinkRequest {
+            direction: Some(ops::relink::RelinkDirection::FromStore),
+            dry_run: false,
+            confirmed: false,
+        },
+    )
+    .is_err());
+    drop(hook);
+    drop(ctx);
+
+    let recovered = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "canonical");
+    assert_eq!(
+        recovered
+            .manifest
+            .get("recover-relink.txt")
+            .unwrap()
+            .ownership_state,
+        store::manifest::OwnershipState::Attached
+    );
+    assert!(operation_record_store::load_all(&recovered.config.store)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -3261,6 +3440,74 @@ fn move_item_renames_store_and_updates_symlink() {
         ignore.has_entry(repo_dir.path(), "subdir/new.txt").unwrap(),
         "new exclude entry must be added"
     );
+}
+
+#[test]
+fn move_preserves_an_observed_equal_regular_copy() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let old_path = repo_dir.path().join("copy-old.txt");
+    let new_path = repo_dir.path().join("nested/copy-new.txt");
+    std::fs::write(&old_path, "canonical").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add_report(&mut ctx, &old_path, false, &link, &ignore).unwrap();
+    let old_store = ctx.repo_store.join("items/copy-old.txt");
+    std::fs::remove_file(&old_path).unwrap();
+    std::fs::copy(&old_store, &old_path).unwrap();
+
+    ops::move_item::move_item(&mut ctx, &old_path, &new_path, false, &link, &ignore).unwrap();
+
+    assert!(!new_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "canonical");
+    assert!(!old_path.exists());
+    assert!(ctx.manifest.contains("nested/copy-new.txt"));
+    assert!(ignore
+        .has_entry(repo_dir.path(), "nested/copy-new.txt")
+        .unwrap());
+}
+
+#[test]
+fn move_recovery_completes_after_canonical_transfer() {
+    if !require_symlink_support() {
+        return;
+    }
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let old_path = repo_dir.path().join("recover-move-old.txt");
+    let new_path = repo_dir.path().join("recover/move-new.txt");
+    std::fs::write(&old_path, "canonical").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    let link = DefaultLinkStrategy;
+    let ignore = GitInfoExclude;
+    ops::add::add_report(&mut ctx, &old_path, false, &link, &ignore).unwrap();
+    let hook = failpoint::install_test_hook(|point| {
+        if *point == Failpoint::OperationPhaseUpdated(OperationPhase::StoreTransferred) {
+            return Err(AppError::Internal("interrupt after store move".into()));
+        }
+        Ok(())
+    });
+    assert!(
+        ops::move_item::move_item(&mut ctx, &old_path, &new_path, false, &link, &ignore).is_err()
+    );
+    drop(hook);
+    drop(ctx);
+
+    let recovered = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    assert!(DefaultLinkStrategy.is_managed_link(&new_path, &recovered.config.store));
+    assert!(!old_path.exists());
+    assert!(recovered.manifest.contains("recover/move-new.txt"));
+    assert!(operation_record_store::load_all(&recovered.config.store)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

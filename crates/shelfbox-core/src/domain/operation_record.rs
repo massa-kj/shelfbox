@@ -32,6 +32,7 @@ pub(crate) struct RecoveryRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // Durable JSON records favor direct DTO ergonomics over heap indirection.
 pub(crate) enum RecoveryRecordKind {
     Operation(OperationRecord),
     Artifact(ArtifactRecord),
@@ -43,9 +44,19 @@ pub(crate) struct OperationRecord {
     pub phase: OperationPhase,
     pub repo_id: String,
     pub repo_root: RecoveryAbsolutePath,
+    /// Repository-specific store directory needed to replay manifest changes
+    /// during lifecycle recovery.  This is global-store-relative and carries
+    /// no plaintext or user content.
+    #[serde(default)]
+    pub repo_store_path: Option<StoreRelativePath>,
     pub strategy: MaterializationStrategy,
     pub direction: Option<OperationDirection>,
     pub pre_state: OperationPreState,
+    /// Destination observations for operations that move an item's logical
+    /// path.  Older records intentionally omit this field and remain
+    /// fail-closed until their legacy recovery is resolved.
+    #[serde(default)]
+    pub post_state: Option<OperationPostState>,
     #[serde(default)]
     pub artifact_record_ids: Vec<String>,
     pub backup: Option<RecoveryBackupMetadata>,
@@ -102,6 +113,19 @@ pub(crate) struct OperationPreState {
     pub store_path: Option<StoreRelativePath>,
     pub repo_fingerprint: Option<RecoveryFingerprint>,
     pub store_fingerprint: Option<RecoveryFingerprint>,
+    pub manifest_contains_item: Option<bool>,
+    pub exclude_owned: Option<bool>,
+    /// The exact exclude state expected once a lifecycle operation completes.
+    /// This is separate from `exclude_owned`: restore may deliberately remove
+    /// a managed exclude, while legacy detach deliberately retains it.
+    #[serde(default)]
+    pub final_exclude_owned: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) struct OperationPostState {
+    pub repo_path: Option<RepoRelativePath>,
+    pub store_path: Option<StoreRelativePath>,
     pub manifest_contains_item: Option<bool>,
     pub exclude_owned: Option<bool>,
 }
@@ -407,6 +431,7 @@ mod tests {
                 phase: OperationPhase::RecordCreated,
                 repo_id: "repo_1".into(),
                 repo_root: repo_root(),
+                repo_store_path: None,
                 strategy: MaterializationStrategy::Copy,
                 direction: None,
                 pre_state: OperationPreState {
@@ -417,6 +442,7 @@ mod tests {
                     ),
                     ..OperationPreState::default()
                 },
+                post_state: None,
                 artifact_record_ids: Vec::new(),
                 backup: None,
             }),
