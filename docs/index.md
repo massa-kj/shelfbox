@@ -135,7 +135,7 @@ Examples:
 * Repository identity strategy
 * Concurrency and locking
 
-### [v0.8.1 Compatibility Baseline](./architecture/v0.8.1-compatibility-baseline.md)
+### [v0.9.0 Compatibility Baseline](./architecture/v0.9.0-compatibility-baseline.md)
 
 Executable and documented symlink-mode compatibility contracts preserved by
 Copy mode.
@@ -148,7 +148,7 @@ Use the architecture documents when modifying implementation or evaluating desig
 
 ### [Copy Mode](./spec/copy-mode.md)
 
-Normative v0.8.1 public copy-materialization policy, including explicit sync
+Normative v0.9.0 public copy-materialization policy, including explicit sync
 and durable-recovery rules.
 
 Defines:

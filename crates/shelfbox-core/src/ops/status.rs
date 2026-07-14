@@ -48,7 +48,7 @@ impl StatusOptions {
 
 /// Legacy symlink-compatibility health status for a single shelved item.
 ///
-/// This type intentionally remains source-compatible with v0.8.0. Copy-aware
+/// This type intentionally remains source-compatible with v0.9.0. Copy-aware
 /// callers should use [`ItemStatusV2`] instead.
 #[derive(Debug, Serialize)]
 pub struct ItemStatus {

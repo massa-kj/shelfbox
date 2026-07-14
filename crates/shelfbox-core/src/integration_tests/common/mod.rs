@@ -108,6 +108,52 @@ pub fn require_symlink_support() -> bool {
     true
 }
 
+/// Creates a temporary directory on a filesystem distinct from `reference`.
+///
+/// The local test suite may not have a second filesystem available. Dedicated
+/// CI sets `SHELFBOX_REQUIRE_CROSS_DEVICE` so that missing `/dev/shm` or a
+/// same-device mount is a test failure rather than a silent skip.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub fn tempdir_on_second_filesystem_or_skip(reference: &Path, prefix: &str) -> Option<TempDir> {
+    use std::os::unix::fs::MetadataExt;
+
+    let strict = std::env::var_os("SHELFBOX_REQUIRE_CROSS_DEVICE").is_some();
+    let tmpfs = Path::new("/dev/shm");
+    if !tmpfs.is_dir() {
+        let message = "cross-device test requires a mounted /dev/shm tmpfs";
+        if strict {
+            panic!("{message}");
+        }
+        eprintln!("skipping cross-device test: {message}");
+        return None;
+    }
+
+    let directory = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in(tmpfs)
+        .unwrap_or_else(|error| panic!("failed to create cross-device tempdir: {error}"));
+    let reference_device = std::fs::metadata(reference)
+        .unwrap_or_else(|error| panic!("failed to inspect cross-device reference: {error}"))
+        .dev();
+    let directory_device = std::fs::metadata(directory.path())
+        .unwrap_or_else(|error| panic!("failed to inspect cross-device tempdir: {error}"))
+        .dev();
+
+    if reference_device != directory_device {
+        return Some(directory);
+    }
+
+    let message = format!(
+        "cross-device test roots share device {reference_device}; provision a distinct filesystem"
+    );
+    if strict {
+        panic!("{message}");
+    }
+    eprintln!("skipping cross-device test: {message}");
+    None
+}
+
 /// Creates a file symlink in a platform-aware way for integration tests.
 #[allow(dead_code)]
 pub fn create_file_symlink(target: &Path, link_path: &Path) {

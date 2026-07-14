@@ -64,3 +64,133 @@ jobs:
       - name: cargo test (non-Windows)
         if: runner.os != 'Windows'
         run: cargo test --workspace
+
+  copy-without-symlink:
+    name: Copy workflow without symlink capability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-copy-without-symlink-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-copy-without-symlink-cargo-
+
+      # This focused core test injects a LinkStrategy that rejects every link
+      # operation. It proves Copy add does not merely pass because the runner
+      # happens to allow symlink creation.
+      - name: Copy add with an unavailable link adapter
+        run: cargo test -p shelfbox-core copy_add_succeeds_without_link_strategy --lib
+
+      - name: Copy CLI workflow
+        run: cargo test -p shelfbox --test cli_behavior_lock copy_materialization_is_available_through_config_and_item_paths
+
+  linux-cross-device:
+    name: Linux cross-device Copy and symlink add
+    runs-on: ubuntu-latest
+    env:
+      SHELFBOX_REQUIRE_CROSS_DEVICE: "1"
+      SHELFBOX_REQUIRE_SYMLINKS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-cross-device-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-cross-device-cargo-
+
+      # The tests use /dev/shm and fail, rather than skip, if it is not a
+      # distinct filesystem. They cover both the legacy symlink and Copy path.
+      - name: Cross-device add integration
+        run: cargo test -p shelfbox-core across_filesystems --lib
+
+  macos-forced-exdev:
+    name: macOS forced EXDEV replacement safety
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-forced-exdev-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-forced-exdev-cargo-
+
+      - name: Forced EXDEV preserves both paths
+        run: cargo test -p shelfbox-core forced_exdev --lib
+
+  windows-replace-safety:
+    name: Windows replacement and sharing-violation safety
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-replace-safety-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-replace-safety-cargo-
+
+      - name: Sharing violation preserves source and destination
+        run: cargo test -p shelfbox-core sharing_violation_preserves_source_and_old_destination --lib
+
+      - name: Atomic replacement semantics
+        run: cargo test -p shelfbox-core atomic_replace_existing_regular_file --lib
+
+      - name: Capability matrix is explicit
+        run: cargo test -p shelfbox-core capability_matrix_is_explicit --lib
+
+  compatibility-boundaries:
+    name: JSON compatibility and architecture boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-compatibility-boundaries-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-compatibility-boundaries-cargo-
+
+      - name: Operation layer architecture boundary
+        run: cargo test -p shelfbox-core --test architecture_boundaries
+
+      - name: Public JSON and CLI compatibility lock
+        run: cargo test -p shelfbox --test cli_behavior_lock

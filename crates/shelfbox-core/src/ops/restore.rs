@@ -53,7 +53,7 @@ enum RestoreMaterialization {
 
 /// Restores `abs_path` as a regular file and removes its canonical store item.
 ///
-/// `restore --keep-store` remains the v0.8.1 legacy detach operation: it
+/// `restore --keep-store` remains the v0.9.0 legacy detach operation: it
 /// changes only ownership state and deliberately leaves the observed symlink
 /// or copy, store item, manifest entry, and exclude untouched.
 pub fn restore(

@@ -1,4 +1,4 @@
-# v0.8.1 Copy Mode
+# v0.9.0 Copy Mode
 
 ## Purpose
 
@@ -6,9 +6,9 @@ Add copy materialization, which places a regular file on the repo side, so that 
 
 Copy is an opt-in fallback, not the primary strategy. It does not change the default behavior for existing users, canonical data, or the ownership model.
 
-## Non-goals for v0.8.1
+## Non-goals for v0.9.0
 
-v0.8.1 will not provide:
+v0.9.0 will not provide:
 
 * automatic detection or synchronization of repo-side changes, or bidirectional synchronization
 * bulk conversion of existing items in response to a config change
@@ -20,7 +20,7 @@ v0.8.1 will not provide:
 * a generic transaction journal for every mutating command
 * renaming or deprecating `restore --keep-store`, or migrating it to a dedicated detach command
 
-Strategy conversion and repo-level bulk operations are deferred to v0.8.2.
+Strategy conversion and repo-level bulk operations are deferred to v0.9.1.
 
 ## Invariants
 
@@ -214,7 +214,7 @@ Perform compensating rollback on ordinary error returns. Process termination, po
 * `item relink --from repo`
 * each item operation within directory add/restore
 
-`restore --keep-store`, repair, `sync --from store|repo`, and normal directionless relink are outside the v0.8.1 durable-record scope because they are bounded by atomic writes/replacements and retryable state transitions. Add them to the scope if implementation introduces a phase that cannot be retried safely.
+`restore --keep-store`, repair, `sync --from store|repo`, and normal directionless relink are outside the v0.9.0 durable-record scope because they are bounded by atomic writes/replacements and retryable state transitions. Add them to the scope if implementation introduces a phase that cannot be retried safely.
 
 An operation record contains at least:
 
@@ -553,7 +553,7 @@ Do not reduce its existing scope.
 * Preserve separate `WARNING` and `ERROR` labels in CLI output. Either label
   returns exit code `2` for `store verify`.
 
-## v0.8.1 Implementation Scope
+## v0.9.0 Implementation Scope
 
 ### Required
 
@@ -570,9 +570,9 @@ Do not reduce its existing scope.
 11. Updated CLI text/JSON reports, exit codes, documentation, and migration notes
 12. Failpoint, cross-device, and platform-specific integration tests
 
-## Deferred to v0.8.2
+## Deferred to v0.9.1
 
-`item materialize` and repo-level operations are separated from v0.8.1 scope, but will be implemented in v0.8.2 as follow-up features that complete copy-mode operation.
+`item materialize` and repo-level operations are separated from v0.9.0 scope, but will be implemented in v0.9.1 as follow-up features that complete copy-mode operation.
 
 ### `item materialize`
 
@@ -609,16 +609,16 @@ On POSIX, use rename without following the target. Encapsulate Windows replaceme
 
 ### Performance and schema
 
-The following are not committed v0.8.2 deliverables. Reassess their necessity using measurements from v0.8.1:
+The following are not committed v0.9.1 deliverables. Reassess their necessity using measurements from v0.9.0:
 
 * accelerating content comparison with a hash cache
 * whether per-item strategy persistence is needed
 * whether backup retention/history is needed
-* expanding operation coverage based on v0.8.1 recovery experience
+* expanding operation coverage based on v0.9.0 recovery experience
 
 ### Re-evaluate the detach lifecycle
 
-For compatibility, v0.8.1 preserves `restore --keep-store` as a legacy detach operation. In v0.8.2, evaluate usage and migration cost and compare:
+For compatibility, v0.9.0 preserves `restore --keep-store` as a legacy detach operation. In v0.9.1, evaluate usage and migration cost and compare:
 
 * preserving the current name and semantics while clarifying documentation only
 * adding `item detach` with the same semantics and gradually deprecating `restore --keep-store` as a compatibility alias
@@ -626,7 +626,7 @@ For compatibility, v0.8.1 preserves `restore --keep-store` as a legacy detach op
 
 Do not change existing `restore --keep-store` into symlink -> regular-copy conversion without a migration path. Users who need strategy conversion should explicitly combine it with `item materialize`.
 
-### v0.8.2 acceptance criteria
+### v0.9.1 acceptance criteria
 
 * `item materialize` does not delete the existing materialization first.
 * Replacement failure leaves the old materialization usable.

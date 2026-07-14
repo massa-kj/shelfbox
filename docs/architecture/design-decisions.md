@@ -107,7 +107,7 @@ crash. File identity alone is not enough because a file can be modified
 in-place while retaining the same identity. Size and mtime are also not enough:
 same-size rewrites are common, and mtime can change as an operation side effect.
 
-Use SHA-256 as the v0.8.1 recovery safety fingerprint:
+Use SHA-256 as the v0.9.0 recovery safety fingerprint:
 
 ```json
 {

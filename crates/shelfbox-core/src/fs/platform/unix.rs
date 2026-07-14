@@ -90,8 +90,18 @@ fn open_regular(path: &Path, access: i32) -> Result<(File, InspectedEntry)> {
 }
 
 pub(super) fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
+    atomic_replace_with(source, destination, |source, destination| {
+        std::fs::rename(source, destination)
+    })
+}
+
+fn atomic_replace_with(
+    source: &Path,
+    destination: &Path,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     require_same_parent(source, destination)?;
-    std::fs::rename(source, destination).map_err(|error| AppError::io(destination, error))
+    rename(source, destination).map_err(|error| AppError::io(destination, error))
 }
 
 pub(super) fn sync_directory(path: &Path) -> Result<()> {
@@ -147,4 +157,32 @@ fn require_same_parent(source: &Path, destination: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forced_exdev_preserves_source_and_old_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("prepared");
+        let destination = dir.path().join("destination");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&destination, "old").unwrap();
+
+        let error = atomic_replace_with(&source, &destination, |_, _| {
+            Err(std::io::Error::from_raw_os_error(libc::EXDEV))
+        })
+        .unwrap_err();
+
+        match error {
+            AppError::Io { source: error, .. } => {
+                assert_eq!(error.raw_os_error(), Some(libc::EXDEV));
+            }
+            other => panic!("expected EXDEV I/O error, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "old");
+    }
 }

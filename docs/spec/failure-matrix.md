@@ -5,7 +5,7 @@ This document catalogues important failure and recovery scenarios in
 
 The normative copy-mode safety and recovery contract is defined in
 [`copy-mode.md`](./copy-mode.md). This matrix covers both the legacy symlink
-behavior and the public v0.8.1 Copy-mode additions.
+behavior and the public v0.9.0 Copy-mode additions.
 
 The guiding hierarchy is:
 

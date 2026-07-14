@@ -1,4 +1,4 @@
-//! Compile-time fixture for the public v0.8.0 API inherited by v0.8.1.
+//! Compile-time fixture for the public v0.8.0 API inherited by v0.9.0.
 //!
 //! This test intentionally uses struct literals and exact function-pointer
 //! signatures. An incompatible field or signature change must therefore be

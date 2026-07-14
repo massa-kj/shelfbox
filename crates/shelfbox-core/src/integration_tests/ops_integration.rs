@@ -4,14 +4,18 @@
 /// the core operations end-to-end using real file I/O and (where required)
 /// real Git subprocesses.  No mocking is used; the tests verify the full
 /// interaction between context, manifest, link strategy and ignore backend.
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use tempfile::TempDir;
 
 use shelfbox_core::{
     context,
     domain::{materialization::MaterializationStrategy, operation_record::OperationPhase},
-    error::AppError,
+    error::{AppError, Result},
     failpoint::{self, Failpoint},
     ignore::{GitInfoExclude, IgnoreBackend},
     link::{DefaultLinkStrategy, LinkStrategy},
@@ -27,6 +31,42 @@ use crate::integration_test_common as common;
 
 fn require_symlink_support() -> bool {
     common::require_symlink_support()
+}
+
+/// A link adapter that rejects every link operation. Copy-mode tests use it to
+/// prove that the workflow never relies on symlink capability merely because a
+/// legacy adapter is still accepted at the operation boundary.
+struct UnavailableLinkStrategy;
+
+impl LinkStrategy for UnavailableLinkStrategy {
+    fn create(&self, _target: &Path, link_path: &Path) -> Result<()> {
+        Err(AppError::Internal(format!(
+            "link capability must not be used for Copy materialization: {}",
+            link_path.display()
+        )))
+    }
+
+    fn remove(&self, link_path: &Path) -> Result<()> {
+        Err(AppError::Internal(format!(
+            "link capability must not be used for Copy materialization: {}",
+            link_path.display()
+        )))
+    }
+
+    fn is_managed_link(&self, _link_path: &Path, _store_root: &Path) -> bool {
+        false
+    }
+
+    fn is_link(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn read_target(&self, path: &Path) -> Result<PathBuf> {
+        Err(AppError::Internal(format!(
+            "link capability must not be used for Copy materialization: {}",
+            path.display()
+        )))
+    }
 }
 
 // ── add / restore ─────────────────────────────────────────────────────────────
@@ -250,6 +290,40 @@ fn add_copy_creates_independent_regular_materialization() {
         std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&file_path).unwrap()),
         std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&store_path).unwrap()),
         "copy materialization must not be a hardlink"
+    );
+}
+
+#[test]
+fn copy_add_succeeds_without_link_strategy() {
+    let repo_dir = common::init_git_repo();
+    let store_dir = TempDir::new().unwrap();
+    let file_path = repo_dir.path().join("copy-without-link.txt");
+    std::fs::write(&file_path, "copy me without links").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ctx.config.materialization = MaterializationStrategy::Copy;
+
+    ops::add::add_report(
+        &mut ctx,
+        &file_path,
+        false,
+        &UnavailableLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
+
+    let store_path = ctx.repo_store.join("items/copy-without-link.txt");
+    assert!(!file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "copy me without links"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&store_path).unwrap(),
+        "copy me without links"
     );
 }
 
@@ -1031,15 +1105,15 @@ fn directory_add_uses_independent_item_records() {
 #[test]
 #[cfg(unix)]
 fn add_across_filesystems_uses_a_durable_store_temp() {
-    let shm = std::path::Path::new("/dev/shm");
-    if !shm.is_dir() || !require_symlink_support() {
+    if !require_symlink_support() {
         return;
     }
     let repo_dir = common::init_git_repo();
-    let store_dir = tempfile::Builder::new()
-        .prefix("shelfbox-cross-device-")
-        .tempdir_in(shm)
-        .unwrap();
+    let Some(store_dir) =
+        common::tempdir_on_second_filesystem_or_skip(repo_dir.path(), "shelfbox-cross-device-")
+    else {
+        return;
+    };
     let file_path = repo_dir.path().join("cross-device.txt");
     std::fs::write(&file_path, "cross device").unwrap();
     let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
@@ -1054,6 +1128,49 @@ fn add_across_filesystems_uses_a_durable_store_temp() {
         .file_type()
         .is_symlink());
     assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "cross device");
+    assert!(operation_record_store::load_all(store_dir.path())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn copy_add_across_filesystems_does_not_require_link_support() {
+    let repo_dir = common::init_git_repo();
+    let Some(store_dir) = common::tempdir_on_second_filesystem_or_skip(
+        repo_dir.path(),
+        "shelfbox-copy-cross-device-",
+    ) else {
+        return;
+    };
+    let file_path = repo_dir.path().join("copy-cross-device.txt");
+    std::fs::write(&file_path, "copy cross device").unwrap();
+    let mut ctx = context::build_create_or_load(repo_dir.path(), Some(store_dir.path())).unwrap();
+    ctx.config.materialization = MaterializationStrategy::Copy;
+
+    ops::add::add_report(
+        &mut ctx,
+        &file_path,
+        false,
+        &UnavailableLinkStrategy,
+        &GitInfoExclude,
+    )
+    .unwrap();
+
+    let store_path = ctx.repo_store.join("items/copy-cross-device.txt");
+    assert!(!file_path
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap(),
+        "copy cross device"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&store_path).unwrap(),
+        "copy cross device"
+    );
     assert!(operation_record_store::load_all(store_dir.path())
         .unwrap()
         .is_empty());
