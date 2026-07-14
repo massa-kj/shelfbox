@@ -2,7 +2,9 @@
 
 Keep AI context files, personal configs, and local secrets **visible in your editor** but **invisible to Git** — surviving reclones, worktrees, and index resets.
 
-> Supported on **Linux**, **macOS**, and **Windows**. On Windows, symlink creation requires Developer Mode or an elevated shell.
+> Supported on **Linux**, **macOS**, and **Windows**. The default strategy is a
+> symlink; on Windows it requires Developer Mode or an elevated shell. Copy
+> mode uses regular files and is available where symlink creation is restricted.
 
 ## The problem
 
@@ -32,14 +34,16 @@ shelfbox item add CLAUDE.local.md
 ```
 
 1. Moves the file into a plain store directory (`~/.local/share/shelfbox/`)
-2. Creates a symlink at the original path — your editor and AI tools see the file as normal
+2. Creates the configured materialization at the original path (a symlink by
+   default) — your editor and AI tools see the file as normal
 3. Adds the path to `.git/info/exclude` — Git ignores it silently, nothing gets committed
 
 ```sh
 shelfbox item restore CLAUDE.local.md
 ```
 
-Reverses the process. The file moves back in place, the symlink is removed, and the exclude entry is cleaned up.
+Reverses the process. The file moves back in place, the materialization is
+removed, and the exclude entry is cleaned up.
 
 The store is a regular directory of plain files. It survives:
 
@@ -48,11 +52,11 @@ The store is a regular directory of plain files. It survives:
 - repository moves and renames
 - `git reset` and index resets
 
-## Why not just a symlink?
+## Why not manage the file yourself?
 
 Anyone can move a file and create a symlink manually. What shelfbox adds is **tracked ownership** and structured recovery. It can detect and fix:
 
-- broken or missing symlinks
+- broken or missing materializations
 - missing `.git/info/exclude` entries
 - lost local associations after a reclone
 - store entries with no corresponding repository
@@ -139,6 +143,7 @@ Optional config at `~/.config/shelfbox/config.toml` (respects `$XDG_CONFIG_HOME`
 ```toml
 # store = "/mnt/data/shelfbox-store"   # default: ~/.local/share/shelfbox
 # default_format = "table"             # table | plain | json
+# materialization = "symlink"          # symlink (default) | copy
 ```
 
 The `--store <PATH>` global flag overrides config at runtime.
@@ -147,6 +152,30 @@ The `--store <PATH>` global flag overrides config at runtime.
 shelfbox config list
 shelfbox config explain store
 ```
+
+## Copy mode
+
+Copy mode leaves an independent regular file in the repository. It is useful
+when a symlink cannot be created, but the canonical content remains in the
+store. Enable it before adding new items:
+
+```sh
+shelfbox config set materialization copy
+shelfbox item add .env
+```
+
+Edits to a copy are intentionally not synchronized automatically. Check the
+state, then choose the source explicitly:
+
+```sh
+shelfbox item status
+shelfbox item sync .env --from store       # discard the repo-side edit
+shelfbox item sync .env --from repo --yes  # make the edit canonical
+```
+
+Changing `materialization` affects only future creations and repairs of a
+missing entry; it never converts existing items. A mixed symlink/copy
+repository is supported.
 
 ## Non-goals
 

@@ -16,7 +16,8 @@ shelfbox item add secrets/notes/local.md
    `git_common_dir`.
 3. Creates a new `RepoId` only when no local cache match exists.
 4. Moves the file into `<store>/repos/<repo-store-dir>/items/<rel-path>`.
-5. Creates a symlink at the original location pointing to the store.
+5. Creates the configured materialization at the original location: a symlink
+   by default, or an independent regular copy in Copy mode.
 6. Records the item in `manifest.json`.
 7. Adds the repo-relative path to `.git/info/exclude` inside a managed block.
 8. Updates `identity_hints` with normalized remote and repository-name hints.
@@ -63,12 +64,17 @@ shelfbox item restore secrets/notes/local.md
 
 **What happens:**
 
-1. Validates that each path is a shelfbox managed symlink.
+1. Validates that each path is a managed symlink or an equal, isolated regular
+   copy.
 2. Checks that the store-side item exists.
-3. Removes the symlink.
+3. Removes the materialization when needed.
 4. Moves the file back from the store to the repo.
 5. Removes the item from `manifest.json`.
 6. Removes the path from `.git/info/exclude` unless `--keep-ignore` is used.
+
+An equal regular copy is retained while management is removed. A diverged copy
+is never overwritten or deleted by restore; run `item sync --from store` or
+`item sync --from repo --yes` first.
 
 **Flags:**
 
@@ -76,13 +82,13 @@ shelfbox item restore secrets/notes/local.md
 |---|---|
 | `--dry-run` | Print what would happen without making changes. |
 | `--keep-ignore` | Do not remove the `.git/info/exclude` entry after restoring. |
-| `--keep-store` | Keep the store copy and transition the item to `detached`. |
+| `--keep-store` | Detach: retain the observed materialization, store item, manifest entry, and exclude, then transition to `detached`. |
 
 ---
 
 ### `item repair <PATH>...`
 
-Recreates a missing or broken symlink for one or more shelved files.
+Recreates a missing materialization for one or more shelved files.
 
 ```sh
 shelfbox item repair .env
@@ -91,6 +97,10 @@ shelfbox item repair secrets/api_key.txt
 
 `item repair` is ownership-neutral. It does not touch the manifest state,
 exclude entries, repository association, or store data.
+
+For a missing entry, repair uses the configured strategy. Equal regular copies
+and valid symlinks are no-ops; a diverged regular copy is reported and left
+unchanged until an explicit sync is chosen.
 
 **Wrong-target symlinks require `--force`:**
 
@@ -108,7 +118,7 @@ refuses to overwrite it without `--force`.
 
 ### `item relink <PATH>...`
 
-Re-attaches a `detached` item by recreating its symlink and transitioning the
+Re-attaches a `detached` item by preserving or recreating its materialization and transitioning the
 manifest state from `detached` to `attached`.
 
 ```sh
@@ -125,9 +135,44 @@ shelfbox item restore --keep-store <PATH>
 
 1. Verifies `ownership_state == detached`.
 2. Verifies the store file exists.
-3. Refuses to overwrite a regular file at the repo path.
-4. Recreates the symlink if needed.
+3. Preserves a healthy symlink or equal regular copy, or recreates a missing
+   materialization with the configured strategy.
+4. Refuses to overwrite an unexpected regular file.
 5. Saves `ownership_state: attached`.
+
+A diverged detached regular copy requires an explicit direction:
+
+```sh
+shelfbox item relink .env --from store
+shelfbox item relink .env --from repo --yes
+```
+
+`--from repo` requires `--yes` for an actual write because it replaces the
+canonical store content. `--dry-run` does not require confirmation.
+
+---
+
+### `item sync <PATH>... --from <store|repo>`
+
+Synchronizes a diverged regular copy in an explicit direction. It never
+chooses a source automatically.
+
+```sh
+shelfbox item sync .env --from store
+shelfbox item sync .env --from repo --yes
+```
+
+`--from store` replaces the repository copy with canonical content. `--from
+repo` replaces canonical store content and requires `--yes` except for
+`--dry-run`. Managed symlinks and already-equal copies are no-ops. The command
+rejects missing, tracked, hardlinked, or exclude-missing copies rather than
+silently changing content.
+
+| Flag | Description |
+|---|---|
+| `--from <store|repo>` | Required source of truth for this invocation. |
+| `--dry-run` | Print the approved action without writing. |
+| `--yes` | Required with `--from repo` when not dry-running. |
 
 ---
 
@@ -142,7 +187,8 @@ shelfbox item move .env .env.local
 **What happens:**
 
 1. Renames the store-side file.
-2. Replaces the old symlink with a symlink at the new path.
+2. Moves the observed materialization to the new path without converting its
+   strategy.
 3. Updates `path`, `store_path`, and `updated_at` in the manifest.
 4. Updates `.git/info/exclude`.
 
@@ -194,6 +240,14 @@ Each item is checked for:
 | `store_exists` | The store-side file exists. |
 | `in_exclude` | The path appears in `.git/info/exclude`. |
 | `not_tracked` | The path is not tracked by Git. |
+
+JSON status uses schema version 2. In addition to the legacy link fields it
+reports `configured_strategy`, `observed_materialization`,
+`materialization_exists`, `materialization_valid`, `content_state`, `severity`,
+stable `issues`, and informational `notes`. For regular-copy items,
+`link_exists` and `link_valid` are `null`; consumers should use the generic
+materialization fields. A diverged copy is an error with
+`content_diverged`, while a strategy mismatch alone is only a note.
 
 ---
 

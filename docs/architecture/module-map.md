@@ -1,6 +1,6 @@
 # Module Map
 
-This map describes the v0.8.0 crate and module boundaries.
+This map describes the v0.8.1 crate and module boundaries.
 
 ## Workspace
 

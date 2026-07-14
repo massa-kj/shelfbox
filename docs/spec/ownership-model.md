@@ -63,7 +63,7 @@ selection.
 
 Repair may restore local integration:
 
-* Symlinks
+* Materializations (managed symlinks or configured copies when missing)
 * Git exclude entries
 * Local index metadata
 * Identity hints
@@ -143,7 +143,7 @@ Reclaim:
 * Does not move item data
 * Does not copy item data
 * Does not change item ownership state
-* Does not repair symlinks or exclude entries
+* Does not repair materializations or exclude entries
 
 After reclaim, run `repo repair` to restore local working tree integration.
 
@@ -172,7 +172,7 @@ Definition:
 
 * Item belongs to the associated repository.
 * Item is present in the repository manifest.
-* The item is eligible for symlink and exclude repair.
+* The item is eligible for materialization and exclude repair.
 
 Properties:
 
@@ -256,8 +256,8 @@ Allowed transitions:
 |---|---|---|---|
 | none | `attached` | `item add` | New item is shelved |
 | `attached` | removed | `item restore` | Store item is restored to the repo and manifest entry removed |
-| `attached` | `detached` | `item restore --keep-store` | Store copy is preserved and ownership remains recorded |
-| `detached` | `attached` | `item relink` | Detached item is re-linked |
+| `attached` | `detached` | `item restore --keep-store` | Detach: preserve the observed materialization, canonical store item, manifest entry, and exclude |
+| `detached` | `attached` | `item relink` | Detached item is re-attached without converting a healthy observed strategy |
 | any valid state | unchanged | `repo reclaim` | Current clone is associated with an existing `RepoId` |
 | any valid state | unchanged | `repo repair` / `item repair` | Local integration is repaired |
 | `orphaned` | removed | `store gc` | Confirmed conservative deletion |

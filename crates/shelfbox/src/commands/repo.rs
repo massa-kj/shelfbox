@@ -35,7 +35,7 @@ pub enum RepoCommand {
         verbose: bool,
     },
 
-    /// Apply safe automatic repairs (broken symlinks, exclude, root mismatch).
+    /// Apply safe automatic repairs (materializations, exclude, root mismatch).
     Repair {
         /// Print what would happen without making any changes.
         #[arg(long)]
@@ -426,7 +426,7 @@ fn cmd_repo_reclaim(
     let reclaim_ctx = repo::build_explicit_reclaim(cwd, store_override, repo_id)?;
     let outcome = repo::execute_reclaim(&reclaim_ctx)?;
     println!(
-        "Associated with {}. Run `shelfbox repo repair` to restore symlinks.",
+        "Associated with {}. Run `shelfbox repo repair` to restore materializations.",
         outcome.repo_id
     );
 
@@ -511,12 +511,18 @@ fn print_repo_repair_report(report: &repo::RepairRepoReport, dry_run: bool) {
     let repaired_label = if dry_run { "would repair" } else { "repaired" };
 
     println!("repo repair:");
-    println!("  symlinks {repaired_label}: {}", report.symlinks_repaired);
     println!(
-        "  symlinks already healthy: {}",
+        "  materializations {repaired_label}: {}",
+        report.symlinks_repaired
+    );
+    println!(
+        "  materializations already healthy: {}",
         report.symlinks_already_healthy
     );
-    println!("  symlinks failed: {}", report.symlinks_failed.len());
+    println!(
+        "  materializations failed: {}",
+        report.symlinks_failed.len()
+    );
     for (path, reason) in &report.symlinks_failed {
         eprintln!("    failed {path}: {reason}");
     }

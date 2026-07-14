@@ -45,7 +45,7 @@ See:
 
 ---
 
-# Repair a Missing Symlink
+# Repair a Missing Materialization
 
 Symptoms:
 
@@ -54,7 +54,7 @@ item status
 repo status
 ```
 
-reports a missing or invalid symlink.
+reports a missing or invalid materialization.
 
 Repair:
 
@@ -195,6 +195,31 @@ See:
 
 * `reference/item-commands.md`
 * `spec/ownership-model.md`
+
+---
+
+# Use Copy Mode and Resolve an Edit
+
+Enable Copy mode before creating a new item when symlinks cannot be created:
+
+```sh
+shelfbox config set materialization copy
+shelfbox item add .env
+```
+
+The repository path is then an independent regular file. It remains protected
+by `.git/info/exclude`, but an edit is not automatically canonical. Inspect and
+choose exactly one direction:
+
+```sh
+shelfbox item status
+shelfbox item sync .env --from store       # replace the repo copy
+shelfbox item sync .env --from repo --yes  # replace canonical store content
+```
+
+`item repair`, `item move`, and normal `item restore` refuse to silently
+overwrite a diverged copy. Synchronize first. A missing exclude entry for a
+Copy item is an error; run `shelfbox repo repair` before a content mutation.
 
 ---
 

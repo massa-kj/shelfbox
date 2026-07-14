@@ -12,7 +12,7 @@ use crate::commands::util::{resolve_path, warn_reclaim_candidates_if_unassociate
 
 #[derive(Debug, Subcommand)]
 pub enum ItemCommand {
-    /// Move a file into the store and leave a symlink in its place.
+    /// Move a file into the store and materialize it in the repository.
     Add {
         /// Files to shelve (relative to repo root).
         #[arg(required = true, value_name = "PATH")]
@@ -43,7 +43,7 @@ pub enum ItemCommand {
         keep_store: bool,
     },
 
-    /// Recreate a missing or broken symlink for one or more shelved files.
+    /// Recreate a missing materialization for one or more shelved files.
     Repair {
         /// Files to repair (relative to repo root).
         #[arg(required = true, value_name = "PATH")]
@@ -83,7 +83,7 @@ pub enum ItemCommand {
     ///
     /// A detached item is one whose ownership was intentionally unlinked via
     /// `item restore --keep-store`.  `relink` transitions the item from
-    /// `detached` back to `attached` and recreates the symlink if needed.
+    /// `detached` back to `attached` and recreates the materialization if needed.
     Relink {
         /// Files to relink (relative to repo root).
         #[arg(required = true, value_name = "PATH")]
@@ -107,7 +107,7 @@ pub enum ItemCommand {
         /// Output format.
         #[arg(long, value_enum)]
         format: Option<OutputFormat>,
-        /// Show extended fields (store path, symlink target).
+        /// Show extended fields (store path and symbolic-link target when present).
         #[arg(long)]
         verbose: bool,
     },
@@ -339,7 +339,7 @@ fn print_add_file_report(report: &item::ItemAddReport) {
         plan.store_path.display()
     );
     println!(
-        "  symlink {} → {}",
+        "  materialize {} from {}",
         plan.abs_path.display(),
         plan.store_path.display()
     );
@@ -520,7 +520,7 @@ fn print_restore_report(report: &item::ItemRestoreReport) {
         }
         item::ItemRestoreAction::RestoreFile => {
             println!("[dry-run] restore '{}'", plan.path);
-            println!("  remove symlink {}", plan.abs_path.display());
+            println!("  remove materialization {}", plan.abs_path.display());
             println!(
                 "  move   {} → {}",
                 plan.store_path.display(),
@@ -681,7 +681,7 @@ fn cmd_sync(
             }
             item::SyncOutcome::ManagedSymlinkNoOp => {
                 println!(
-                    "ok (managed symlink already reads the store): {}",
+                    "ok (managed materialization already reads the store): {}",
                     path.display()
                 );
             }
@@ -717,7 +717,7 @@ fn print_sync_report(report: &item::ItemSyncReport) {
         }
         item::SyncOutcome::ManagedSymlinkNoOp => {
             println!(
-                "[dry-run] sync '{}' — managed symlink is already canonical",
+                "[dry-run] sync '{}' — managed materialization is already canonical",
                 plan.path
             );
         }
@@ -789,7 +789,10 @@ fn cmd_relink(
                 println!("relinked: {}", path.display());
             }
             item::RelinkOutcome::StateUpdated => {
-                println!("relinked (symlink already correct): {}", path.display());
+                println!(
+                    "relinked (materialization already healthy): {}",
+                    path.display()
+                );
             }
             item::RelinkOutcome::WouldRelink => {}
         }
@@ -805,10 +808,12 @@ fn print_relink_report(report: &item::ItemRelinkReport) {
     let plan = &report.plan;
     println!("[dry-run] relink '{}'", plan.path);
     if plan.symlink_ok {
-        println!("  symlink already correct — update ownership_state: detached -> attached");
+        println!(
+            "  materialization already healthy — update ownership_state: detached -> attached"
+        );
     } else {
         println!(
-            "  recreate symlink {} -> {}",
+            "  recreate materialization {} from {}",
             plan.abs_path.display(),
             plan.store_path.display()
         );
@@ -845,7 +850,7 @@ fn print_move_report(report: &item::ItemMoveReport) {
             plan.new_store_path.display()
         );
         println!(
-            "  symlink {} → {}",
+            "  materialization {} → {}",
             plan.old_abs_path.display(),
             plan.new_abs_path.display()
         );
@@ -899,9 +904,8 @@ fn print_list(items: &[item::Item], verbose: bool, ctx: &item::RepoContext) {
             let store_path = ctx.repo_store.join(&item.store_path);
             let link_target = std::fs::read_link(ctx.repo_root.join(&item.path)).ok();
             println!("    store:  {}", store_path.display());
-            match link_target {
-                Some(t) => println!("    link\u{2192}   {}", t.display()),
-                None => println!("    link\u{2192}   (none)"),
+            if let Some(target) = link_target {
+                println!("    link\u{2192}   {}", target.display());
             }
         }
     }
@@ -937,9 +941,8 @@ fn print_status(statuses: &[item::ItemStatusV2], verbose: bool, ctx: &item::Repo
             let store_path = ctx.repo_store.join(&item.store_path);
             let link_target = std::fs::read_link(ctx.repo_root.join(&s.path)).ok();
             println!("    store:        {}", store_path.display());
-            match link_target {
-                Some(t) => println!("    link\u{2192}         {}", t.display()),
-                None => println!("    link\u{2192}         (none)"),
+            if let Some(target) = link_target {
+                println!("    link\u{2192}         {}", target.display());
             }
             println!("    materialization: {:?}", s.observed_materialization);
             println!("    materialization_valid: {}", s.materialization_valid);
@@ -1046,7 +1049,7 @@ fn print_info_table(info: &item::ItemInfo) {
         info.link_target
             .as_deref()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(no symlink)".to_string())
+            .unwrap_or_else(|| "(not a symbolic link)".to_string())
     );
     println!("{:<14} {}", "symlink_ok:", info.symlink_ok);
     println!("{:<14} {}", "tracked:", info.tracked);

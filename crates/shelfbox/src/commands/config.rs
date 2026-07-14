@@ -15,15 +15,6 @@ struct KeyMeta {
     default_display: &'static str,
     description: &'static str,
     precedence: &'static [&'static str],
-    availability: KeyAvailability,
-}
-
-/// Public availability is separate from key metadata so copy configuration can
-/// be wired and tested before its workflow is safe to expose.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KeyAvailability {
-    Released,
-    InternalOnly,
 }
 
 const KEY_STORE: KeyMeta = KeyMeta {
@@ -32,7 +23,6 @@ const KEY_STORE: KeyMeta = KeyMeta {
     default_display: "~/.local/share/shelfbox",
     description: "Root directory for the global shelfbox store.",
     precedence: &["--store", "SHELFBOX_STORE", "config.toml", "XDG default"],
-    availability: KeyAvailability::Released,
 };
 
 const KEY_DEFAULT_FORMAT: KeyMeta = KeyMeta {
@@ -42,11 +32,8 @@ const KEY_DEFAULT_FORMAT: KeyMeta = KeyMeta {
     description: "Default output format for list/status commands. \
                   Valid values: table, plain, json.",
     precedence: &["config.toml", "built-in default"],
-    availability: KeyAvailability::Released,
 };
 
-// This metadata is intentionally present now, but the key remains hidden from
-// released config commands until Phase 12 removes the rollout guard in core.
 const KEY_MATERIALIZATION: KeyMeta = KeyMeta {
     key: "materialization",
     type_name: "enum",
@@ -54,16 +41,12 @@ const KEY_MATERIALIZATION: KeyMeta = KeyMeta {
     description: "Default strategy for future materializations. \
                   Valid values: symlink, copy.",
     precedence: &["config.toml", "built-in default"],
-    availability: KeyAvailability::InternalOnly,
 };
 
 const ALL_KEYS: &[&KeyMeta] = &[&KEY_STORE, &KEY_DEFAULT_FORMAT, &KEY_MATERIALIZATION];
 
 fn find_key(key: &str) -> Option<&'static KeyMeta> {
-    ALL_KEYS
-        .iter()
-        .copied()
-        .find(|m| m.key == key && m.availability == KeyAvailability::Released)
+    ALL_KEYS.iter().copied().find(|m| m.key == key)
 }
 
 // ── config subcommands ──────────────────────────────────────────────────────────────────────────
@@ -142,6 +125,10 @@ fn cmd_config_get(key: &str, show_source: bool, store_override: Option<&Path>) -
                 .unwrap_or_else(|| KEY_DEFAULT_FORMAT.default_display.to_string()),
             resolved.default_format_source,
         ),
+        "materialization" => (
+            resolved.materialization.to_string(),
+            resolved.materialization_source,
+        ),
         _ => unreachable!(),
     };
 
@@ -179,6 +166,13 @@ fn cmd_config_list(format: OutputFormat, store_override: Option<&Path>) -> Resul
             current: resolved
                 .default_format
                 .unwrap_or_else(|| KEY_DEFAULT_FORMAT.default_display.to_string()),
+        },
+        Row {
+            key: KEY_MATERIALIZATION.key,
+            type_name: KEY_MATERIALIZATION.type_name,
+            default: KEY_MATERIALIZATION.default_display,
+            source: resolved.materialization_source.short().to_string(),
+            current: resolved.materialization.to_string(),
         },
     ];
 
@@ -280,9 +274,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn copy_strategy_metadata_is_present_but_not_released() {
+    fn copy_strategy_metadata_is_released() {
         assert!(ALL_KEYS.iter().any(|meta| meta.key == "materialization"));
-        assert!(find_key("materialization").is_none());
+        assert!(find_key("materialization").is_some());
         assert!(find_key("store").is_some());
     }
 }

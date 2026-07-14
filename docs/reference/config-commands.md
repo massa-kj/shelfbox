@@ -15,6 +15,7 @@ shelfbox config list --format json
 KEY             TYPE  DEFAULT                  SOURCE   CURRENT
 store           path  ~/.local/share/shelfbox  default  ~/.local/share/shelfbox
 default_format  enum  table                    default  table
+materialization enum  symlink                  default  symlink
 ```
 
 **Flags:**
@@ -50,7 +51,7 @@ shelfbox config get store --source
 # source: default
 ```
 
-Supported keys: `store`, `default_format`.
+Supported keys: `store`, `default_format`, `materialization`.
 
 **Flags:**
 
@@ -69,6 +70,7 @@ exist.
 ```sh
 shelfbox config set store /mnt/external/shelfbox-store
 shelfbox config set default_format json
+shelfbox config set materialization copy
 ```
 
 Supported keys:
@@ -77,6 +79,12 @@ Supported keys:
 |---|---|
 | `store` | Absolute path |
 | `default_format` | `table`, `plain`, `json` |
+| `materialization` | `symlink` (default), `copy` |
+
+`materialization` selects the default for future materializations. It does not
+convert an existing symlink or regular copy. A Copy item is a regular file in
+the repository; its canonical content remains in the store and changed content
+requires an explicit `item sync` direction.
 
 ---
 
@@ -88,4 +96,5 @@ configuration key.
 ```sh
 shelfbox config explain store
 shelfbox config explain default_format
+shelfbox config explain materialization
 ```

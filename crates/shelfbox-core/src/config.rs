@@ -38,22 +38,6 @@ struct RawConfig {
     materialization: Option<MaterializationStrategy>,
 }
 
-/// Controls whether a parsed copy strategy may reach the released runtime.
-///
-/// Phase 1 must validate and carry the value so later phases do not need a
-/// configuration-schema migration. It must not, however, let users activate a
-/// partially implemented copy workflow. Phase 12 changes the single release
-/// constant below after all copy-mode safety gates have passed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // `Public` is exercised by internal rollout tests until Phase 12.
-enum MaterializationConfigRollout {
-    InternalOnly,
-    Public,
-}
-
-const MATERIALIZATION_CONFIG_ROLLOUT: MaterializationConfigRollout =
-    MaterializationConfigRollout::InternalOnly;
-
 // ── Config source metadata ──────────────────────────────────────────────────
 
 /// The origin of a resolved configuration value, ordered by precedence
@@ -164,14 +148,6 @@ impl Config {
     }
 
     fn resolve_full(raw: RawConfig, store_override: Option<&Path>) -> Result<ResolvedConfig> {
-        Self::resolve_full_with_rollout(raw, store_override, MATERIALIZATION_CONFIG_ROLLOUT)
-    }
-
-    fn resolve_full_with_rollout(
-        raw: RawConfig,
-        store_override: Option<&Path>,
-        rollout: MaterializationConfigRollout,
-    ) -> Result<ResolvedConfig> {
         // Priority (high → low):
         //   1. --store CLI flag (store_override)
         //   2. $SHELFBOX_STORE environment variable
@@ -202,13 +178,6 @@ impl Config {
         };
 
         let (materialization, materialization_source) = match raw.materialization {
-            Some(MaterializationStrategy::Copy)
-                if rollout == MaterializationConfigRollout::InternalOnly =>
-            {
-                return Err(AppError::MaterializationStrategyUnavailable {
-                    strategy: MaterializationStrategy::Copy,
-                });
-            }
             Some(strategy) => (strategy, ConfigSource::File),
             None => (MaterializationStrategy::Symlink, ConfigSource::Default),
         };
@@ -294,16 +263,8 @@ pub fn set_key(key: &str, value: &str) -> Result<()> {
                 )));
             }
         },
-        // The key is intentionally not released through `config set` until
-        // Phase 12. Keeping validation here avoids a second parser and makes
-        // the eventual activation a deliberate, small change.
         "materialization" => match value {
-            "symlink" => {}
-            "copy" => {
-                return Err(AppError::MaterializationStrategyUnavailable {
-                    strategy: MaterializationStrategy::Copy,
-                });
-            }
+            "symlink" | "copy" => {}
             other => {
                 return Err(AppError::Internal(format!(
                     "invalid value '{other}' for materialization; valid values: symlink, copy"
@@ -312,7 +273,7 @@ pub fn set_key(key: &str, value: &str) -> Result<()> {
         },
         other => {
             return Err(AppError::Internal(format!(
-                "unknown config key '{other}'; supported keys: store, default_format"
+                "unknown config key '{other}'; supported keys: store, default_format, materialization"
             )));
         }
     }
@@ -506,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_source_is_preserved_for_internal_rollout_validation() {
+    fn copy_is_accepted_and_records_its_file_source() {
         let _g = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("SHELFBOX_STORE");
         let raw = RawConfig {
@@ -514,43 +475,10 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved =
-            Config::resolve_full_with_rollout(raw, None, MaterializationConfigRollout::Public)
-                .unwrap();
+        let resolved = Config::resolve_full(raw, None).unwrap();
 
         assert_eq!(resolved.materialization, MaterializationStrategy::Copy);
         assert_eq!(resolved.materialization_source, ConfigSource::File);
-    }
-
-    #[test]
-    fn copy_cannot_be_activated_before_the_public_rollout() {
-        let _g = ENV_MUTEX.lock().unwrap();
-        std::env::remove_var("SHELFBOX_STORE");
-        let raw = RawConfig {
-            materialization: Some(MaterializationStrategy::Copy),
-            ..Default::default()
-        };
-
-        let error = Config::resolve_full(raw, None).unwrap_err();
-
-        assert!(matches!(
-            error,
-            AppError::MaterializationStrategyUnavailable {
-                strategy: MaterializationStrategy::Copy
-            }
-        ));
-    }
-
-    #[test]
-    fn copy_cannot_be_enabled_through_the_programmatic_setter() {
-        let error = set_key("materialization", "copy").unwrap_err();
-
-        assert!(matches!(
-            error,
-            AppError::MaterializationStrategyUnavailable {
-                strategy: MaterializationStrategy::Copy
-            }
-        ));
     }
 
     #[test]

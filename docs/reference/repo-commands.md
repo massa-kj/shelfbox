@@ -36,11 +36,11 @@ shelfbox repo status --verbose
 
 **Checks:**
 
-* Per-item symlink and store-file health
+* Per-item materialization (symlink or regular copy) and store-file health
 * Git exclude entries
 * Whether the current repository is associated with a known `RepoId`
 
-`repo status` is read-only. It does not perform reclaim, repair symlinks, or
+`repo status` is read-only. It does not perform reclaim, repair materializations, or
 mutate manifests.
 
 If the current clone has no local cache match but manifests contain positive
@@ -90,14 +90,14 @@ With `--repo-id`, shelfbox skips interactive selection and reclaims that identit
 Successful output:
 
 ```text
-Associated with <repo_id>. Run `shelfbox repo repair` to restore symlinks.
+Associated with <repo_id>. Run `shelfbox repo repair` to restore materializations.
 ```
 
 `repo reclaim` does not:
 
 * Move or copy item data
 * Change item ownership state
-* Repair symlinks
+* Repair materializations
 * Rewrite Git exclude entries
 
 After reclaim, run:
@@ -125,7 +125,9 @@ first.
 
 | Problem | Action |
 |---|---|
-| Missing or broken symlinks for `attached` items | Recreates symlinks |
+| Missing materialization for an `attached` item | Recreates the configured symlink or copy |
+| Equal regular copy | Leaves it unchanged |
+| Diverged regular copy | Reports it and leaves it unchanged; use `item sync` explicitly |
 | Missing or stale `.git/info/exclude` entries | Rebuilds shelfbox exclude block from `attached` items |
 | Stale local Git metadata in `index.json` | Updates `root`, `git_dir`, and `git_common_dir` |
 | Missing identity hints | Updates repo-name, remote, and last-attached hints |
@@ -138,16 +140,16 @@ Successful output is summarized as:
 
 ```text
 repo repair:
-  symlinks repaired: <count>
-  symlinks already healthy: <count>
-  symlinks failed: <count>
+  materializations repaired: <count>
+  materializations already healthy: <count>
+  materializations failed: <count>
   exclude: updated|already current
   index: updated|already current
   identity hints: updated|already current
 ```
 
-With `--dry-run`, the changed metadata lines use `would update`, and symlink
-counts report what would be repaired without writing files.
+With `--dry-run`, the changed metadata lines use `would update`, and
+materialization counts report what would be repaired without writing files.
 
 `repo repair` must not:
 

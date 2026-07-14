@@ -25,10 +25,12 @@ Disk usage  : 12.3 KiB
 
 Runs an integrity check across the store.
 
-For repositories with current local Git metadata, `store verify` checks both
-repo-side symlinks and store files. For repositories rebuilt from manifests
-alone (`root: None`), it verifies store-side data and reports that repo-side
-checks require `repo reclaim` and `repo repair`.
+For repositories with a proven associated local Git checkout, `store verify`
+checks both repo-side materializations (symlinks or regular copies) and
+canonical store files. For repositories rebuilt from manifests alone (`root:
+None`) or whose local checkout is unavailable, it continues canonical checks
+and emits a `WARNING` that local checks require `repo reclaim` and `repo
+repair`.
 
 ```sh
 shelfbox store verify
@@ -39,7 +41,11 @@ shelfbox store verify
 | Code | Meaning |
 |---|---|
 | `0` | No issues found. |
-| `2` | One or more issues found. |
+| `2` | One or more warnings or errors found. |
+
+Findings are printed with distinct `WARNING` and `ERROR` labels even though
+both return exit code `2`. A regular copy that diverges from canonical content,
+is tracked by Git, or lacks its exact exclude entry is reported as an error.
 
 ---
 

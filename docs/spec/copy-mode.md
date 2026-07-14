@@ -46,6 +46,10 @@ materialization = "symlink" # default
 
 Valid values are `symlink` and `copy`. An unknown value is a config error. When omitted, the value defaults to `symlink`, preserving existing behavior.
 
+The setting is public through `shelfbox config get`, `list`, `explain`, and
+`set`; `shelfbox config set materialization copy` is the supported activation
+path.
+
 The configured strategy is a default, not desired state, and is used only when:
 
 * `item add` creates a new materialization
@@ -320,7 +324,7 @@ Directional relink treats content synchronization and `detached -> attached` as 
 | missing | error | recreate with configured strategy | reject and suggest repair | reject |
 | managed symlink | healthy | no-op | no-op | reject |
 | equal regular copy | healthy | no-op | no-op | no-op |
-| diverged regular copy | warning | warn, do not modify | explicitly overwrite repo | explicitly update store |
+| diverged regular copy | error (`content_diverged`) | report, do not modify | explicitly overwrite repo | explicitly update store |
 | unsafe hardlink | error | reject, do not modify | reject | reject |
 | unexpected symlink | error | replace with managed symlink only with `--force` | reject | reject |
 | unsupported/unreadable | error | reject, do not modify | reject | reject |
@@ -402,7 +406,8 @@ Do not add a separate v1 compatibility output. Consumers handling copy items use
 Severity and CLI exit code:
 
 * `Healthy` / exit `0`: store, materialization, exclude, and Git state are healthy.
-* `Warning` / exit `1`: canonical data exists, but a decision or repair is required, such as a diverged copy or missing exclude for a symlink.
+* `Warning` / exit `1`: canonical data exists but a non-destructive repair is
+  needed, such as a missing exclude for a managed symlink.
 * `Error` / exit `2`: missing materialization, missing store, tracked state, missing exclude for a copy, unsafe hardlink, unexpected entry, path escape, unfinished-operation conflict, and similar states.
 
 For multiple items, use the highest severity as the exit code. `item status` and `repo status` are read-only and perform no repair, reclaim, manifest mutation, or operation recovery.
@@ -414,7 +419,8 @@ Preserve its existing responsibility and do not modify excludes.
 * When the exclude is missing or its query fails, do not create a materialization; suggest `repo repair`.
 * For a missing materialization, verify exclude, untracked state, and store, then recreate it with the configured strategy.
 * Equal copies and valid symlinks are no-ops.
-* Return a warning for a diverged copy and do not overwrite it.
+* Report a diverged copy and do not overwrite it. Its status severity remains
+  the `content_diverged` error.
 * As before, replace a wrong-target symlink with a managed symlink only when `--force` is specified.
 * Even with `--force`, do not overwrite regular files, diverged copies, hardlinks, or unsupported entries.
 * Do not modify ownership, manifest identity, or exclude state.
@@ -427,7 +433,8 @@ As an existing repository-integration repair operation, repair materializations 
 2. Evaluate attached items through materialization policy.
 3. Recreate missing materializations with the configured strategy.
 4. Replace wrong-target symlinks only with `--force`.
-5. Treat equal copies and valid symlinks as no-ops, and diverged copies as warnings only.
+5. Treat equal copies and valid symlinks as no-ops, and report diverged copies
+   without modifying them.
 6. Update index metadata and identity hints according to existing behavior.
 
 Desired exclude set:
@@ -543,6 +550,8 @@ Do not reduce its existing scope.
 * Support both symlinks and copies, reporting copy divergence and exclude/Git state.
 * Continue checking the canonical store when a local repo entry is unavailable.
 * Use the shared status evaluator; do not duplicate decisions.
+* Preserve separate `WARNING` and `ERROR` labels in CLI output. Either label
+  returns exit code `2` for `store verify`.
 
 ## v0.8.1 Implementation Scope
 
@@ -652,7 +661,8 @@ Do not change existing `restore --keep-store` into symlink -> regular-copy conve
 * Recovery stops without overwriting when the repo path changes after interruption.
 * A secure temp never becomes group/world-readable during the operation.
 * Add/move/restore work when repo and store are on different filesystems.
-* After editing a copy, status warns and repair is non-destructive.
+* After editing a copy, status reports the `content_diverged` error and repair
+  is non-destructive.
 * A copy with a missing exclude is an error; a symlink with a missing exclude is a warning.
 * `sync --from store` rejects missing and updates only diverged copies.
 * `sync --from repo --yes` updates store content while preserving store permissions.

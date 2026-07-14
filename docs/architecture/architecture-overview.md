@@ -123,6 +123,7 @@ Responsible for:
 * Item storage
 * Manifest persistence
 * Store integrity
+* Strategy-neutral materialization of repo paths (default symlink or Copy mode)
 
 The store is the source of truth.
 
@@ -218,6 +219,10 @@ manifest save
 output
 ```
 
+The `materialization` configuration key is a default for new or missing
+repo-side entries. It is intentionally not persisted per item: operations
+inspect the observed symlink or regular copy before acting.
+
 Detailed flow for `shelfbox item add <PATH>`:
 
 ```text
@@ -231,7 +236,7 @@ cli::run()
   -> shelfbox_core::api::item::add_file(...)
       - validate target path
       - move file to store
-      - create repo-side symlink
+      - create the configured repo-side materialization
       - persist manifest
       - update .git/info/exclude
 ```
@@ -247,7 +252,7 @@ commands::repo::run_repo()
       after association is proven, build a write-capable context for repair
   -> shelfbox_core::api::repo::repair_repo(...)
       - restore missing exclude entries
-      - repair missing or broken symlinks
+      - repair missing materializations
       - refresh local Git metadata in index.json
       - refresh identity hints
   -> print per-fix results

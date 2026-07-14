@@ -31,7 +31,7 @@ Examples:
 * Move the store to a new location
 * Recover after a repository move
 * Recover after a reclone
-* Repair broken symlinks
+* Repair broken materializations
 * Rebuild a lost local index
 
 Use this document when you know what you want to achieve but do not yet know which command to use.
@@ -47,6 +47,7 @@ Reference for:
 * `item add`
 * `item restore`
 * `item repair`
+* `item sync`
 * `item relink`
 * `item move`
 * `item list`
@@ -136,7 +137,8 @@ Examples:
 
 ### [v0.8.1 Compatibility Baseline](./architecture/v0.8.1-compatibility-baseline.md)
 
-Executable and documented symlink-mode contracts that copy-mode work must preserve.
+Executable and documented symlink-mode compatibility contracts preserved by
+Copy mode.
 
 Use the architecture documents when modifying implementation or evaluating design changes.
 
@@ -146,7 +148,8 @@ Use the architecture documents when modifying implementation or evaluating desig
 
 ### [Copy Mode](./spec/copy-mode.md)
 
-Normative v0.8.1 copy-materialization policy.
+Normative v0.8.1 public copy-materialization policy, including explicit sync
+and durable-recovery rules.
 
 Defines:
 

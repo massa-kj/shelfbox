@@ -4,8 +4,8 @@ This document catalogues important failure and recovery scenarios in
 `shelfbox`.
 
 The normative copy-mode safety and recovery contract is defined in
-[`copy-mode.md`](./copy-mode.md). This matrix remains authoritative for the
-existing symlink-mode baseline until its copy-aware rows land with v0.8.1.
+[`copy-mode.md`](./copy-mode.md). This matrix covers both the legacy symlink
+behavior and the public v0.8.1 Copy-mode additions.
 
 The guiding hierarchy is:
 
@@ -42,6 +42,10 @@ Identity-changing actions require explicit user intent
 | 15 | Unassociated repo in index | `root: None` after rebuild | `repo list --verbose` | `repo reclaim` from the desired clone | Not a deletion signal |
 | 16 | Local clone path missing | `root: Some(path)` no longer exists | `store verify` / `store gc` planning | `repo reclaim` from a current clone | GC still deletes only `orphaned` items |
 | 17 | Orphaned item | Item has no valid claimant | Scanner or GC planning | `store gc` after confirmation | Only `orphaned` is GC-eligible |
+| 18 | Diverged regular copy | Repo copy differs from canonical store content | `item status`, `repo status`, or `store verify` | `item sync <PATH> --from store` or `--from repo --yes` | Never overwritten by repair, move, or restore |
+| 19 | Copy exclude entry missing | Regular copy may be Git-visible | status or verify | `repo repair` | Error; content mutations fail closed until exclusion is restored |
+| 20 | Local checkout unavailable during verify | Canonical manifest is available but repo root cannot be safely checked | `store verify` | `repo reclaim`, then `repo repair` if appropriate | Canonical checks continue and output is a `WARNING` with exit 2 |
+| 21 | Stale completed operation record | Record remains after a completed mutation | recovery or GC planning | retry operation or automatic record cleanup | Matching artifacts are cleaned without rolling back completed state |
 
 ---
 
@@ -62,7 +66,7 @@ Expected result:
 
 * Existing managed items are preserved.
 * Current clone is associated with the selected `RepoId`.
-* Symlinks and exclude entries are repaired.
+* Materializations and exclude entries are repaired.
 * No ownership transfer occurs.
 
 ---
@@ -91,9 +95,10 @@ Expected result:
 
 | Broken component | Recoverable? | Needed action |
 |---|---|---|
-| Symlink missing | Yes | `item repair` or `repo repair` |
+| Materialization missing | Yes | `item repair` or `repo repair` |
 | Symlink wrong target | Yes, with explicit force | `item repair --force` |
-| Regular file at repo path | Manual | User decides |
+| Diverged regular copy | Yes, explicit direction | `item sync --from store` or `--from repo --yes` |
+| Unexpected regular file at repo path | Manual | User decides |
 | Exclude entry missing | Yes | `repo repair` |
 | `index.json` missing | Yes | `store rebuild-index`, then `repo reclaim` |
 | Repository store directory renamed | Yes | `store rebuild-index` |
@@ -134,7 +139,7 @@ The recovery scenarios live in
 | Rename `repos/<repo-store-dir>` | `renamed_repo_store_dir_rebuild_index_restores_locator_and_repair_succeeds` | `store rebuild-index` restores the locator and repair succeeds after reclaim |
 | Delete `index.json` and rebuild | `delete_index_and_rebuild_restores_repoid_and_store_dir_without_git_metadata` | Rebuilt index contains `repo_id` and `repo_store_dir`, but no Git metadata |
 | Re-clone and reclaim | `reclone_reclaim_associates_existing_repoid_after_fresh_repoid` | New clone uses old `RepoId` only after explicit reclaim |
-| Repair after reclaim | `repair_after_reclaim_restores_symlinks_and_exclude_entries` | Symlinks and exclude entries are restored |
+| Repair after reclaim | `repair_after_reclaim_restores_symlinks_and_exclude_entries` | Materializations and exclude entries are restored |
 | Reject reclaim with current items | `reclaim_rejects_current_repo_with_items_before_mutation` | Reclaim precondition errors before mutation |
 | Duplicate `repo_id` | `duplicate_repoid_makes_rebuild_index_and_reclaim_fail_hard` | `store rebuild-index` and reclaim fail hard |
 | Duplicate `item_id` | `duplicate_itemid_makes_rebuild_index_and_reclaim_fail_hard` | `store rebuild-index` and reclaim fail hard |

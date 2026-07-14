@@ -13,11 +13,11 @@
 | **Identity hints are hints only** | `remote_hints`, `repo_name_hints`, and `last_attached_at` are used for display, candidate ranking, and best-effort reclaim hints. They are never proof of identity and never trigger automatic reclaim. |
 | **Remote hints use host/path format** | Remote URLs are normalized to `host/org/repo` style before entering `remote_hints` (for example `github.com/org/repo`). Scheme, user, query, fragment, and `.git` suffixes are discarded; local/file URLs are not stored as remote hints. |
 | **Explicit reclaim instead of automatic identity detection** | A new clone receives a new `RepoId` unless the user explicitly runs `repo reclaim`. This prevents remote URL or name matches from silently merging unrelated repositories. |
-| **Reclaim does not transfer ownership** | `repo reclaim` associates the current clone with an existing `RepoId`; it does not move items, copy items, change ownership state, repair symlinks, or rewrite excludes. |
+| **Reclaim does not transfer ownership** | `repo reclaim` associates the current clone with an existing `RepoId`; it does not move items, copy items, change ownership state, repair materializations, or rewrite excludes. |
 | **Repair is ownership-neutral** | `repo repair` and `item repair` restore local integration but never assign a different `RepoId` or change item ownership state. |
 | **Conservative GC** | GC may delete only confirmed `orphaned` items. `attached`, `detached`, and `unreachable` items are protected. Manifest entries are removed and saved before store files are deleted, so a manifest-save failure does not remove data. Repository store directories are not deleted merely because a local clone is missing. |
 | **Namespace is UI only** | Directory grouping is derived from `item.path`. Namespace entries are not persisted as identity, ownership, recovery, reclaim, repair, or GC metadata. |
-| **Link strategy is runtime behavior** | `LinkStrategy` selects how links are created on the current platform. Per-item link metadata is not canonical manifest identity. If future hardlink/copy modes need persistence, they require a new versioned manifest field and migration. |
+| **Configured strategy is a default, observed strategy is runtime state** | `materialization = symlink|copy` selects only future or missing repo-side entries. The manifest stores no per-item strategy; operations inspect the actual symlink or regular copy, so changing config never converts an existing item. `LinkStrategy` remains the low-level symlink adapter. |
 | **`# BEGIN shelfbox` block in exclude** | All shelfbox entries are wrapped in a named block so other tools can safely edit `.git/info/exclude`; content outside the block is preserved. |
 | **Store-level advisory file lock** | Repo-context operations acquire `<store>/.lock` so ordinary item and repository writes do not interleave index and manifest updates. |
 | **Machine-readable exit codes** | Status and verify commands return stable process codes so they can be used in scripts and CI. |
@@ -26,7 +26,7 @@
 | **Private, fail-closed platform filesystem adapter** | No-follow inspection, stable identity, link counts, replacement, and directory durability are platform capabilities behind `fs::platform`. Operations never call OS APIs directly, and no unsupported guarantee falls back to delete-then-create. |
 | **SHA-256 recovery fingerprints** | Durable operation records use a bounded-memory SHA-256 content fingerprint serialized as `{ "algorithm": "sha256", "digest_hex": "<64 lowercase hex>" }`. This is recovery safety metadata, not a routine status hash cache. |
 | **Option-driven durable atomic writes** | `storage::atomic_write` creates same-directory temp files with `create_new`, can fsync file content before rename, uses the platform atomic-replace adapter, and can require or best-effort parent-directory fsync. Generated temp files are the default; fixed temp paths are opt-in and never overwritten. |
-| **Status schema v2 is additive** | Existing `ItemStatus` and `IntegrityReport` remain literal symlink-compatibility projections. Copy-aware callers use option-bearing v2 APIs with `status_schema_version = 2`, generic materialization fields, stable snake_case codes, and nullable legacy link fields for copy items. |
+| **Status schema v2 is additive** | Existing Rust `ItemStatus` and `IntegrityReport` remain literal symlink-compatibility projections. CLI JSON and copy-aware callers use option-bearing v2 APIs with `status_schema_version = 2`, generic materialization fields, stable snake_case codes, and nullable legacy link fields for copy items. |
 | **Copy mutations require artifact leases** | No copy mutation may write plaintext before its temp path is durably recorded, repo-side temps are exactly excluded, and the empty temp identity is durably recorded. Commit must be bracketed by pre/post validation, and cleanup may remove only matching artifacts. |
 | **Operations use materializer and canonical-transfer ports** | Operations issue typed actions, persist high-level phases, and request opaque commit permits. Filesystem adapters own symlink/copy dispatch, no-follow facts, temp artifacts, and transfer algorithms; canonical store movement is a separate port. |
 
@@ -234,8 +234,8 @@ Status has two compatibility layers:
   `path`, `link_exists`, `link_valid`, `store_exists`, `in_exclude`,
   `not_tracked`, and `ok`.
 * Schema v2 is the copy-aware additive shape. It is exposed through
-  option-bearing APIs and is not used by the CLI formatter until the formatter
-  phase switches to it deliberately.
+  option-bearing APIs and is the JSON shape emitted by the CLI status
+  formatter.
 
 The existing public `ItemStatus`, `IntegrityReport`, `item::status`, and
 `repo::integrity_check` APIs remain source-compatible. They must continue to be

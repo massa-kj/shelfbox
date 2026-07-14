@@ -10,7 +10,10 @@ Typical examples:
 * Secrets and credentials
 * Machine-specific configuration
 
-The file remains visible at its original path through a symlink, while the real content is stored outside the repository.
+The file remains visible at its original path through a symlink by default,
+while the canonical content is stored outside the repository. Copy mode can
+instead leave a regular file at that path for environments that cannot create
+symlinks.
 
 ---
 
@@ -42,7 +45,8 @@ Requirements:
 * Rust 1.75+ (source installation)
 * Linux, macOS, or Windows
 
-On Windows, symlink creation requires Developer Mode or an elevated shell.
+On Windows, the default symlink strategy requires Developer Mode or an elevated
+shell. Configure Copy mode when that capability is unavailable.
 
 ---
 
@@ -58,14 +62,15 @@ Shelve it:
 
 ```sh
 shelfbox item add notes.local.md
-# notes.local.md is now a symlink; your app still reads it normally
+# notes.local.md uses the default symlink strategy; your app still reads it normally
 git status  # notes.local.md does not appear — it's in .git/info/exclude
 ```
 
 What happens:
 
 1. The file is moved into the shelfbox store.
-2. A symlink is created at the original path.
+2. The configured materialization is created at the original path (a symlink
+   by default).
 3. The path is added to `.git/info/exclude`.
 
 Your editor still sees the file normally.
@@ -86,7 +91,32 @@ To undo shelving:
 shelfbox item restore notes.local.md
 ```
 
-The file is moved back into the repository and the symlink is removed.
+The file is moved back into the repository and its materialization is removed.
+
+---
+
+## Use Copy Mode
+
+Use Copy mode before adding a file when symlink creation is unavailable or a
+regular file is required in the working tree:
+
+```sh
+shelfbox config set materialization copy
+shelfbox item add notes.local.md
+```
+
+The repository file and canonical store file are separate regular files. After
+editing the repository copy, inspect it and choose synchronization direction
+explicitly:
+
+```sh
+shelfbox item status
+shelfbox item sync notes.local.md --from store
+# or: shelfbox item sync notes.local.md --from repo --yes
+```
+
+The `--yes` confirmation is required only when repository content replaces the
+canonical store file. Changing the configuration never converts existing items.
 
 ---
 
@@ -154,7 +184,8 @@ mode `0700` (owner-only access).
 
 ### Managed Item
 
-A file that has been moved into the store and is represented by a symlink in the repository.
+A file whose canonical content is in the store and is represented in the
+repository by the observed symlink or regular-copy materialization.
 
 ### Repository Identity
 

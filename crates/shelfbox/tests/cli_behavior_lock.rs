@@ -75,7 +75,7 @@ fn config_list_json_uses_isolated_defaults_without_creating_config_file() {
     );
 
     let rows: Vec<Value> = serde_json::from_str(&output.stdout).unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
 
     let store = row_by_key(&rows, "store");
     assert_eq!(store["type"], "path");
@@ -89,32 +89,118 @@ fn config_list_json_uses_isolated_defaults_without_creating_config_file() {
     assert_eq!(default_format["type"], "enum");
     assert_eq!(default_format["source"], "default");
     assert_eq!(default_format["current"], "table");
+
+    let materialization = row_by_key(&rows, "materialization");
+    assert_eq!(materialization["type"], "enum");
+    assert_eq!(materialization["default"], "symlink");
+    assert_eq!(materialization["source"], "default");
+    assert_eq!(materialization["current"], "symlink");
 }
 
 #[test]
-fn copy_materialization_remains_unavailable_through_released_config_paths() {
+fn copy_materialization_is_available_through_config_and_item_paths() {
     let fixture = CliFixture::new();
     let cwd = TempDir::new().unwrap();
     fixture.write_config("materialization = \"copy\"\n");
 
-    let from_file = fixture.run(cwd.path(), ["config", "list"]);
-    assert!(!from_file.status.success());
-    assert!(from_file.stdout.is_empty());
-    assert!(from_file
-        .stderr
-        .contains("materialization strategy 'copy' is not available"));
+    let from_file = fixture.run(cwd.path(), ["config", "get", "materialization", "--source"]);
+    from_file.assert_success();
+    assert_eq!(from_file.stdout, "copy\nsource: config\n");
+    assert_eq!(from_file.stderr, "");
+
+    let list = fixture.run(cwd.path(), ["config", "list", "--format", "json"]);
+    list.assert_success();
+    let rows: Vec<Value> = serde_json::from_str(&list.stdout).unwrap();
+    let materialization = row_by_key(&rows, "materialization");
+    assert_eq!(materialization["type"], "enum");
+    assert_eq!(materialization["default"], "symlink");
+    assert_eq!(materialization["source"], "config");
+    assert_eq!(materialization["current"], "copy");
+
+    let explain = fixture.run(cwd.path(), ["config", "explain", "materialization"]);
+    explain.assert_success();
+    assert!(explain
+        .stdout
+        .contains("Default strategy for future materializations."));
+    assert!(explain.stdout.contains("Valid values: symlink, copy."));
 
     let fresh_fixture = CliFixture::new();
     let from_set = fresh_fixture.run(cwd.path(), ["config", "set", "materialization", "copy"]);
-    assert!(!from_set.status.success());
-    assert!(from_set.stdout.is_empty());
-    assert!(from_set
-        .stderr
-        .contains("unknown config key: materialization"));
-    assert!(
-        !fresh_fixture.config_file_path().exists(),
-        "a rejected copy strategy must not create or modify config.toml"
+    from_set.assert_success();
+    assert_eq!(from_set.stdout, "set materialization = copy\n");
+    assert_eq!(from_set.stderr, "");
+    assert_eq!(
+        std::fs::read_to_string(fresh_fixture.config_file_path()).unwrap(),
+        "materialization = \"copy\"\n"
     );
+
+    let repo = common::init_git_repo();
+    let store = TempDir::new().unwrap();
+    let repo_item = repo.path().join("secret.txt");
+    std::fs::write(&repo_item, "canonical").unwrap();
+    fixture
+        .run(
+            repo.path(),
+            store_args(store.path(), ["item", "add", "secret.txt"]),
+        )
+        .assert_success();
+    assert!(
+        !std::fs::symlink_metadata(&repo_item)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "copy mode must materialize a regular repository file"
+    );
+    assert_eq!(std::fs::read_to_string(&repo_item).unwrap(), "canonical");
+
+    let healthy = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["item", "status", "--format", "json"]),
+    );
+    healthy.assert_code(0);
+    let statuses: Vec<Value> = serde_json::from_str(&healthy.stdout).unwrap();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0]["configured_strategy"], "copy");
+    assert_eq!(statuses[0]["observed_materialization"], "regular_file");
+    assert_eq!(statuses[0]["content_state"], "equal");
+    assert!(statuses[0]["link_exists"].is_null());
+    assert!(statuses[0]["link_valid"].is_null());
+
+    std::fs::write(&repo_item, "local edit").unwrap();
+    let diverged = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["item", "status", "--format", "plain"]),
+    );
+    diverged.assert_code(2);
+    assert_eq!(diverged.stdout, "ERROR secret.txt content diverged\n");
+
+    let missing_direction = fixture.run(
+        repo.path(),
+        store_args(store.path(), ["item", "sync", "secret.txt"]),
+    );
+    missing_direction.assert_code(2);
+    assert!(missing_direction.stderr.contains("--from <FROM>"));
+
+    let missing_confirmation = fixture.run(
+        repo.path(),
+        store_args(
+            store.path(),
+            ["item", "sync", "secret.txt", "--from", "repo"],
+        ),
+    );
+    assert!(!missing_confirmation.status.success());
+    assert!(missing_confirmation.stderr.contains("--yes"));
+
+    let sync = fixture.run(
+        repo.path(),
+        store_args(
+            store.path(),
+            ["item", "sync", "secret.txt", "--from", "store"],
+        ),
+    );
+    sync.assert_success();
+    assert_eq!(sync.stdout, "synchronized from store: secret.txt\n");
+    assert_eq!(std::fs::read_to_string(&repo_item).unwrap(), "canonical");
 }
 
 #[test]
@@ -372,7 +458,7 @@ fn item_move_dry_run_reports_plan_without_writing() {
         concat!(
             "[dry-run] move 'original.txt' → 'renamed.txt'\n",
             "  store   <repo-store>/items/original.txt → <repo-store>/items/renamed.txt\n",
-            "  symlink <repo>/original.txt → <repo>/renamed.txt\n",
+            "  materialization <repo>/original.txt → <repo>/renamed.txt\n",
             "  manifest: update path and store_path\n",
             "  exclude:  remove 'original.txt', add 'renamed.txt'\n"
         )
@@ -648,9 +734,9 @@ fn repo_repair_dry_run_reports_plan_without_writing() {
             "[dry-run] repair 'repo-dry.txt'\n",
             "  recreate symlink <repo>/repo-dry.txt → <repo-store>/items/repo-dry.txt\n",
             "repo repair:\n",
-            "  symlinks would repair: 1\n",
-            "  symlinks already healthy: 0\n",
-            "  symlinks failed: 0\n",
+            "  materializations would repair: 1\n",
+            "  materializations already healthy: 0\n",
+            "  materializations failed: 0\n",
             "  exclude: already current\n",
             "  index: already current\n",
             "  identity hints: would update\n"
@@ -692,12 +778,14 @@ fn repo_reclaim_explicit_target_updates_association_without_repairing_symlinks()
     output.assert_success();
     assert_eq!(
         output.stdout,
-        format!("Associated with {repo_id}. Run `shelfbox repo repair` to restore symlinks.\n")
+        format!(
+            "Associated with {repo_id}. Run `shelfbox repo repair` to restore materializations.\n"
+        )
     );
     assert_eq!(output.stderr, "");
     assert!(
         !reclone.path().join("secret.txt").exists(),
-        "repo reclaim must not repair repo-side symlinks"
+        "repo reclaim must not repair repo-side materializations"
     );
 
     let index_json: Value =

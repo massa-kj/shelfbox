@@ -175,6 +175,10 @@ link implementation metadata
 
 These values are either local cache data, runtime behavior, or UI presentation.
 
+In particular, the default `materialization` strategy is configuration, not
+manifest state. An item can therefore remain a symlink or regular copy after
+the configured default changes; each operation inspects the repo-side entry.
+
 ---
 
 # identity_hints
@@ -326,7 +330,7 @@ Item identity is independent of:
 
 * Content
 * Path
-* Symlink target
+* Observed materialization implementation
 
 ---
 
@@ -342,6 +346,14 @@ Item identity is independent of:
 
 The `repos/` directory is the canonical persistent store. Preserving `repos/`
 must be enough to rebuild local cache files and recover managed items.
+
+## Status JSON migration
+
+CLI status JSON uses schema version 2. Each item includes generic
+`configured_strategy`, `observed_materialization`, `materialization_exists`,
+`materialization_valid`, and `content_state` fields. The legacy
+`link_exists` and `link_valid` fields retain their symlink meanings and are
+`null` for regular-copy items; consumers must not treat them as generic state.
 
 ---
 

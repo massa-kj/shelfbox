@@ -30,11 +30,6 @@ pub(crate) fn evaluate_materialization_status(
     let materialization_valid = matches!(
         observed,
         ObservedMaterialization::ManagedSymlink | ObservedMaterialization::RegularCopy
-    ) && !matches!(
-        facts.copy_content,
-        CopyContentState::Diverged
-            | CopyContentState::Unreadable
-            | CopyContentState::ComparisonFailed
     );
 
     let mut issues = Vec::new();
@@ -143,6 +138,23 @@ mod tests {
             result.notes,
             vec![StatusNote {
                 code: StatusNoteCode::StrategyMismatch
+            }]
+        );
+    }
+
+    #[test]
+    fn diverged_copy_is_structurally_valid_but_an_integrity_error() {
+        let mut copy = copy_facts();
+        copy.copy_content = CopyContentState::Diverged;
+
+        let result = evaluate_materialization_status(copy, MaterializationStrategy::Copy);
+
+        assert!(result.materialization_valid);
+        assert_eq!(result.severity, StatusSeverity::Error);
+        assert_eq!(
+            result.issues,
+            vec![StatusIssue {
+                code: StatusIssueCode::ContentDiverged,
             }]
         );
     }
