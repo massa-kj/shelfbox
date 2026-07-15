@@ -199,60 +199,94 @@ fn materialize_repo(
         });
     }
     let location = MaterializationLocation::new(repo_path, store_path.clone());
-    let mut materializer =
-        DefaultMaterializer::new(repo_root.to_path_buf(), store_root.to_path_buf());
-    if operation.strategy == MaterializationStrategy::Copy {
-        let mut journal = AddMutationJournal::new(
-            store_root,
-            repo_root,
-            &GitInfoExclude,
-            record,
-            repo_absolute.clone(),
-            store_root.join(store_path.as_str()),
-        );
-        let prepared = materializer.prepare(
-            MaterializationAction::Create {
+
+    let mut apply = |strategy: MaterializationStrategy| -> Result<()> {
+        let mut materializer =
+            DefaultMaterializer::new(repo_root.to_path_buf(), store_root.to_path_buf());
+        if strategy == MaterializationStrategy::Copy {
+            let mut journal = AddMutationJournal::new(
+                store_root,
+                repo_root,
+                &GitInfoExclude,
+                record,
+                repo_absolute.clone(),
+                store_root.join(store_path.as_str()),
+            );
+            let prepared = materializer.prepare(
+                MaterializationAction::Create {
+                    location: location.clone(),
+                    strategy,
+                },
+                &mut journal,
+            )?;
+            let facts = materializer.inspect(MaterializationInspectionRequest {
                 location: location.clone(),
-                strategy: operation.strategy,
-            },
-            &mut journal,
-        )?;
-        let facts = materializer.inspect(MaterializationInspectionRequest {
-            location,
-            purpose: InspectionPurpose::PreCommit,
-        })?;
-        if facts.repo_entry_kind != RepoEntryKind::Missing || !facts.store_exists {
-            return Err(AppError::FilesystemEntryChanged {
-                path: repo_absolute,
-            });
+                purpose: InspectionPurpose::PreCommit,
+            })?;
+            if facts.repo_entry_kind != RepoEntryKind::Missing || !facts.store_exists {
+                return Err(AppError::FilesystemEntryChanged {
+                    path: repo_absolute.clone(),
+                });
+            }
+            let permit = journal
+                .issue_commit_permit(facts.write_precondition_guard(prepared.commit_context()))?;
+            materializer.commit(prepared, permit)?;
+            journal.cleanup_all()?;
+            return Ok(());
         }
-        let permit = journal
-            .issue_commit_permit(facts.write_precondition_guard(prepared.commit_context()))?;
-        materializer.commit(prepared, permit)?;
-        journal.cleanup_all()?;
-    } else {
+
         let mut journal = NoArtifactJournal;
         let prepared = materializer.prepare(
             MaterializationAction::Create {
                 location: location.clone(),
-                strategy: operation.strategy,
+                strategy,
             },
             &mut journal,
         )?;
         let facts = materializer.inspect(MaterializationInspectionRequest {
-            location,
+            location: location.clone(),
             purpose: InspectionPurpose::PreCommit,
         })?;
         if facts.repo_entry_kind != RepoEntryKind::Missing || !facts.store_exists {
             return Err(AppError::FilesystemEntryChanged {
-                path: repo_absolute,
+                path: repo_absolute.clone(),
             });
         }
         let permit = journal
             .issue_commit_permit(facts.write_precondition_guard(prepared.commit_context()))?;
         materializer.commit(prepared, permit)?;
+        Ok(())
+    };
+
+    match apply(operation.strategy) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if operation.strategy == MaterializationStrategy::Symlink
+                && is_windows_symlink_unavailable(&error) =>
+        {
+            // Recovery is replaying a pre-copy-mode add. On Windows without
+            // symlink privilege, complete the recovery with a regular copy
+            // and persist the strategy shift before subsequent phase checks.
+            apply(MaterializationStrategy::Copy)?;
+            if let RecoveryRecordKind::Operation(operation) = &mut record.record {
+                operation.strategy = MaterializationStrategy::Copy;
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
     }
-    Ok(())
+}
+
+fn is_windows_symlink_unavailable(error: &AppError) -> bool {
+    #[cfg(windows)]
+    {
+        matches!(error, AppError::Internal(message) if message.contains("Windows symlink creation is unavailable."))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn save_manifest(

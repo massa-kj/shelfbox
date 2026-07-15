@@ -345,22 +345,73 @@ fn recover_move_repo(
     if new.repo_entry_kind != RepoEntryKind::Missing {
         return Err(blocked(record, "move new materialization appeared"));
     }
-    let prepared = materializer.prepare(
-        MaterializationAction::Create {
-            location: new_location,
-            strategy: operation.strategy,
-        },
+    let mut applied_strategy = operation.strategy;
+    match create_move_materialization(
+        &mut materializer,
         &mut journal,
+        &post,
+        new_location.clone(),
+        operation.strategy,
+    ) {
+        Ok(()) => {}
+        Err(error)
+            if operation.strategy == MaterializationStrategy::Symlink
+                && is_windows_symlink_unavailable(&error) =>
+        {
+            create_move_materialization(
+                &mut materializer,
+                &mut journal,
+                &post,
+                new_location,
+                MaterializationStrategy::Copy,
+            )?;
+            applied_strategy = MaterializationStrategy::Copy;
+        }
+        Err(error) => return Err(error),
+    }
+    journal.cleanup_all()?;
+    journal.advance(OperationPhase::RepoMoved)?;
+    drop(journal);
+    if applied_strategy != operation.strategy {
+        if let RecoveryRecordKind::Operation(operation) = &mut record.record {
+            operation.strategy = applied_strategy;
+        }
+        operation_record_store::update(store_root, record)?;
+    }
+    Ok(())
+}
+
+fn create_move_materialization(
+    materializer: &mut DefaultMaterializer,
+    journal: &mut AddMutationJournal<'_>,
+    post: &PostPaths,
+    location: MaterializationLocation,
+    strategy: MaterializationStrategy,
+) -> Result<()> {
+    let prepared = materializer.prepare(
+        MaterializationAction::Create { location, strategy },
+        journal,
     )?;
     let fresh = materializer.inspect(MaterializationInspectionRequest {
-        location: MaterializationLocation::new(post.repo_path, post.store_path),
+        location: MaterializationLocation::new(post.repo_path.clone(), post.store_path.clone()),
         purpose: InspectionPurpose::PreCommit,
     })?;
     let permit =
         journal.issue_commit_permit(fresh.write_precondition_guard(prepared.commit_context()))?;
     materializer.commit(prepared, permit)?;
-    journal.cleanup_all()?;
-    journal.advance(OperationPhase::RepoMoved)
+    Ok(())
+}
+
+fn is_windows_symlink_unavailable(error: &AppError) -> bool {
+    #[cfg(windows)]
+    {
+        matches!(error, AppError::Internal(message) if message.contains("Windows symlink creation is unavailable."))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn restore_facts(
