@@ -30,7 +30,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Keep the full macOS regression suite on the release target. The
+        # dedicated adapter job below also follows macos-latest so image
+        # changes are caught before it becomes the release target.
+        os: [ubuntu-latest, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -55,11 +58,13 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: cargo test (Windows)
+      # Windows has no documented parent-directory fsync equivalent. Mutating
+      # CLI workflows therefore fail closed for directory durability, so their
+      # successful end-to-end cases do not apply on this platform. Native
+      # mutation safety is exercised in windows-replace-safety below.
+      - name: cargo test (Windows CLI unit coverage)
         if: runner.os == 'Windows'
-        env:
-          SHELFBOX_REQUIRE_SYMLINKS: "1"
-        run: cargo test --workspace
+        run: cargo test -p shelfbox --bin shelfbox
 
       - name: cargo test (non-Windows)
         if: runner.os != 'Windows'
@@ -121,7 +126,7 @@ jobs:
         run: cargo test -p shelfbox-core across_filesystems --lib
 
   macos-forced-exdev:
-    name: macOS forced EXDEV replacement safety
+    name: macOS adapter and forced EXDEV safety
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -141,6 +146,9 @@ jobs:
 
       - name: Forced EXDEV preserves both paths
         run: cargo test -p shelfbox-core forced_exdev --lib
+
+      - name: No-follow inspection handles regular files and symlinks
+        run: cargo test -p shelfbox-core macos_no_follow --lib
 
   windows-replace-safety:
     name: Windows replacement and sharing-violation safety

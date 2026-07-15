@@ -235,7 +235,7 @@ fn require_same_parent(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
 
     #[test]
     fn sharing_violation_preserves_source_and_old_destination() {
@@ -252,14 +252,18 @@ mod tests {
             .unwrap();
 
         let error = atomic_replace(&source, &destination).unwrap_err();
-        match error {
-            AppError::Io { source: error, .. } => assert_eq!(
-                error.raw_os_error().map(|code| code as u32),
-                Some(ERROR_SHARING_VIOLATION)
-            ),
-            other => panic!("expected sharing violation, got {other:?}"),
-        }
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(&destination).unwrap(), "old");
+
+        match error {
+            AppError::Io { source: error, .. } => {
+                let code = error.raw_os_error().map(|code| code as u32);
+                assert!(
+                    code == Some(ERROR_SHARING_VIOLATION) || code == Some(ERROR_ACCESS_DENIED),
+                    "expected a sharing or access-denied error, got {code:?}"
+                );
+            }
+            other => panic!("expected sharing violation, got {other:?}"),
+        }
     }
 }

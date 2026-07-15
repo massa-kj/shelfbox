@@ -119,7 +119,10 @@ fn open_entry_no_follow(path: &Path) -> Result<File> {
     #[cfg(target_os = "linux")]
     let flags = libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     #[cfg(target_os = "macos")]
-    let flags = libc::O_SYMLINK | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // `O_SYMLINK` opens the final symlink itself instead of following it.
+    // Combining it with `O_NOFOLLOW` rejects ordinary files on current macOS,
+    // so use the documented macOS-specific no-follow mechanism on its own.
+    let flags = libc::O_SYMLINK | libc::O_CLOEXEC;
 
     // SAFETY: `path_bytes` is NUL-terminated and remains alive for the call.
     // The returned descriptor is checked before ownership moves to `File`.
@@ -162,6 +165,32 @@ fn require_same_parent(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_no_follow_inspection_accepts_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("regular");
+        std::fs::write(&path, "contents").unwrap();
+
+        assert_eq!(
+            inspect_no_follow(&path).unwrap().kind,
+            EntryKind::RegularFile
+        );
+    }
+
+    #[test]
+    fn macos_no_follow_inspection_reports_final_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::write(&target, "contents").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            inspect_no_follow(&link).unwrap().kind,
+            EntryKind::SymlinkOrReparsePoint
+        );
+    }
 
     #[test]
     fn forced_exdev_preserves_source_and_old_destination() {
