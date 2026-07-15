@@ -65,6 +65,10 @@ pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result
     context::build_create_or_load(cwd, store_override)
 }
 
+pub fn preflight_mutation_durability(store_override: Option<&Path>, operation: &str) -> Result<()> {
+    context::preflight_mutation_durability_from_config(store_override, operation)
+}
+
 pub fn build_read_only(cwd: &Path, store_override: Option<&Path>) -> Result<ReadOnlyRepoContext> {
     context::build_read_only(cwd, store_override)
 }

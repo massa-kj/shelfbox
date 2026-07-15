@@ -347,7 +347,8 @@ fn execute_repair_action(
         path.clone(),
         abs_path.clone(),
         store_path.clone(),
-    );
+    )
+    .with_durability(ctx.config.mutation_durability);
     let prepared = materializer.prepare(materialization_action, &mut journal)?;
     let facts = materializer.inspect(MaterializationInspectionRequest {
         location: location.clone(),

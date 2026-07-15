@@ -16,15 +16,22 @@ use ulid::Ulid;
 use super::{
     copy_safety::ArtifactScope,
     materialization::MaterializationStrategy,
+    mutation_durability::MutationDurability,
     path::{RepoRelativePath, StoreRelativePath},
     recovery_fingerprint::RecoveryFingerprint,
 };
 
-pub(crate) const OPERATION_RECORD_SCHEMA_VERSION: u32 = 1;
+/// Schema written by current binaries. v1 omitted `durability`; readers map
+/// it to `require` because no historical writer could create a best-effort
+/// record.
+pub(crate) const OPERATION_RECORD_SCHEMA_VERSION: u32 = 2;
+pub(crate) const LEGACY_OPERATION_RECORD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RecoveryRecord {
     pub schema_version: u32,
+    #[serde(default)]
+    pub durability: MutationDurability,
     pub record_id: String,
     pub created_at: String,
     pub record: RecoveryRecordKind,
@@ -273,8 +280,16 @@ impl<'de> Deserialize<'de> for RecoveryAbsolutePath {
 
 impl RecoveryRecord {
     pub(crate) fn validate(&self) -> std::result::Result<(), String> {
-        if self.schema_version != OPERATION_RECORD_SCHEMA_VERSION {
+        if !matches!(
+            self.schema_version,
+            LEGACY_OPERATION_RECORD_SCHEMA_VERSION | OPERATION_RECORD_SCHEMA_VERSION
+        ) {
             return Err("unexpected operation record schema version".into());
+        }
+        if self.schema_version == LEGACY_OPERATION_RECORD_SCHEMA_VERSION
+            && self.durability != MutationDurability::Require
+        {
+            return Err("v1 operation records may only use require durability".into());
         }
         validate_record_id(&self.record_id)?;
         if self.created_at.is_empty() {
@@ -424,6 +439,7 @@ mod tests {
     fn record_serialization_is_versioned_and_secret_free() {
         let record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: MutationDurability::Require,
             record_id: id(),
             created_at: "2026-07-12T00:00:00Z".into(),
             record: RecoveryRecordKind::Operation(OperationRecord {
@@ -450,7 +466,8 @@ mod tests {
 
         record.validate().unwrap();
         let value = serde_json::to_value(&record).unwrap();
-        assert_eq!(value["schema_version"], json!(1));
+        assert_eq!(value["schema_version"], json!(2));
+        assert_eq!(value["durability"], json!("require"));
         assert_eq!(value["record"]["kind"], json!("operation"));
         assert!(!value.to_string().contains("secret\""));
     }
@@ -468,6 +485,7 @@ mod tests {
         };
         let record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: MutationDurability::Require,
             record_id: id(),
             created_at: "2026-07-12T00:00:00Z".into(),
             record: RecoveryRecordKind::Artifact(artifact),

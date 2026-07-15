@@ -156,7 +156,9 @@ pub fn run_item(
 ) -> Result<ExitCode> {
     match command {
         ItemCommand::Add { paths, dry_run } => {
+            preflight_mutation(store_override, "item add", dry_run)?;
             cmd_add(cwd, store_override, &paths, dry_run)?;
+            warn_best_effort(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::Restore {
@@ -165,6 +167,7 @@ pub fn run_item(
             keep_ignore,
             keep_store,
         } => {
+            preflight_mutation(store_override, "item restore", dry_run)?;
             cmd_restore(
                 cwd,
                 store_override,
@@ -173,6 +176,7 @@ pub fn run_item(
                 keep_ignore,
                 keep_store,
             )?;
+            warn_best_effort(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::Repair {
@@ -180,7 +184,9 @@ pub fn run_item(
             dry_run,
             force,
         } => {
+            preflight_mutation(store_override, "item repair", dry_run)?;
             cmd_repair(cwd, store_override, &paths, dry_run, force)?;
+            warn_best_effort(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::Sync {
@@ -189,7 +195,9 @@ pub fn run_item(
             dry_run,
             yes,
         } => {
+            preflight_mutation(store_override, "item sync", dry_run)?;
             cmd_sync(cwd, store_override, &paths, from, dry_run, yes)?;
+            warn_best_effort(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::Relink {
@@ -198,7 +206,9 @@ pub fn run_item(
             from,
             yes,
         } => {
+            preflight_mutation(store_override, "item relink", dry_run)?;
             cmd_relink(cwd, store_override, &paths, dry_run, from, yes)?;
+            warn_best_effort(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::List { format, verbose } => {
@@ -211,7 +221,9 @@ pub fn run_item(
             new_path,
             dry_run,
         } => {
+            preflight_mutation(store_override, "item move", dry_run)?;
             cmd_move(cwd, store_override, &old, &new_path, dry_run)?;
+            warn_best_effort(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         ItemCommand::Info { path, format } => {
@@ -219,6 +231,25 @@ pub fn run_item(
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn preflight_mutation(store_override: Option<&Path>, operation: &str, dry_run: bool) -> Result<()> {
+    if !dry_run {
+        item::preflight_mutation_durability(store_override, operation)?;
+    }
+    Ok(())
+}
+
+fn warn_best_effort(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
+    if !dry_run
+        && shelfbox_core::api::config::load(store_override)?.mutation_durability
+            == shelfbox_core::domain::mutation_durability::MutationDurability::BestEffort
+    {
+        eprintln!(
+            "warning: best-effort mutation durability is active; complete recovery after power loss or forced termination is not guaranteed."
+        );
+    }
+    Ok(())
 }
 
 /// CLI spelling for the core's single explicit synchronization direction.

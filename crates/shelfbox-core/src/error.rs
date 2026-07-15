@@ -265,6 +265,28 @@ pub enum AppError {
         reason: String,
     },
 
+    /// A strict shelf mutation cannot start because the platform has no
+    /// documented parent-directory durability primitive. This is deliberately
+    /// raised at the operation boundary; low-level adapters retain
+    /// `FilesystemCapabilityUnavailable`.
+    #[error(
+        "{operation} requires crash-safe directory durability, which is unavailable on {platform}"
+    )]
+    MutationDurabilityUnavailable {
+        operation: String,
+        platform: &'static str,
+        capability: FilesystemCapability,
+        #[source]
+        source: Box<AppError>,
+    },
+
+    /// Recovery must not silently continue an operation that was started with
+    /// a reduced durability contract after the user has returned to `require`.
+    #[error(
+        "recovery record {record_id} was created with best-effort durability; set mutation_durability to best-effort to resume or inspect recovery"
+    )]
+    MutationDurabilityRecoveryOptInRequired { record_id: String },
+
     // ── Platform capabilities ──────────────────────────────────────────────
     /// A required filesystem guarantee is unavailable on this platform or
     /// filesystem. The operation must stop without changing the destination.
@@ -292,6 +314,15 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// Stable machine-facing classification for errors that require a user
+    /// policy decision. Other errors retain their existing detailed variants.
+    pub fn classification(&self) -> Option<&'static str> {
+        match self {
+            Self::MutationDurabilityUnavailable { .. } => Some("mutation_durability_unavailable"),
+            _ => None,
+        }
+    }
+
     /// Convenience constructor for `AppError::Io`.
     pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {

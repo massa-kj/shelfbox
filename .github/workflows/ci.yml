@@ -184,6 +184,32 @@ jobs:
       - name: Capability matrix is explicit
         run: cargo test -p shelfbox-core capability_matrix_is_explicit --lib
 
+  windows-mutation-durability:
+    name: Windows require fail-closed and best-effort Copy workflow
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-mutation-durability-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-mutation-durability-cargo-
+
+      # This focused acceptance test proves both guarantee levels in one
+      # runner: default require leaves store/repo state untouched, then the
+      # explicit local opt-in completes a Copy add. Symlink capability is not
+      # part of this lane and remains independently probed elsewhere.
+      - name: Require fail-closed; best-effort Copy update
+        run: cargo test -p shelfbox --test cli_behavior_lock windows_require_fails_closed_and_best_effort_copy_add_is_opt_in
+
   compatibility-boundaries:
     name: JSON compatibility and architecture boundaries
     runs-on: ubuntu-latest

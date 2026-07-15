@@ -57,6 +57,17 @@ The configured strategy is a default, not desired state, and is used only when:
 
 Changing the config does not convert existing items. A mixture of symlink and copy items is a healthy state.
 
+### Mutation durability is a separate local policy
+
+`mutation_durability = "require" | "best-effort"` is independent from
+`materialization`. It defaults to `require` on every platform and is stored in
+the user-local config file, never in a repository manifest. `require` fails
+closed before any shelf mutation when parent-directory durability is statically
+unavailable. `best-effort` is an explicit local opt-in that tolerates only a
+typed `DirectoryDurability`-unavailable error; it does not suppress I/O,
+permission, identity, replacement, Git, or validation errors. Changing either
+setting never converts an existing materialization.
+
 ## State Model
 
 ### Separation of facts and policy
@@ -227,8 +238,17 @@ An operation record contains at least:
 * source/destination file identity or a safe fingerprint
 * recovery temp/backup path, identity, and purpose
 * preconditions for forward recovery and rollback
+* the originating `mutation_durability` policy
 
 Atomically write the record into the store before the first mutation, then `fsync` the record file and parent directory. Update it the same way after each durable phase and delete it only after completion. After deletion, `fsync` the parent directory again. The store write lock serializes shelfbox recovery and mutation.
+
+New records use schema v2 and include `durability`. v1 records omit that field
+and normalize to `require`; an older v1-only reader rejects a v2 record by its
+schema version rather than treating a best-effort record as strict. Recovery
+uses the recorded policy: strict records remain strict even when current config
+is best-effort, while a best-effort record requires current best-effort opt-in
+before any cleanup or rollback. Best-effort retains ordinary-error cleanup but
+does not promise complete power-loss or forced-termination recovery.
 
 Detect unfinished records when the next mutating command starts.
 

@@ -4,8 +4,12 @@ use ulid::Ulid;
 
 use crate::{
     config::Config,
+    domain::mutation_durability::MutationDurability,
     error::{AppError, Result},
-    fs::lock::{self, StoreLock, StoreLockAccess},
+    fs::{
+        lock::{self, StoreLock, StoreLockAccess},
+        platform::{self, CapabilitySupport},
+    },
     ops::recovery,
     storage::layout,
     store::{
@@ -98,6 +102,43 @@ pub struct ExplicitReclaimContext {
     pub current: CurrentGitContext,
     pub config: Config,
     pub target_repo_id: String,
+}
+
+/// Rejects strict mutations before store metadata, locks, records, recovery,
+/// or any other shelf state can be created.  This is intentionally a static
+/// platform gate: Windows has no documented directory fsync equivalent, so
+/// probing a directory would itself be an unnecessary and unsafe mutation
+/// precursor.
+pub(crate) fn preflight_mutation_durability(
+    config: &Config,
+    operation: impl Into<String>,
+) -> Result<()> {
+    if config.mutation_durability != MutationDurability::Require {
+        return Ok(());
+    }
+    if let CapabilitySupport::Unsupported(reason) = platform::capabilities().directory_durability {
+        let capability = crate::error::FilesystemCapability::DirectoryDurability;
+        return Err(AppError::MutationDurabilityUnavailable {
+            operation: operation.into(),
+            platform: std::env::consts::OS,
+            capability,
+            source: Box::new(AppError::FilesystemCapabilityUnavailable {
+                capability,
+                platform: std::env::consts::OS,
+                reason,
+            }),
+        });
+    }
+    Ok(())
+}
+
+/// Performs the side-effect-free strict gate for a named CLI/API mutation.
+pub(crate) fn preflight_mutation_durability_from_config(
+    store_override: Option<&Path>,
+    operation: impl Into<String>,
+) -> Result<()> {
+    let config = Config::load(store_override)?;
+    preflight_mutation_durability(&config, operation)
 }
 
 impl RepoContext {
@@ -236,10 +277,12 @@ pub fn build_store_context(
 /// entire mutation. Recovery runs after lock acquisition and before callers
 /// receive authorization to write.
 pub(crate) fn acquire_store_write_access(store_root: &Path) -> Result<StoreLock> {
+    let config = Config::load(None)?;
+    preflight_mutation_durability(&config, "store mutation")?;
     meta::ensure_store_meta(store_root)?;
     let lock_path = layout::lock_path(store_root);
     let store_lock = lock::acquire_store_lock(&lock_path, StoreLockAccess::Write, true)?;
-    recovery::recover_store_before_mutation(store_root)?;
+    recovery::recover_store_before_mutation(store_root, config.mutation_durability)?;
     Ok(store_lock)
 }
 
@@ -260,7 +303,7 @@ fn build_create_or_load_with_access(
     // The write lock is already held. Recover only states that are provably
     // safe at this phase; any unfinished operation remains a typed blocker
     // until Phase 6 supplies its operation-specific truth table.
-    recovery::recover_before_mutation(&config.store, &repo_root)?;
+    recovery::recover_before_mutation(&config.store, &repo_root, config.mutation_durability)?;
 
     let (repo_id, repo_store, git_common_dir, manifest) = resolve_repo(&repo_root, &config, cwd)?;
 
@@ -312,6 +355,7 @@ fn build_initialized_store_context(
     access: StoreAccess,
 ) -> Result<StoreContext> {
     let config = Config::load(store_override)?;
+    preflight_mutation_durability(&config, "shelf mutation")?;
 
     // Ensure the store has a meta.json identity file before acquiring the lock,
     // preserving the compatibility behavior of `build(..., false)`.

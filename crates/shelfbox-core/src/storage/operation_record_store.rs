@@ -17,13 +17,15 @@ use crate::{
     domain::operation_record::{
         validate_record_id, ArtifactLocation, ArtifactRecord, ArtifactState,
         RecoveryBackupMetadata, RecoveryFileIdentity, RecoveryRecord, RecoveryRecordKind,
-        OPERATION_RECORD_SCHEMA_VERSION,
+        LEGACY_OPERATION_RECORD_SCHEMA_VERSION, OPERATION_RECORD_SCHEMA_VERSION,
     },
     error::{AppError, Result},
     failpoint::{self, Failpoint},
     fs::{platform, secure_transfer},
     storage::{
-        atomic_write::{self, AtomicWriteOptions, FileSyncMode, ParentDirectorySyncMode},
+        atomic_write::{
+            self, mutation_sync_mode, sync_directory, AtomicWriteOptions, FileSyncMode,
+        },
         layout,
     },
 };
@@ -45,6 +47,12 @@ pub(crate) fn record_path(store_root: &Path, record_id: &str) -> Result<PathBuf>
 #[allow(dead_code)] // Consumed by the durable mutation journal in Phase 7.
 pub(crate) fn create(store_root: &Path, record: &RecoveryRecord) -> Result<()> {
     validate_record(record, &records_dir(store_root))?;
+    if record.schema_version != OPERATION_RECORD_SCHEMA_VERSION {
+        return Err(AppError::OperationRecordMalformed {
+            path: records_dir(store_root),
+            reason: "new operation records must use schema version 2".into(),
+        });
+    }
     let path = record_path(store_root, &record.record_id)?;
     if path.exists() {
         return Err(AppError::OperationRecordMalformed {
@@ -70,7 +78,14 @@ pub(crate) fn update(store_root: &Path, record: &RecoveryRecord) -> Result<()> {
             reason: "cannot update a missing operation record".into(),
         });
     }
-    write_record(&path, record)?;
+    // Updating a legacy strict record is a safe schema migration: v1 could
+    // only have been written with the historical strict contract, and v2
+    // makes that fact explicit for later readers.
+    let mut upgraded = record.clone();
+    if upgraded.schema_version == LEGACY_OPERATION_RECORD_SCHEMA_VERSION {
+        upgraded.schema_version = OPERATION_RECORD_SCHEMA_VERSION;
+    }
+    write_record(&path, &upgraded)?;
     failpoint::after(match &record.record {
         RecoveryRecordKind::Operation(operation) => {
             Failpoint::OperationPhaseUpdated(operation.phase)
@@ -90,9 +105,14 @@ pub(crate) fn update(store_root: &Path, record: &RecoveryRecord) -> Result<()> {
 /// A record already absent after a crash is considered successfully deleted.
 pub(crate) fn remove(store_root: &Path, record_id: &str) -> Result<()> {
     let path = record_path(store_root, record_id)?;
+    let durability = match record_durability(store_root, record_id) {
+        Ok(durability) => durability,
+        Err(AppError::Io { source, .. }) if source.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
     match fs::remove_file(&path) {
         Ok(()) => {
-            sync_records_dir(store_root)?;
+            sync_records_dir(store_root, durability)?;
             failpoint::after(Failpoint::RecordDeleted)
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -142,7 +162,10 @@ pub(crate) fn load_all(store_root: &Path) -> Result<Vec<RecoveryRecord>> {
                 reason: error.to_string(),
             }
         })?;
-        if version.schema_version != OPERATION_RECORD_SCHEMA_VERSION {
+        if !matches!(
+            version.schema_version,
+            LEGACY_OPERATION_RECORD_SCHEMA_VERSION | OPERATION_RECORD_SCHEMA_VERSION
+        ) {
             return Err(AppError::OperationRecordUnsupportedVersion {
                 path,
                 found: version.schema_version,
@@ -244,6 +267,7 @@ pub(crate) fn cleanup_artifact(
         });
     }
 
+    let durability = record_durability(store_root, record_id)?;
     fs::remove_file(&path).map_err(|error| AppError::io(&path, error))?;
     let parent = path
         .parent()
@@ -252,7 +276,7 @@ pub(crate) fn cleanup_artifact(
             path: path.clone(),
             reason: "artifact has no parent directory".into(),
         })?;
-    platform::sync_directory(parent)?;
+    sync_directory(parent, mutation_sync_mode(durability))?;
     Ok(ArtifactCleanup::Removed)
 }
 
@@ -288,6 +312,7 @@ pub(crate) fn cleanup_backup(
             reason: "recovery backup identity no longer matches the durable record".into(),
         });
     }
+    let durability = record_durability(store_root, record_id)?;
     fs::remove_file(&path).map_err(|error| AppError::io(&path, error))?;
     let parent = path
         .parent()
@@ -296,7 +321,7 @@ pub(crate) fn cleanup_backup(
             path: path.clone(),
             reason: "recovery backup has no parent directory".into(),
         })?;
-    platform::sync_directory(parent)?;
+    sync_directory(parent, mutation_sync_mode(durability))?;
     Ok(ArtifactCleanup::Removed)
 }
 
@@ -359,12 +384,29 @@ fn write_record(path: &Path, record: &RecoveryRecord) -> Result<()> {
         json,
         AtomicWriteOptions::new(atomic_write::ParentDirMode::Private)
             .with_file_sync(FileSyncMode::BeforeRename)
-            .with_parent_directory_sync(ParentDirectorySyncMode::Require),
+            .with_parent_directory_sync(mutation_sync_mode(record.durability)),
     )
 }
 
-fn sync_records_dir(store_root: &Path) -> Result<()> {
-    platform::sync_directory(&records_dir(store_root))
+fn sync_records_dir(
+    store_root: &Path,
+    durability: crate::domain::mutation_durability::MutationDurability,
+) -> Result<()> {
+    sync_directory(&records_dir(store_root), mutation_sync_mode(durability))
+}
+
+fn record_durability(
+    store_root: &Path,
+    record_id: &str,
+) -> Result<crate::domain::mutation_durability::MutationDurability> {
+    let path = record_path(store_root, record_id)?;
+    let contents = fs::read_to_string(&path).map_err(|error| AppError::io(&path, error))?;
+    let record: RecoveryRecord =
+        serde_json::from_str(&contents).map_err(|error| AppError::OperationRecordMalformed {
+            path,
+            reason: error.to_string(),
+        })?;
+    Ok(record.durability)
 }
 
 fn validate_record(record: &RecoveryRecord, path: &Path) -> Result<()> {
@@ -411,6 +453,7 @@ mod tests {
     fn operation_record(id: String, root: &Path) -> RecoveryRecord {
         RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: crate::domain::mutation_durability::MutationDurability::Require,
             record_id: id,
             created_at: "2026-07-12T00:00:00Z".into(),
             record: RecoveryRecordKind::Operation(OperationRecord {
@@ -435,6 +478,7 @@ mod tests {
     fn artifact_record(id: String, root: &Path, relative: &str) -> RecoveryRecord {
         RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: crate::domain::mutation_durability::MutationDurability::Require,
             record_id: id,
             created_at: "2026-07-12T00:00:00Z".into(),
             record: RecoveryRecordKind::Artifact(ArtifactRecord {
@@ -539,6 +583,75 @@ mod tests {
     }
 
     #[test]
+    fn v1_records_normalize_to_require_and_v2_requires_valid_durability() {
+        let store = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let record = operation_record(record_id(), repo.path());
+        let dir = records_dir(store.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = record_path(store.path(), &record.record_id).unwrap();
+
+        let mut v1 = serde_json::to_value(&record).unwrap();
+        v1["schema_version"] = serde_json::json!(LEGACY_OPERATION_RECORD_SCHEMA_VERSION);
+        v1.as_object_mut().unwrap().remove("durability");
+        std::fs::write(&path, serde_json::to_vec(&v1).unwrap()).unwrap();
+
+        let loaded = load_all(store.path()).unwrap();
+        assert_eq!(
+            loaded[0].schema_version,
+            LEGACY_OPERATION_RECORD_SCHEMA_VERSION
+        );
+        assert_eq!(
+            loaded[0].durability,
+            crate::domain::mutation_durability::MutationDurability::Require
+        );
+
+        let mut invalid_v2 = serde_json::to_value(&record).unwrap();
+        invalid_v2["durability"] = serde_json::json!("anything-goes");
+        std::fs::write(&path, serde_json::to_vec(&invalid_v2).unwrap()).unwrap();
+        assert!(matches!(
+            load_all(store.path()),
+            Err(AppError::OperationRecordMalformed { .. })
+        ));
+    }
+
+    #[test]
+    fn legacy_reader_fixture_refuses_v2_records() {
+        let record = serde_json::json!({"schema_version": OPERATION_RECORD_SCHEMA_VERSION});
+        let version: RecordVersion = serde_json::from_value(record).unwrap();
+        let legacy_reader = |found| {
+            (found == LEGACY_OPERATION_RECORD_SCHEMA_VERSION)
+                .then_some(())
+                .ok_or(found)
+        };
+        assert_eq!(
+            legacy_reader(version.schema_version),
+            Err(OPERATION_RECORD_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn updating_a_legacy_strict_record_migrates_it_to_v2() {
+        let store = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let record = operation_record(record_id(), repo.path());
+        let dir = records_dir(store.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = record_path(store.path(), &record.record_id).unwrap();
+        let mut v1 = serde_json::to_value(&record).unwrap();
+        v1["schema_version"] = serde_json::json!(LEGACY_OPERATION_RECORD_SCHEMA_VERSION);
+        v1.as_object_mut().unwrap().remove("durability");
+        std::fs::write(&path, serde_json::to_vec(&v1).unwrap()).unwrap();
+
+        let loaded = load_all(store.path()).unwrap().pop().unwrap();
+        update(store.path(), &loaded).unwrap();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(persisted["schema_version"], OPERATION_RECORD_SCHEMA_VERSION);
+        assert_eq!(persisted["durability"], "require");
+    }
+
+    #[test]
     fn path_escape_is_rejected_on_load() {
         let store = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
@@ -584,6 +697,7 @@ mod tests {
 
         let record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: crate::domain::mutation_durability::MutationDurability::Require,
             record_id: record_id(),
             created_at: "2026-07-12T00:00:00Z".into(),
             record: RecoveryRecordKind::Artifact(ArtifactRecord {
@@ -653,6 +767,7 @@ mod tests {
         let record_id = record_id();
         let mut record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: crate::domain::mutation_durability::MutationDurability::Require,
             record_id: record_id.clone(),
             created_at: "2026-07-12T00:00:00Z".into(),
             record: RecoveryRecordKind::Artifact(ArtifactRecord {

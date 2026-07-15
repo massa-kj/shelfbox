@@ -25,7 +25,7 @@
 | **`SHELFBOX_STORE` environment variable** | The store root can be selected by environment variable, with precedence below `--store` and above config/default paths. |
 | **Private, fail-closed platform filesystem adapter** | No-follow inspection, stable identity, link counts, replacement, and directory durability are platform capabilities behind `fs::platform`. Operations never call OS APIs directly, and no unsupported guarantee falls back to delete-then-create. |
 | **SHA-256 recovery fingerprints** | Durable operation records use a bounded-memory SHA-256 content fingerprint serialized as `{ "algorithm": "sha256", "digest_hex": "<64 lowercase hex>" }`. This is recovery safety metadata, not a routine status hash cache. |
-| **Option-driven durable atomic writes** | `storage::atomic_write` creates same-directory temp files with `create_new`, can fsync file content before rename, uses the platform atomic-replace adapter, and can require or best-effort parent-directory fsync. Generated temp files are the default; fixed temp paths are opt-in and never overwritten. |
+| **Explicit local mutation durability** | `mutation_durability = require|best-effort` is independent from copy/symlink materialization and defaults to `require`. Strict Windows mutations are rejected before metadata, locks, recovery, or records. Best-effort is a conscious local opt-in that tolerates only typed unavailable directory durability, not arbitrary filesystem errors. |
 | **Status schema v2 is additive** | Existing Rust `ItemStatus` and `IntegrityReport` remain literal symlink-compatibility projections. CLI JSON and copy-aware callers use option-bearing v2 APIs with `status_schema_version = 2`, generic materialization fields, stable snake_case codes, and nullable legacy link fields for copy items. |
 | **Copy mutations require artifact leases** | No copy mutation may write plaintext before its temp path is durably recorded, repo-side temps are exactly excluded, and the empty temp identity is durably recorded. Commit must be bracketed by pre/post validation, and cleanup may remove only matching artifacts. |
 | **Operations use materializer and canonical-transfer ports** | Operations issue typed actions, persist high-level phases, and request opaque commit permits. Filesystem adapters own symlink/copy dispatch, no-follow facts, temp artifacts, and transfer algorithms; canonical store movement is a separate port. |
@@ -178,7 +178,7 @@ The helper now supports:
 * optional `File::sync_all()` after writing and before replacement;
 * atomic replacement through `fs::platform::atomic_replace`, preserving the
   D1 no-delete-then-create invariant;
-* optional parent-directory durability with `Skip`, `BestEffort`, or `Require`;
+* optional parent-directory durability with `Skip`, `AllowUnsupportedDirectoryDurability`, or `Require`;
   and
 * cleanup that removes a temp path only when no-follow inspection shows the same
   file identity that this write created.
@@ -193,9 +193,11 @@ that have already reserved a same-directory temp path.
 `ParentDirectorySyncMode::Require` preflights the parent-directory sync before
 creating a temp file. On platforms where D1 marks directory durability
 unsupported, this fails closed before mutating the destination. After a
-successful replacement, `Require` syncs the parent again and returns any error;
-`BestEffort` attempts the sync and ignores failure; `Skip` preserves the legacy
-rename-only behavior.
+successful replacement, `Require` syncs the parent again and returns any error.
+`AllowUnsupportedDirectoryDurability` attempts the same sync and accepts only
+`FilesystemCapabilityUnavailable { DirectoryDurability, .. }`; it propagates
+all other failures. `Skip` preserves the legacy rename-only behavior and is not
+selectable by mutation durability.
 
 File fsync and parent-directory fsync are separate choices because operation
 records need both, while some existing metadata writes may remain rename-only
@@ -316,6 +318,14 @@ Focused tests lock:
 * compile-time source compatibility for existing legacy APIs and new v2 APIs.
 
 ## D5: Copy mutation crash-safety contract
+
+The D5 power-loss guarantee applies to `require` operations on a platform where
+directory durability is available. Every recovery record persists its creating
+policy (schema v2; v1 normalizes to `require`). A best-effort record is not
+automatically recovered after configuration returns to `require`; the user must
+opt in again. Best-effort still keeps all no-follow, identity, file-sync,
+atomic-replacement, and ordinary-error cleanup checks, but cannot promise
+complete recovery after power loss or forced termination.
 
 Copy mutation code must not begin until the temp/artifact protocol below is
 available through a mutation journal and opaque artifact leases. The contract is

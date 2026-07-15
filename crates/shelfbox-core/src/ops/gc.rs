@@ -391,6 +391,7 @@ mod tests {
         let repo_root = tempfile::tempdir().unwrap();
         let record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: crate::domain::mutation_durability::MutationDurability::Require,
             record_id: ulid::Ulid::new().to_string(),
             created_at: "2026-07-12T00:00:00Z".into(),
             record: RecoveryRecordKind::Operation(OperationRecord {

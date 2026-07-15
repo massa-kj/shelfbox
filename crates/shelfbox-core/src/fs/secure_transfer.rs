@@ -13,9 +13,11 @@ use std::{
 use ulid::Ulid;
 
 use crate::{
+    domain::mutation_durability::MutationDurability,
     error::{AppError, Result},
     failpoint::{self, Failpoint},
     fs::{file_identity, platform},
+    storage::atomic_write::{mutation_sync_mode, sync_directory},
 };
 
 const BUFFER_SIZE: usize = 64 * 1024;
@@ -356,7 +358,10 @@ pub(crate) fn allocate_private_temp_path(
 /// Creates an empty private file at a journal-reserved path and returns its
 /// no-follow identity. No plaintext may be written until the caller durably
 /// records that identity.
-pub(crate) fn create_empty_private_temp_at(path: &Path) -> Result<platform::FileIdentity> {
+pub(crate) fn create_empty_private_temp_at(
+    path: &Path,
+    durability: MutationDurability,
+) -> Result<platform::FileIdentity> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -375,7 +380,7 @@ pub(crate) fn create_empty_private_temp_at(path: &Path) -> Result<platform::File
             path: path.to_path_buf(),
             reason: "temporary path has no parent",
         })?;
-    platform::sync_directory(parent)?;
+    sync_directory(parent, mutation_sync_mode(durability))?;
     drop(file);
     Ok(identity)
 }

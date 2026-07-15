@@ -75,7 +75,7 @@ fn config_list_json_uses_isolated_defaults_without_creating_config_file() {
     );
 
     let rows: Vec<Value> = serde_json::from_str(&output.stdout).unwrap();
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 4);
 
     let store = row_by_key(&rows, "store");
     assert_eq!(store["type"], "path");
@@ -95,6 +95,88 @@ fn config_list_json_uses_isolated_defaults_without_creating_config_file() {
     assert_eq!(materialization["default"], "symlink");
     assert_eq!(materialization["source"], "default");
     assert_eq!(materialization["current"], "symlink");
+
+    let durability = row_by_key(&rows, "mutation_durability");
+    assert_eq!(durability["type"], "enum");
+    assert_eq!(durability["default"], "require");
+    assert_eq!(durability["source"], "default");
+    assert_eq!(durability["current"], "require");
+}
+
+#[test]
+fn mutation_durability_config_is_local_and_requires_explicit_opt_in() {
+    let fixture = CliFixture::new();
+    let cwd = TempDir::new().unwrap();
+
+    let get = fixture.run(
+        cwd.path(),
+        ["config", "get", "mutation_durability", "--source"],
+    );
+    get.assert_success();
+    assert_eq!(get.stdout, "require\nsource: default\n");
+
+    let set = fixture.run(
+        cwd.path(),
+        ["config", "set", "mutation_durability", "best-effort"],
+    );
+    set.assert_success();
+    assert_eq!(set.stdout, "set mutation_durability = best-effort\n");
+    assert!(set.stderr.contains("power loss or forced termination"));
+    assert_eq!(
+        std::fs::read_to_string(fixture.config_file_path()).unwrap(),
+        "mutation_durability = \"best-effort\"\n"
+    );
+
+    let explain = fixture.run(cwd.path(), ["config", "explain", "mutation_durability"]);
+    explain.assert_success();
+    assert!(explain.stdout.contains("Local parent-directory durability"));
+    assert!(explain.stdout.contains("best-effort"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_require_fails_closed_and_best_effort_copy_add_is_opt_in() {
+    let fixture = CliFixture::new();
+    let repo = common::init_git_repo();
+    let strict_store = TempDir::new().unwrap();
+    let source = repo.path().join("secret.txt");
+    std::fs::write(&source, "windows secret").unwrap();
+    let before = snapshot_tree(strict_store.path());
+
+    let strict = fixture.run(
+        repo.path(),
+        store_args(strict_store.path(), ["item", "add", "secret.txt"]),
+    );
+    assert!(!strict.status.success());
+    assert!(strict
+        .stderr
+        .contains("requires crash-safe directory durability"));
+    assert!(strict
+        .stderr
+        .contains("config set mutation_durability best-effort"));
+    assert_eq!(snapshot_tree(strict_store.path()), before);
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "windows secret");
+
+    // This administrative write intentionally remains available while strict
+    // shelf mutations are fail-closed.
+    let set = fixture.run(
+        repo.path(),
+        ["config", "set", "mutation_durability", "best-effort"],
+    );
+    set.assert_success();
+    fixture.write_config("mutation_durability = \"best-effort\"\nmaterialization = \"copy\"\n");
+
+    let best_effort_store = TempDir::new().unwrap();
+    let best_effort = fixture.run(
+        repo.path(),
+        store_args(best_effort_store.path(), ["item", "add", "secret.txt"]),
+    );
+    best_effort.assert_success();
+    assert!(best_effort
+        .stderr
+        .contains("best-effort mutation durability is active"));
+    assert!(std::fs::symlink_metadata(&source).unwrap().is_file());
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "windows secret");
 }
 
 #[test]

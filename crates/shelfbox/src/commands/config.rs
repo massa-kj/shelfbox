@@ -43,7 +43,23 @@ const KEY_MATERIALIZATION: KeyMeta = KeyMeta {
     precedence: &["config.toml", "built-in default"],
 };
 
-const ALL_KEYS: &[&KeyMeta] = &[&KEY_STORE, &KEY_DEFAULT_FORMAT, &KEY_MATERIALIZATION];
+const KEY_MUTATION_DURABILITY: KeyMeta = KeyMeta {
+    key: "mutation_durability",
+    type_name: "enum",
+    default_display: "require",
+    description: "Local parent-directory durability contract for shelf mutations. \
+                  Valid values: require, best-effort. best-effort permits only an \
+                  unavailable directory-durability capability and does not guarantee \
+                  complete recovery after power loss or forced termination.",
+    precedence: &["config.toml (local machine)", "built-in default"],
+};
+
+const ALL_KEYS: &[&KeyMeta] = &[
+    &KEY_STORE,
+    &KEY_DEFAULT_FORMAT,
+    &KEY_MATERIALIZATION,
+    &KEY_MUTATION_DURABILITY,
+];
 
 fn find_key(key: &str) -> Option<&'static KeyMeta> {
     ALL_KEYS.iter().copied().find(|m| m.key == key)
@@ -129,6 +145,10 @@ fn cmd_config_get(key: &str, show_source: bool, store_override: Option<&Path>) -
             resolved.materialization.to_string(),
             resolved.materialization_source,
         ),
+        "mutation_durability" => (
+            resolved.mutation_durability.to_string(),
+            resolved.mutation_durability_source,
+        ),
         _ => unreachable!(),
     };
 
@@ -173,6 +193,13 @@ fn cmd_config_list(format: OutputFormat, store_override: Option<&Path>) -> Resul
             default: KEY_MATERIALIZATION.default_display,
             source: resolved.materialization_source.short().to_string(),
             current: resolved.materialization.to_string(),
+        },
+        Row {
+            key: KEY_MUTATION_DURABILITY.key,
+            type_name: KEY_MUTATION_DURABILITY.type_name,
+            default: KEY_MUTATION_DURABILITY.default_display,
+            source: resolved.mutation_durability_source.short().to_string(),
+            current: resolved.mutation_durability.to_string(),
         },
     ];
 
@@ -262,6 +289,11 @@ fn cmd_config_set(key: &str, value: &str) -> Result<()> {
     let _ = find_key(key).ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
     config::set_key(key, value)?;
     println!("set {key} = {value}");
+    if key == "mutation_durability" && value == "best-effort" {
+        eprintln!(
+            "warning: best-effort mutation durability is active; complete recovery after power loss or forced termination is not guaranteed."
+        );
+    }
     Ok(())
 }
 

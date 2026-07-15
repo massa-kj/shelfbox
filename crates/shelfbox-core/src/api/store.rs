@@ -29,6 +29,10 @@ pub fn load_config(store_override: Option<&Path>) -> Result<Config> {
     Config::load(store_override)
 }
 
+pub fn preflight_mutation_durability(store_override: Option<&Path>, operation: &str) -> Result<()> {
+    context::preflight_mutation_durability_from_config(store_override, operation)
+}
+
 pub fn load_index(store_root: &Path) -> Result<Index> {
     index::load(store_root)
 }

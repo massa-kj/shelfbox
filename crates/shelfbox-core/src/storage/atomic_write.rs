@@ -8,6 +8,7 @@ use std::{
 use ulid::Ulid;
 
 use crate::{
+    domain::mutation_durability::MutationDurability,
     error::{AppError, Result},
     fs::{permissions, platform},
 };
@@ -31,8 +32,20 @@ pub(crate) enum FileSyncMode {
 #[allow(dead_code)] // D3 option surface; operation records will request this in Phase 2.
 pub(crate) enum ParentDirectorySyncMode {
     Skip,
-    BestEffort,
+    /// Preserve D5's normal protocol, tolerating only the typed absence of a
+    /// documented directory-durability primitive. This is deliberately not a
+    /// general error-suppression mode.
+    AllowUnsupportedDirectoryDurability,
     Require,
+}
+
+pub(crate) const fn mutation_sync_mode(durability: MutationDurability) -> ParentDirectorySyncMode {
+    match durability {
+        MutationDurability::Require => ParentDirectorySyncMode::Require,
+        MutationDurability::BestEffort => {
+            ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,21 +190,38 @@ fn ensure_temp_is_in_destination_parent(path: &Path, temp_path_mode: &TempPathMo
 }
 
 fn preflight_required_parent_sync(path: &Path, mode: ParentDirectorySyncMode) -> Result<()> {
-    if mode == ParentDirectorySyncMode::Require {
-        platform::sync_directory(parent_dir(path))?;
+    match mode {
+        ParentDirectorySyncMode::Skip => {}
+        ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability
+        | ParentDirectorySyncMode::Require => sync_directory(parent_dir(path), mode)?,
     }
-
     Ok(())
 }
 
 fn sync_parent_after_rename(path: &Path, mode: ParentDirectorySyncMode) -> Result<()> {
     match mode {
         ParentDirectorySyncMode::Skip => Ok(()),
-        ParentDirectorySyncMode::BestEffort => {
-            let _ = platform::sync_directory(parent_dir(path));
-            Ok(())
-        }
-        ParentDirectorySyncMode::Require => platform::sync_directory(parent_dir(path)),
+        ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability
+        | ParentDirectorySyncMode::Require => sync_directory(parent_dir(path), mode),
+    }
+}
+
+/// Applies a mutation-owned directory sync policy without weakening the
+/// low-level platform adapter.  `best-effort` means exactly one thing here:
+/// the platform reported that `DirectoryDurability` is unavailable.  I/O,
+/// permissions, identity checks, and every other error remain observable.
+pub(crate) fn sync_directory(path: &Path, mode: ParentDirectorySyncMode) -> Result<()> {
+    filter_directory_sync_result(platform::sync_directory(path), mode)
+}
+
+fn filter_directory_sync_result(result: Result<()>, mode: ParentDirectorySyncMode) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(AppError::FilesystemCapabilityUnavailable {
+            capability: crate::error::FilesystemCapability::DirectoryDurability,
+            ..
+        }) if mode == ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -455,19 +485,60 @@ mod tests {
     }
 
     #[test]
-    fn best_effort_parent_sync_does_not_block_basic_write() {
+    fn allow_unsupported_directory_durability_does_not_block_basic_write() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("index.json");
 
         write_with_options(
             &path,
             b"{}",
-            AtomicWriteOptions::new(ParentDirMode::Private)
-                .with_parent_directory_sync(ParentDirectorySyncMode::BestEffort),
+            AtomicWriteOptions::new(ParentDirMode::Private).with_parent_directory_sync(
+                ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability,
+            ),
         )
         .unwrap();
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+    }
+
+    #[test]
+    fn reduced_mode_tolerates_only_directory_durability_unavailability() {
+        use crate::error::FilesystemCapability;
+
+        assert!(filter_directory_sync_result(
+            Err(AppError::FilesystemCapabilityUnavailable {
+                capability: FilesystemCapability::DirectoryDurability,
+                platform: "test",
+                reason: "missing",
+            }),
+            ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability,
+        )
+        .is_ok());
+
+        assert!(matches!(
+            filter_directory_sync_result(
+                Err(AppError::FilesystemCapabilityUnavailable {
+                    capability: FilesystemCapability::NoFollowInspection,
+                    platform: "test",
+                    reason: "missing",
+                }),
+                ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability,
+            ),
+            Err(AppError::FilesystemCapabilityUnavailable {
+                capability: FilesystemCapability::NoFollowInspection,
+                ..
+            })
+        ));
+        assert!(matches!(
+            filter_directory_sync_result(
+                Err(AppError::io(
+                    "/permission-denied",
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+                )),
+                ParentDirectorySyncMode::AllowUnsupportedDirectoryDurability,
+            ),
+            Err(AppError::Io { .. })
+        ));
     }
 
     #[test]

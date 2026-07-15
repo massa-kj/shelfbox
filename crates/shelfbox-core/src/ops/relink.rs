@@ -250,7 +250,8 @@ fn execute_directionless_relink(
             plan.path.clone(),
             plan.abs_path.clone(),
             plan.store_path.clone(),
-        );
+        )
+        .with_durability(ctx.config.mutation_durability);
         let action = MaterializationAction::Create {
             location: location.clone(),
             strategy: ctx.config.materialization,
@@ -363,6 +364,7 @@ fn execute_directional_relink(
     };
     let mut record = RecoveryRecord {
         schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+        durability: ctx.config.mutation_durability,
         record_id: record_id.clone(),
         created_at: context::now_iso8601(),
         record: RecoveryRecordKind::Operation(OperationRecord {

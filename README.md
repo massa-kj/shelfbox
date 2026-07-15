@@ -144,9 +144,26 @@ Optional config at `~/.config/shelfbox/config.toml` (respects `$XDG_CONFIG_HOME`
 # store = "/mnt/data/shelfbox-store"   # default: ~/.local/share/shelfbox
 # default_format = "table"             # table | plain | json
 # materialization = "symlink"          # symlink (default) | copy
+# mutation_durability = "require"       # require (default) | best-effort
 ```
 
 The `--store <PATH>` global flag overrides config at runtime.
+
+`mutation_durability` is local to this machine and independent of
+`materialization`. `require` is the default and preserves the normal D5
+crash-safety contract where parent-directory durability is supported. Windows
+does not provide that documented capability, so strict shelf mutations fail
+before changing shelf state. A user who explicitly accepts reduced power-loss
+recovery guarantees can opt in without changing symlink/copy behavior:
+
+```sh
+shelfbox config set mutation_durability best-effort
+```
+
+`best-effort` only tolerates the known unavailable directory-durability
+capability; ordinary I/O, permission, identity, and validation failures still
+stop the operation. It does not guarantee complete recovery after power loss
+or forced termination.
 
 ```sh
 shelfbox config list

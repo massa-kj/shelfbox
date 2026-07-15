@@ -81,7 +81,9 @@ pub fn run_repo(
             cmd_repo_status(cwd, store_override, format, verbose)
         }
         RepoCommand::Repair { dry_run, force } => {
+            preflight_mutation(store_override, "repo repair", dry_run)?;
             cmd_repo_repair(cwd, store_override, dry_run, force)?;
+            warn_best_effort(store_override, dry_run)?;
             Ok(ExitCode::SUCCESS)
         }
         RepoCommand::Gc { dry_run, yes } => {
@@ -89,10 +91,31 @@ pub fn run_repo(
             Ok(ExitCode::SUCCESS)
         }
         RepoCommand::Reclaim { repo_id } => {
+            preflight_mutation(store_override, "repo reclaim", false)?;
             cmd_repo_reclaim(cwd, store_override, repo_id.as_deref())?;
+            warn_best_effort(store_override, false)?;
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn preflight_mutation(store_override: Option<&Path>, operation: &str, dry_run: bool) -> Result<()> {
+    if !dry_run {
+        repo::preflight_mutation_durability(store_override, operation)?;
+    }
+    Ok(())
+}
+
+fn warn_best_effort(store_override: Option<&Path>, dry_run: bool) -> Result<()> {
+    if !dry_run
+        && shelfbox_core::api::config::load(store_override)?.mutation_durability
+            == shelfbox_core::domain::mutation_durability::MutationDurability::BestEffort
+    {
+        eprintln!(
+            "warning: best-effort mutation durability is active; complete recovery after power loss or forced termination is not guaranteed."
+        );
+    }
+    Ok(())
 }
 
 // ── Subcommand handlers ─────────────────────────────────────────────────────────────────────────

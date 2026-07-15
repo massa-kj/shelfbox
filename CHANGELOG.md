@@ -8,6 +8,7 @@
 - `item status` and `repo status` JSON now use status schema version 2:
   copy items expose generic materialization fields and serialize legacy `link_exists` / `link_valid` as `null`.
 - `item restore --keep-store` is documented as detach semantics: it retains the observed materialization, canonical store item, manifest entry, and exclude.
+- Added local `mutation_durability = "require" | "best-effort"`, defaulting to fail-closed `require`.
 
 ## v0.8.0
 

@@ -16,6 +16,7 @@ KEY             TYPE  DEFAULT                  SOURCE   CURRENT
 store           path  ~/.local/share/shelfbox  default  ~/.local/share/shelfbox
 default_format  enum  table                    default  table
 materialization enum  symlink                  default  symlink
+mutation_durability enum require               default  require
 ```
 
 **Flags:**
@@ -51,7 +52,7 @@ shelfbox config get store --source
 # source: default
 ```
 
-Supported keys: `store`, `default_format`, `materialization`.
+Supported keys: `store`, `default_format`, `materialization`, `mutation_durability`.
 
 **Flags:**
 
@@ -71,6 +72,7 @@ exist.
 shelfbox config set store /mnt/external/shelfbox-store
 shelfbox config set default_format json
 shelfbox config set materialization copy
+shelfbox config set mutation_durability best-effort
 ```
 
 Supported keys:
@@ -80,11 +82,23 @@ Supported keys:
 | `store` | Absolute path |
 | `default_format` | `table`, `plain`, `json` |
 | `materialization` | `symlink` (default), `copy` |
+| `mutation_durability` | `require` (default), `best-effort` |
 
 `materialization` selects the default for future materializations. It does not
 convert an existing symlink or regular copy. A Copy item is a regular file in
 the repository; its canonical content remains in the store and changed content
 requires an explicit `item sync` direction.
+
+`mutation_durability` is user-local configuration, not repository metadata.
+`require` retains the full directory-durability protocol and fails closed
+before a shelf mutation starts when the capability is unavailable (including on
+Windows). `best-effort` is an explicit reduced-guarantee opt-in: it attempts
+the same syncs and continues only for the typed unavailable
+directory-durability capability. I/O, permission, identity, locking, and
+validation errors still fail. Each successful best-effort mutation warns on
+stderr; complete recovery after power loss or forced termination is not
+guaranteed. `config set` itself is administrative and remains available so a
+Windows user can make this opt-in.
 
 ---
 
@@ -97,4 +111,5 @@ configuration key.
 shelfbox config explain store
 shelfbox config explain default_format
 shelfbox config explain materialization
+shelfbox config explain mutation_durability
 ```

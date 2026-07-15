@@ -45,6 +45,13 @@ pub fn build_create_or_load(cwd: &Path, store_override: Option<&Path>) -> Result
     context::build_create_or_load(cwd, store_override)
 }
 
+/// Performs the strict durability gate before a named item mutation starts.
+/// This is side-effect-free and lets a CLI name the requested command in the
+/// actionable error rather than a generic context-construction operation.
+pub fn preflight_mutation_durability(store_override: Option<&Path>, operation: &str) -> Result<()> {
+    context::preflight_mutation_durability_from_config(store_override, operation)
+}
+
 pub fn build_preview_create_or_load(
     cwd: &Path,
     store_override: Option<&Path>,

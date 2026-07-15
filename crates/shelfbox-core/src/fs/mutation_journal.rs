@@ -248,6 +248,7 @@ impl<'a> AddMutationJournal<'a> {
         };
         let mut artifact = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: self.operation.durability,
             record_id: record_id.clone(),
             created_at: crate::context::now_iso8601(),
             record: RecoveryRecordKind::Artifact(ArtifactRecord {
@@ -312,7 +313,8 @@ impl<'a> AddMutationJournal<'a> {
                 "artifact lease was already authorized".into(),
             ));
         }
-        let native_identity = secure_transfer::create_empty_private_temp_at(&active.path)?;
+        let native_identity =
+            secure_transfer::create_empty_private_temp_at(&active.path, active.record.durability)?;
         failpoint::after(Failpoint::PersistentMutation(
             PersistentMutation::EmptyTempCreation,
         ))?;
@@ -494,6 +496,7 @@ pub(crate) struct RepairMutationJournal<'a> {
     ignore: &'a dyn IgnoreBackend,
     repo_id: String,
     target_exclude: String,
+    durability: crate::domain::mutation_durability::MutationDurability,
     repo_destination: PathBuf,
     store_destination: PathBuf,
     next_token: u64,
@@ -516,11 +519,23 @@ impl<'a> RepairMutationJournal<'a> {
             ignore,
             repo_id: repo_id.into(),
             target_exclude: target_exclude.into(),
+            durability: crate::domain::mutation_durability::MutationDurability::Require,
             repo_destination,
             store_destination,
             next_token: 1,
             artifacts: BTreeMap::new(),
         }
+    }
+
+    /// Binds the command-resolved durability policy once for this journal.
+    /// The default is strict for direct/internal construction; mutation entry
+    /// points must explicitly supply their resolved local setting.
+    pub(crate) fn with_durability(
+        mut self,
+        durability: crate::domain::mutation_durability::MutationDurability,
+    ) -> Self {
+        self.durability = durability;
+        self
     }
 
     /// Removes only identity-matching temps after the caller has validated
@@ -564,6 +579,7 @@ impl<'a> RepairMutationJournal<'a> {
         };
         let mut record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: self.durability,
             record_id: Ulid::new().to_string(),
             created_at: crate::context::now_iso8601(),
             record: RecoveryRecordKind::Artifact(ArtifactRecord {
@@ -622,7 +638,8 @@ impl<'a> RepairMutationJournal<'a> {
                 "artifact lease was already authorized".into(),
             ));
         }
-        let native_identity = secure_transfer::create_empty_private_temp_at(&active.path)?;
+        let native_identity =
+            secure_transfer::create_empty_private_temp_at(&active.path, active.record.durability)?;
         failpoint::after(Failpoint::PersistentMutation(
             PersistentMutation::EmptyTempCreation,
         ))?;

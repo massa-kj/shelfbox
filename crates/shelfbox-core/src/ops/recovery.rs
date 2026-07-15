@@ -10,6 +10,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use crate::{
+    domain::mutation_durability::MutationDurability,
     domain::operation_record::{
         ArtifactLocation, OperationRecord, RecoveryRecord, RecoveryRecordKind,
     },
@@ -39,8 +40,10 @@ pub(crate) struct ReadOnlyRecoveryStatus {
 pub(crate) fn recover_before_mutation(
     store_root: &Path,
     current_repo_root: &Path,
+    current_durability: MutationDurability,
 ) -> Result<RecoveryReport> {
     let records = operation_record_store::load_all(store_root)?;
+    require_recovery_opt_in(&records, current_durability)?;
     let mut report = RecoveryReport::default();
 
     for mut record in records {
@@ -93,8 +96,12 @@ pub(crate) fn recover_before_mutation(
 /// Store-scoped mutating commands (for example GC) do not have a repository
 /// root. They may safely clean only store-side artifacts and stale completed
 /// records; any repo-side artifact or unfinished operation blocks the command.
-pub(crate) fn recover_store_before_mutation(store_root: &Path) -> Result<RecoveryReport> {
+pub(crate) fn recover_store_before_mutation(
+    store_root: &Path,
+    current_durability: MutationDurability,
+) -> Result<RecoveryReport> {
     let records = operation_record_store::load_all(store_root)?;
+    require_recovery_opt_in(&records, current_durability)?;
     let mut report = RecoveryReport::default();
 
     for record in records {
@@ -137,6 +144,26 @@ pub(crate) fn recover_store_before_mutation(store_root: &Path) -> Result<Recover
     }
 
     Ok(report)
+}
+
+/// Do this before the first cleanup action. A best-effort record represents a
+/// conscious reduced-guarantee operation, so later `require` configuration
+/// must not silently recover it or remove its evidence.
+fn require_recovery_opt_in(
+    records: &[RecoveryRecord],
+    current_durability: MutationDurability,
+) -> Result<()> {
+    if current_durability == MutationDurability::Require {
+        if let Some(record) = records
+            .iter()
+            .find(|record| record.durability == MutationDurability::BestEffort)
+        {
+            return Err(AppError::MutationDurabilityRecoveryOptInRequired {
+                record_id: record.record_id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Inspects records without writing, for status/reporting paths.
@@ -243,6 +270,7 @@ mod tests {
     fn operation(root_path: &Path, phase: OperationPhase) -> RecoveryRecord {
         RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: MutationDurability::Require,
             record_id: ulid::Ulid::new().to_string(),
             created_at: context::now_iso8601(),
             record: RecoveryRecordKind::Operation(OperationRecord {
@@ -272,7 +300,7 @@ mod tests {
         operation_record_store::create(store.path(), &record).unwrap();
 
         assert!(matches!(
-            recover_before_mutation(store.path(), repo.path()),
+            recover_before_mutation(store.path(), repo.path(), MutationDurability::Require),
             Err(AppError::RecoveryBlocked { .. })
         ));
         assert_eq!(
@@ -288,7 +316,9 @@ mod tests {
         let record = operation(repo.path(), OperationPhase::PostCommitValidated);
         operation_record_store::create(store.path(), &record).unwrap();
 
-        let report = recover_before_mutation(store.path(), repo.path()).unwrap();
+        let report =
+            recover_before_mutation(store.path(), repo.path(), MutationDurability::Require)
+                .unwrap();
         assert_eq!(report.cleaned_stale_operations, vec![record.record_id]);
         assert!(operation_record_store::load_all(store.path())
             .unwrap()
@@ -320,6 +350,7 @@ mod tests {
         let identity = operation_record_store::identity_from_path(&path).unwrap();
         let record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: MutationDurability::Require,
             record_id: ulid::Ulid::new().to_string(),
             created_at: context::now_iso8601(),
             record: RecoveryRecordKind::Artifact(ArtifactRecord {
@@ -338,7 +369,9 @@ mod tests {
         };
         operation_record_store::create(store.path(), &record).unwrap();
 
-        let report = recover_before_mutation(store.path(), repo.path()).unwrap();
+        let report =
+            recover_before_mutation(store.path(), repo.path(), MutationDurability::Require)
+                .unwrap();
         assert_eq!(report.cleaned_artifacts, vec![record.record_id]);
         assert!(!path.exists());
     }
@@ -356,6 +389,7 @@ mod tests {
             .unwrap();
         let record = RecoveryRecord {
             schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+            durability: MutationDurability::Require,
             record_id: ulid::Ulid::new().to_string(),
             created_at: context::now_iso8601(),
             record: RecoveryRecordKind::Artifact(ArtifactRecord {
@@ -378,11 +412,35 @@ mod tests {
         };
         operation_record_store::create(store.path(), &record).unwrap();
 
-        recover_before_mutation(store.path(), repo.path()).unwrap();
+        recover_before_mutation(store.path(), repo.path(), MutationDurability::Require).unwrap();
 
         assert!(!path.exists());
         assert!(!GitInfoExclude
             .has_entry(repo.path(), ".shelfbox-temp")
             .unwrap());
+    }
+
+    #[test]
+    fn best_effort_record_requires_current_opt_in_before_any_cleanup() {
+        let store = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let mut record = operation(repo.path(), OperationPhase::PostCommitValidated);
+        record.durability = MutationDurability::BestEffort;
+        operation_record_store::create(store.path(), &record).unwrap();
+
+        assert!(matches!(
+            recover_before_mutation(store.path(), repo.path(), MutationDurability::Require),
+            Err(AppError::MutationDurabilityRecoveryOptInRequired { ref record_id })
+                if record_id == &record.record_id
+        ));
+        assert_eq!(
+            operation_record_store::load_all(store.path()).unwrap(),
+            vec![record.clone()]
+        );
+
+        recover_before_mutation(store.path(), repo.path(), MutationDurability::BestEffort).unwrap();
+        assert!(operation_record_store::load_all(store.path())
+            .unwrap()
+            .is_empty());
     }
 }

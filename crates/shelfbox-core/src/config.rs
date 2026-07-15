@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     domain::materialization::MaterializationStrategy,
+    domain::mutation_durability::MutationDurability,
     error::{AppError, Result},
     storage::atomic_write::{self, ParentDirMode},
 };
@@ -36,6 +37,8 @@ struct RawConfig {
     default_format: Option<String>,
     /// Default strategy for materializations created in the future.
     materialization: Option<MaterializationStrategy>,
+    /// Durability contract for shelf mutations on this machine.
+    mutation_durability: Option<MutationDurability>,
 }
 
 // ── Config source metadata ──────────────────────────────────────────────────
@@ -98,6 +101,10 @@ pub struct ResolvedConfig {
     pub materialization: MaterializationStrategy,
     /// Origin of [`materialization`](Self::materialization).
     pub materialization_source: ConfigSource,
+    /// Resolved durability contract for shelf mutations.
+    pub mutation_durability: MutationDurability,
+    /// Origin of [`mutation_durability`](Self::mutation_durability).
+    pub mutation_durability_source: ConfigSource,
 }
 
 impl From<ResolvedConfig> for Config {
@@ -106,6 +113,7 @@ impl From<ResolvedConfig> for Config {
             store: r.store,
             default_format: r.default_format,
             materialization: r.materialization,
+            mutation_durability: r.mutation_durability,
         }
     }
 }
@@ -127,6 +135,9 @@ pub struct Config {
     /// Existing paths must always be inspected; changing this value never
     /// converts a materialization already present in a repository.
     pub materialization: MaterializationStrategy,
+    /// Parent-directory durability contract for shelf mutations. This is
+    /// local configuration and never changes an existing materialization.
+    pub mutation_durability: MutationDurability,
 }
 
 impl Config {
@@ -181,6 +192,10 @@ impl Config {
             Some(strategy) => (strategy, ConfigSource::File),
             None => (MaterializationStrategy::Symlink, ConfigSource::Default),
         };
+        let (mutation_durability, mutation_durability_source) = match raw.mutation_durability {
+            Some(durability) => (durability, ConfigSource::File),
+            None => (MutationDurability::Require, ConfigSource::Default),
+        };
 
         Ok(ResolvedConfig {
             store,
@@ -189,6 +204,8 @@ impl Config {
             default_format_source,
             materialization,
             materialization_source,
+            mutation_durability,
+            mutation_durability_source,
         })
     }
 
@@ -206,6 +223,7 @@ impl Config {
             store: store.into(),
             default_format: None,
             materialization: MaterializationStrategy::Symlink,
+            mutation_durability: MutationDurability::Require,
         }
     }
 }
@@ -271,9 +289,17 @@ pub fn set_key(key: &str, value: &str) -> Result<()> {
                 )));
             }
         },
+        "mutation_durability" => match value {
+            "require" | "best-effort" => {}
+            other => {
+                return Err(AppError::Internal(format!(
+                    "invalid value '{other}' for mutation_durability; valid values: require, best-effort"
+                )));
+            }
+        },
         other => {
             return Err(AppError::Internal(format!(
-                "unknown config key '{other}'; supported keys: store, default_format, materialization"
+                "unknown config key '{other}'; supported keys: store, default_format, materialization, mutation_durability"
             )));
         }
     }
@@ -391,6 +417,8 @@ mod tests {
         assert_eq!(r.default_format_source, ConfigSource::Default);
         assert_eq!(r.materialization, MaterializationStrategy::Symlink);
         assert_eq!(r.materialization_source, ConfigSource::Default);
+        assert_eq!(r.mutation_durability, MutationDurability::Require);
+        assert_eq!(r.mutation_durability_source, ConfigSource::Default);
     }
 
     #[test]
@@ -412,6 +440,7 @@ mod tests {
             store: Some(PathBuf::from("/from/config")),
             default_format: Some("json".to_string()),
             materialization: Some(MaterializationStrategy::Symlink),
+            mutation_durability: Some(MutationDurability::Require),
         };
         let r = Config::resolve_full(raw, None).unwrap();
         assert_eq!(r.store_source, ConfigSource::File);
@@ -419,6 +448,8 @@ mod tests {
         assert_eq!(r.default_format_source, ConfigSource::File);
         assert_eq!(r.materialization, MaterializationStrategy::Symlink);
         assert_eq!(r.materialization_source, ConfigSource::File);
+        assert_eq!(r.mutation_durability, MutationDurability::Require);
+        assert_eq!(r.mutation_durability_source, ConfigSource::File);
     }
 
     #[test]
@@ -432,6 +463,8 @@ mod tests {
         assert_eq!(r.default_format_source, ConfigSource::Default);
         assert_eq!(r.materialization, MaterializationStrategy::Symlink);
         assert_eq!(r.materialization_source, ConfigSource::Default);
+        assert_eq!(r.mutation_durability, MutationDurability::Require);
+        assert_eq!(r.mutation_durability_source, ConfigSource::Default);
     }
 
     #[test]
@@ -442,6 +475,36 @@ mod tests {
         let config = Config::resolve(RawConfig::default(), None).unwrap();
 
         assert_eq!(config.materialization, MaterializationStrategy::Symlink);
+    }
+
+    #[test]
+    fn missing_mutation_durability_defaults_to_require() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("SHELFBOX_STORE");
+
+        let config = Config::resolve(RawConfig::default(), None).unwrap();
+
+        assert_eq!(config.mutation_durability, MutationDurability::Require);
+    }
+
+    #[test]
+    fn mutation_durability_accepts_only_stable_values() {
+        let best_effort = parse_raw_config(
+            Path::new("config.toml"),
+            "mutation_durability = \"best-effort\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            best_effort.mutation_durability,
+            Some(MutationDurability::BestEffort)
+        );
+        assert!(matches!(
+            parse_raw_config(
+                Path::new("config.toml"),
+                "mutation_durability = \"sometimes\"\n"
+            ),
+            Err(AppError::TomlParse { .. })
+        ));
     }
 
     #[test]

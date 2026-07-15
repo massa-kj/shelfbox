@@ -150,6 +150,7 @@ fn execute_restore(
     };
     let mut record = RecoveryRecord {
         schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+        durability: ctx.config.mutation_durability,
         record_id,
         created_at: context::now_iso8601(),
         record: RecoveryRecordKind::Operation(OperationRecord {

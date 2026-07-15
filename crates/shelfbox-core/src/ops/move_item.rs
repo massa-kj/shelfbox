@@ -109,6 +109,7 @@ fn execute_move(
 
     let mut record = RecoveryRecord {
         schema_version: OPERATION_RECORD_SCHEMA_VERSION,
+        durability: ctx.config.mutation_durability,
         record_id: Ulid::new().to_string(),
         created_at: context::now_iso8601(),
         record: RecoveryRecordKind::Operation(OperationRecord {

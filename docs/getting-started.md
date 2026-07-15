@@ -46,7 +46,18 @@ Requirements:
 * Linux, macOS, or Windows
 
 On Windows, the default symlink strategy requires Developer Mode or an elevated
-shell. Configure Copy mode when that capability is unavailable.
+shell. Configure Copy mode when that capability is unavailable. Windows also
+has no documented parent-directory `fsync` equivalent, so the default strict
+mutation policy intentionally fails before shelf state changes. To make a
+local reduced-guarantee opt-in, configure durability separately from Copy mode:
+
+```sh
+shelfbox config set mutation_durability best-effort
+shelfbox config set materialization copy # optional; only selects materialization
+```
+
+Best-effort continues only for the missing directory-durability capability;
+it does not guarantee complete recovery after power loss or forced termination.
 
 ---
 
