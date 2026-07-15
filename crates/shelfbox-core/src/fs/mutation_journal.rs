@@ -759,12 +759,7 @@ impl MutationJournal for RepairMutationJournal<'_> {
 }
 
 fn artifact_location(scope: ArtifactScope, root: &Path, path: &Path) -> Result<ArtifactLocation> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| AppError::UnsafeFilesystemEntry {
-            path: path.to_path_buf(),
-            reason: "artifact path escapes its trusted root",
-        })?;
+    let relative = secure_transfer::relative_path_in_trusted_root(root, path)?;
     let relative = relative.to_string_lossy().replace('\\', "/");
     match scope {
         ArtifactScope::RepoSide => Ok(ArtifactLocation::Repo {
@@ -789,5 +784,33 @@ fn artifact_location(scope: ArtifactScope, root: &Path, path: &Path) -> Result<A
                 }
             })?,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_location_accepts_uncreated_temp_via_trusted_root_alias() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("repo");
+        let alias_parent = tempfile::tempdir().unwrap();
+        let alias = alias_parent.path().join("alias");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(parent.path(), &alias).unwrap();
+
+        let temp = alias.join("repo/.secret.temporary");
+        let location = artifact_location(ArtifactScope::RepoSide, &root, &temp).unwrap();
+
+        match location {
+            ArtifactLocation::Repo { repo_root, path } => {
+                assert_eq!(repo_root.as_path(), root);
+                assert_eq!(path.as_str(), ".secret.temporary");
+            }
+            ArtifactLocation::Store { .. } => panic!("expected a repository artifact location"),
+        }
     }
 }

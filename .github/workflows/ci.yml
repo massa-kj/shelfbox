@@ -147,8 +147,11 @@ jobs:
       - name: Forced EXDEV preserves both paths
         run: cargo test -p shelfbox-core forced_exdev --lib
 
-      - name: No-follow inspection handles regular files and symlinks
+      - name: No-follow inspection handles files, directories, and symlinks
         run: cargo test -p shelfbox-core macos_no_follow --lib
+
+      - name: Trusted-root aliases preserve durable artifact paths
+        run: cargo test -p shelfbox-core artifact_location_accepts_uncreated_temp_via_trusted_root_alias --lib
 
   windows-replace-safety:
     name: Windows replacement and sharing-violation safety

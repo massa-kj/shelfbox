@@ -60,7 +60,7 @@ pub(crate) fn validate_parent_path(root: &Path, path: &Path) -> Result<()> {
 ///
 /// The caller still validates each of those components below `root`, so a
 /// symlink inside the trusted root cannot be hidden by alias resolution.
-fn relative_path_in_trusted_root(root: &Path, path: &Path) -> Result<PathBuf> {
+pub(crate) fn relative_path_in_trusted_root(root: &Path, path: &Path) -> Result<PathBuf> {
     if let Ok(relative) = path.strip_prefix(root) {
         return Ok(relative.to_path_buf());
     }
