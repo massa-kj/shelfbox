@@ -179,6 +179,16 @@ mod tests {
     }
 
     #[test]
+    fn macos_no_follow_inspection_accepts_directory() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            inspect_no_follow(dir.path()).unwrap().kind,
+            EntryKind::Directory
+        );
+    }
+
+    #[test]
     fn macos_no_follow_inspection_reports_final_symlink() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target");

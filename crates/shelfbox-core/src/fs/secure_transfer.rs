@@ -30,12 +30,7 @@ pub(crate) enum PermissionMode {
 /// The final component is intentionally not inspected here so callers can
 /// safely use it for a create-new destination.
 pub(crate) fn validate_parent_path(root: &Path, path: &Path) -> Result<()> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| AppError::UnsafeFilesystemEntry {
-            path: path.to_path_buf(),
-            reason: "path escapes its trusted root",
-        })?;
+    let relative = relative_path_in_trusted_root(root, path)?;
     let mut current = root.to_path_buf();
     let parents = relative.parent().unwrap_or_else(|| Path::new(""));
     for component in parents.components() {
@@ -55,6 +50,58 @@ pub(crate) fn validate_parent_path(root: &Path, path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Obtains a lexical path below `root` without treating a platform alias as
+/// an escape. macOS exposes the same temporary directory through `/var` and
+/// `/private/var`; git can return one spelling while a caller provides the
+/// other. The fallback finds a directory with the trusted root's no-follow
+/// identity, then uses only the remaining lexical components.
+///
+/// The caller still validates each of those components below `root`, so a
+/// symlink inside the trusted root cannot be hidden by alias resolution.
+fn relative_path_in_trusted_root(root: &Path, path: &Path) -> Result<PathBuf> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Ok(relative.to_path_buf());
+    }
+
+    let root_entry = platform::inspect_no_follow(root)?;
+    if root_entry.kind != platform::EntryKind::Directory {
+        return Err(AppError::UnsafeFilesystemEntry {
+            path: root.to_path_buf(),
+            reason: "trusted root is not a directory",
+        });
+    }
+
+    let mut tail = Vec::new();
+    let mut candidate = path;
+    loop {
+        if let Ok(entry) = platform::inspect_no_follow(candidate) {
+            if entry.kind == platform::EntryKind::Directory && entry.identity == root_entry.identity
+            {
+                let mut relative = PathBuf::new();
+                for component in tail.iter().rev() {
+                    relative.push(component);
+                }
+                return Ok(relative);
+            }
+        }
+
+        let Some(name) = candidate.file_name() else {
+            break;
+        };
+        tail.push(name.to_os_string());
+
+        let Some(parent) = candidate.parent() else {
+            break;
+        };
+        candidate = parent;
+    }
+
+    Err(AppError::UnsafeFilesystemEntry {
+        path: path.to_path_buf(),
+        reason: "path escapes its trusted root",
+    })
 }
 
 pub(crate) fn compare_regular_files(left: &Path, right: &Path) -> Result<bool> {
@@ -500,6 +547,39 @@ mod tests {
         let path = link.join("secret");
         assert!(matches!(
             validate_parent_path(root.path(), &path),
+            Err(AppError::UnsafeFilesystemEntry { .. })
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepts_a_platform_alias_of_the_trusted_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("repo");
+        let alias_parent = tempfile::tempdir().unwrap();
+        let alias = alias_parent.path().join("alias");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(parent.path(), &alias).unwrap();
+
+        let path = alias.join("repo/secret");
+        validate_parent_path(&root, &path).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn platform_alias_does_not_hide_an_intermediate_symlink() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("repo");
+        let outside = tempfile::tempdir().unwrap();
+        let alias_parent = tempfile::tempdir().unwrap();
+        let alias = alias_parent.path().join("alias");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(parent.path(), &alias).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("escaped")).unwrap();
+
+        let path = alias.join("repo/escaped/secret");
+        assert!(matches!(
+            validate_parent_path(&root, &path),
             Err(AppError::UnsafeFilesystemEntry { .. })
         ));
     }
