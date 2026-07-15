@@ -74,7 +74,7 @@ pub(super) fn open_regular_for_write_no_follow(path: &Path) -> Result<(File, Ins
 }
 
 pub(super) fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
-    require_same_parent(source, destination)?;
+    super::require_same_parent_directory(source, destination)?;
     if !destination.is_absolute() {
         return Err(AppError::Internal(format!(
             "Windows atomic replacement requires an absolute destination: {}",
@@ -219,17 +219,6 @@ fn rename_handle_over_path(source: &File, destination: &Path) -> std::io::Result
 
 fn raw_handle(file: &File) -> windows_sys::Win32::Foundation::HANDLE {
     file.as_raw_handle() as RawHandle
-}
-
-fn require_same_parent(source: &Path, destination: &Path) -> Result<()> {
-    if source.parent() != destination.parent() {
-        return Err(AppError::Internal(format!(
-            "atomic replacement requires source and destination in the same directory: '{}' and '{}'",
-            source.display(),
-            destination.display()
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

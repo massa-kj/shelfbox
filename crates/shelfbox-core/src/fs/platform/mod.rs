@@ -115,6 +115,37 @@ pub(crate) fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
     imp::atomic_replace(source, destination)
 }
 
+/// Confirms that replacement stays in one physical directory. Path spelling is
+/// not sufficient on platforms that expose the same directory through aliases
+/// (for example, `/var` and `/private/var` on macOS), so compare no-follow
+/// directory identities instead.
+pub(super) fn require_same_parent_directory(source: &Path, destination: &Path) -> Result<()> {
+    let source_parent = source.parent();
+    let destination_parent = destination.parent();
+    let (Some(source_parent), Some(destination_parent)) = (source_parent, destination_parent)
+    else {
+        return Err(AppError::Internal(format!(
+            "atomic replacement requires source and destination parents: '{}' and '{}'",
+            source.display(),
+            destination.display()
+        )));
+    };
+
+    let source_entry = inspect_no_follow(source_parent)?;
+    let destination_entry = inspect_no_follow(destination_parent)?;
+    if source_entry.kind != EntryKind::Directory
+        || destination_entry.kind != EntryKind::Directory
+        || source_entry.identity != destination_entry.identity
+    {
+        return Err(AppError::Internal(format!(
+            "atomic replacement requires source and destination in the same directory: '{}' and '{}'",
+            source.display(),
+            destination.display()
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn sync_directory(path: &Path) -> Result<()> {
     require(FilesystemCapability::DirectoryDurability)?;
     imp::sync_directory(path)
@@ -180,6 +211,46 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new");
         assert!(!source.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replace_accepts_alias_of_the_same_parent_directory() {
+        let parent = TempDir::new().unwrap();
+        let directory = parent.path().join("directory");
+        let alias_parent = TempDir::new().unwrap();
+        let alias = alias_parent.path().join("alias");
+        std::fs::create_dir(&directory).unwrap();
+        std::os::unix::fs::symlink(parent.path(), &alias).unwrap();
+
+        let source = alias.join("directory/prepared");
+        let destination = directory.join("destination");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&destination, "old").unwrap();
+
+        atomic_replace(&source, &destination).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new");
+        assert!(!source.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replace_rejects_a_final_symlink_parent() {
+        let parent = TempDir::new().unwrap();
+        let directory = parent.path().join("directory");
+        let symlink_parent = parent.path().join("symlink-parent");
+        std::fs::create_dir(&directory).unwrap();
+        std::os::unix::fs::symlink(&directory, &symlink_parent).unwrap();
+
+        let source = symlink_parent.join("prepared");
+        let destination = directory.join("destination");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&destination, "old").unwrap();
+
+        assert!(atomic_replace(&source, &destination).is_err());
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "old");
     }
 
     #[test]

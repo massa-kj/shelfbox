@@ -153,6 +153,9 @@ jobs:
       - name: Trusted-root aliases preserve durable artifact paths
         run: cargo test -p shelfbox-core artifact_location_accepts_uncreated_temp_via_trusted_root_alias --lib
 
+      - name: Same-directory aliases preserve atomic replacement
+        run: cargo test -p shelfbox-core atomic_replace_accepts_alias_of_the_same_parent_directory --lib
+
   windows-replace-safety:
     name: Windows replacement and sharing-violation safety
     runs-on: windows-latest

@@ -100,7 +100,7 @@ fn atomic_replace_with(
     destination: &Path,
     rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
-    require_same_parent(source, destination)?;
+    super::require_same_parent_directory(source, destination)?;
     rename(source, destination).map_err(|error| AppError::io(destination, error))
 }
 
@@ -149,17 +149,6 @@ fn open_directory_no_follow(path: &Path) -> Result<File> {
 
     // SAFETY: `descriptor` is a newly opened, owned descriptor.
     Ok(unsafe { File::from_raw_fd(descriptor) })
-}
-
-fn require_same_parent(source: &Path, destination: &Path) -> Result<()> {
-    if source.parent() != destination.parent() {
-        return Err(AppError::Internal(format!(
-            "atomic replacement requires source and destination in the same directory: '{}' and '{}'",
-            source.display(),
-            destination.display()
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(all(test, target_os = "macos"))]
