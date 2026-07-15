@@ -11,7 +11,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED},
+    Foundation::{ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED, GENERIC_READ},
     Storage::FileSystem::{
         FileIdInfo, FileRenameInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
         SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY,
@@ -45,7 +45,11 @@ pub(super) fn inspect_no_follow(path: &Path) -> Result<InspectedEntry> {
 }
 
 pub(super) fn open_regular_no_follow(path: &Path) -> Result<(File, InspectedEntry)> {
-    let file = open_no_follow(path, 0)?;
+    // Inspection can use a zero-access handle, but callers of this function
+    // receive the handle to read plaintext after the no-follow identity check.
+    // Requesting no access succeeds for metadata inspection on Windows but
+    // later fails reads with ERROR_ACCESS_DENIED.
+    let file = open_no_follow(path, GENERIC_READ)?;
     let entry = inspect_handle(&file, path)?;
     if entry.kind != EntryKind::RegularFile {
         return Err(AppError::UnsafeFilesystemEntry {
@@ -224,7 +228,22 @@ fn raw_handle(file: &File) -> windows_sys::Win32::Foundation::HANDLE {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+
+    #[test]
+    fn open_regular_no_follow_returns_a_readable_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source");
+        std::fs::write(&path, "content").unwrap();
+
+        let (mut file, entry) = open_regular_no_follow(&path).unwrap();
+        assert_eq!(entry.kind, EntryKind::RegularFile);
+
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "content");
+    }
 
     #[test]
     fn sharing_violation_preserves_source_and_old_destination() {
