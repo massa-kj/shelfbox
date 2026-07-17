@@ -2,68 +2,11 @@
 
 Keep AI context files, personal configs, and local secrets **visible in your editor** but **invisible to Git** — surviving reclones, worktrees, and index resets.
 
-> Supported on **Linux**, **macOS**, and **Windows**. The default strategy is a
-> symlink; on Windows it requires Developer Mode or an elevated shell. Copy
-> mode uses regular files and is available where symlink creation is restricted.
+> Supported on **Linux**, **macOS**, and **Windows**.  
+> The default strategy is a symlink; on Windows it requires Developer Mode or an elevated shell.  
+> Copy mode uses regular files and is available where symlink creation is restricted.
 
-## The problem
-
-Some files need to live in your repo tree so your editor and tools can find them — but they must never be committed:
-
-```
-CLAUDE.local.md          # personal AI assistant instructions
-.env                     # local secrets and credentials
-config/local.yml         # machine-specific config overrides
-```
-
-**The usual approaches silently fail:**
-
-- **`.gitignore`** — only works for files Git has never seen. Once a file is tracked, adding it to `.gitignore` does nothing. And `.gitignore` itself gets committed, so your teammates see your personal entries.
-- **`git update-index --skip-worktree`** — breaks silently after `git clone`, `git worktree add`, or any index reset. The flag disappears without warning, and the file reappears as staged or modified.
-
-**Real accidents:**
-
-- You ran `git add .` before adding `.env` to `.gitignore`. Now it's in your commit history.
-- Your personal `AGENTS.md` ended up visible in a PR diff.
-- You recloned after a disk issue and lost all your AI context files.
-
-## How it works
-
-```sh
-shelfbox item add CLAUDE.local.md
-```
-
-1. Moves the file into a plain store directory (`~/.local/share/shelfbox/`)
-2. Creates the configured materialization at the original path (a symlink by
-   default) — your editor and AI tools see the file as normal
-3. Adds the path to `.git/info/exclude` — Git ignores it silently, nothing gets committed
-
-```sh
-shelfbox item restore CLAUDE.local.md
-```
-
-Reverses the process. The file moves back in place, the materialization is
-removed, and the exclude entry is cleaned up.
-
-The store is a regular directory of plain files. It survives:
-
-- `git clone` / reclones
-- `git worktree add`
-- repository moves and renames
-- `git reset` and index resets
-
-## Why not manage the file yourself?
-
-Anyone can move a file and create a symlink manually. What shelfbox adds is **tracked ownership** and structured recovery. It can detect and fix:
-
-- broken or missing materializations
-- missing `.git/info/exclude` entries
-- lost local associations after a reclone
-- store entries with no corresponding repository
-
-Run `shelfbox repo repair` to repair the current repository's shelf, or `shelfbox repo reclaim` to re-associate a clone with an existing shelf after restoring `repos/`.
-
-## Quick start
+## Quick Start
 
 ```sh
 # Shelve a file
@@ -79,14 +22,27 @@ shelfbox item status
 shelfbox item restore CLAUDE.local.md
 ```
 
-## Typical use cases
+## Why shelfbox
+
+Some files need to live in your repo tree so your editor and tools can find them, but they must never be committed. shelfbox keeps them visible in your editor, stores the canonical content elsewhere, and keeps Git out of the way:
 
 | File | Why shelve it |
 |---|---|
 | `CLAUDE.local.md`, `AGENTS.md`, etc. | Personal AI assistant instructions |
-| `.env` | Local secrets and credentials |
 | `notes/scratch.md` | Personal development notes |
 | `config/local.yml` | Machine-specific config overrides |
+| `.env` | Local secrets and credentials |
+
+**The usual approaches silently fail:**
+
+- **`.gitignore`** — only works for files Git has never seen. Once a file is tracked, adding it to `.gitignore` does nothing. And `.gitignore` itself gets committed, so your teammates see your personal entries.
+- **`git update-index --skip-worktree`** — breaks silently after `git clone`, `git worktree add`, or any index reset. The flag disappears without warning, and the file reappears as staged or modified.
+
+Anyone can move a file and create a symlink manually. What shelfbox adds is **tracked ownership** and structured recovery: it materializes the file at the original path, keeps Git excluded through `.git/info/exclude`, and can repair broken or missing materializations, lost local associations after a reclone, and store entries with no corresponding repository.
+
+Use `shelfbox repo repair` to repair the current repository's shelf, or `shelfbox repo reclaim` to re-associate a clone with an existing shelf after restoring `repos/`.
+
+Canonical shelf data is stored under `<store>/repos/<repo-store-dir>/`: `manifest.json` keeps repository and item metadata, and `items/` keeps the actual file contents. See [Data model](docs/architecture/data-model.md) for details.
 
 ## Installation
 
@@ -104,17 +60,14 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.ps1 | iex
 ```
 
-The Unix installer uses `~/.local/bin` by default. The PowerShell installer uses
-`%LOCALAPPDATA%\Programs\shelfbox\bin`. To specify a version or directory on
-Linux/macOS:
+The Unix installer uses `~/.local/bin` by default. The PowerShell installer uses `%LOCALAPPDATA%\Programs\shelfbox\bin`. To specify a version or directory on Linux/macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | VERSION=v0.1.0 sh
 curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
-Linux installs use the musl binary by default for wider compatibility. To use
-the GNU libc binary instead:
+Linux installs use the musl binary by default for wider compatibility. To use the GNU libc binary instead:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/massa-kj/shelfbox/main/scripts/install.sh | LINUX_LIBC=gnu sh
@@ -133,6 +86,7 @@ Requires Rust 1.75+ and Git.
 - **Directory shelving** — shelve eligible files under a directory; each file remains an independent item: [`item add <PATH>`](docs/reference/item-commands.md#item-add-path)
 - **Recovery after reclone** — re-associate a new clone with an existing shelf after restoring `repos/`: [`repo reclaim`](docs/reference/repo-commands.md#repo-reclaim)
 - **Store recovery** — rebuild local cache files from canonical manifests: [`store rebuild-index`](docs/reference/store-commands.md#store-rebuild-index)
+- **Copy mode** — leave an independent regular file instead of a symlink, useful when symlink creation is restricted: [Copy mode spec](docs/spec/copy-mode.md)
 
 See [docs/index.md](docs/index.md) for the full documentation set.
 
@@ -149,50 +103,9 @@ Optional config at `~/.config/shelfbox/config.toml` (respects `$XDG_CONFIG_HOME`
 
 The `--store <PATH>` global flag overrides config at runtime.
 
-`mutation_durability` is local to this machine and independent of
-`materialization`. `require` is the default and preserves the normal D5
-crash-safety contract where parent-directory durability is supported. Windows
-does not provide that documented capability, so strict shelf mutations fail
-before changing shelf state. A user who explicitly accepts reduced power-loss
-recovery guarantees can opt in without changing symlink/copy behavior:
+> **Note for Windows users:** The default `require` mode depends on directory-level durability guarantees that Windows does not provide. Set `mutation_durability = "best-effort"` to use shelfbox on Windows.
 
-```sh
-shelfbox config set mutation_durability best-effort
-```
-
-`best-effort` only tolerates the known unavailable directory-durability
-capability; ordinary I/O, permission, identity, and validation failures still
-stop the operation. It does not guarantee complete recovery after power loss
-or forced termination.
-
-```sh
-shelfbox config list
-shelfbox config explain store
-```
-
-## Copy mode
-
-Copy mode leaves an independent regular file in the repository. It is useful
-when a symlink cannot be created, but the canonical content remains in the
-store. Enable it before adding new items:
-
-```sh
-shelfbox config set materialization copy
-shelfbox item add .env
-```
-
-Edits to a copy are intentionally not synchronized automatically. Check the
-state, then choose the source explicitly:
-
-```sh
-shelfbox item status
-shelfbox item sync .env --from store       # discard the repo-side edit
-shelfbox item sync .env --from repo --yes  # make the edit canonical
-```
-
-Changing `materialization` affects only future creations and repairs of a
-missing entry; it never converts existing items. A mixed symlink/copy
-repository is supported.
+See [Config reference](docs/reference/config-commands.md) for all options and details.
 
 ## Non-goals
 
@@ -200,40 +113,12 @@ shelfbox is a **single-machine** tool. Placing the store on external or network-
 
 Multi-machine sync, secret encryption, and team-shared files are out of scope.
 
-## [Documentation](docs/index.md)
+## Documentation
 
-### New users
+- [Getting Started](docs/getting-started.md) — installation, basic concepts, and first-time usage
+- [Workflows](docs/workflows.md) — common tasks and recovery procedures  
 
-| Document | Description |
-|---|---|
-| [Getting Started](docs/getting-started.md) | Installation, basic concepts, and first-time usage |
-| [Workflows](docs/workflows.md) | Common tasks and recovery procedures |
-
-### Command Reference
-
-| Document | Description |
-|---|---|
-| [Item Commands](docs/reference/item-commands.md) | Item management commands |
-| [Repository Commands](docs/reference/repo-commands.md) | Repository management commands |
-| [Store Commands](docs/reference/store-commands.md) | Store management commands |
-| [Configuration Commands](docs/reference/config-commands.md) | Configuration commands |
-
-### Architecture
-
-| Document | Description |
-|---|---|
-| [Architecture Overview](docs/architecture/architecture-overview.md) | System architecture and component boundaries |
-| [Module Map](docs/architecture/module-map.md) | Current crate/module boundaries and API facade rules |
-| [Data Model](docs/architecture/data-model.md) | Store layout, manifests, and persistent data |
-| [Design Decisions](docs/architecture/design-decisions.md) | Design rationale and implementation choices |
-
-### Specifications
-
-| Document | Description |
-|---|---|
-| [Copy Mode](docs/spec/copy-mode.md) | Normative v0.9.0 copy-materialization policy and safety contract |
-| [Ownership Model](docs/spec/ownership-model.md) | Ownership state machine and transition rules |
-| [Failure Matrix](docs/spec/failure-matrix.md) | Failure modes, recoverability, and recovery guarantees |
+See [docs/index.md](docs/index.md) for the full documentation set.
 
 ## License
 
